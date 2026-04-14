@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.claude/
+.cursor/
+.vscode/
+.idea/
+
+# Testing
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+tests/
+
+# Project specific
+.env
+agent_workspace/
+server.log
+banned_ips.txt
+*.log
+
+# Sensitive scripts (may contain keys)
+*.bat
+*.sh
+RunClaude*
+StartServer*
+clean_logs*
+
+# Misc
+.serena/
+.playwright-mcp/
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+Python-3.14.3.tgz
+Python-3.14.3/
+.roo/memory.md
