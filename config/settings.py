@@ -3,6 +3,8 @@
 This configuration is exclusively for NVIDIA NIM API endpoints.
 """
 
+import random
+import string
 from functools import lru_cache
 
 from dotenv import load_dotenv
@@ -12,6 +14,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from .nim import NimSettings
 
 load_dotenv()
+
+
+def generate_session_api_key() -> str:
+    """Generate a random 32-char API key in format: 16chars.16chars"""
+    chars = string.ascii_letters + string.digits
+    first_half = ''.join(random.choices(chars, k=16))
+    second_half = ''.join(random.choices(chars, k=16))
+    return f"{first_half}.{second_half}"
 
 
 class Settings(BaseSettings):
@@ -63,6 +73,14 @@ class Settings(BaseSettings):
     port: int = 8082
     log_file: str = "server.log"
     proxy_api_key: str = Field(default="", validation_alias="PROXY_API_KEY")
+
+    @field_validator("proxy_api_key", mode="after")
+    @classmethod
+    def validate_proxy_api_key(cls, v: str) -> str:
+        """Auto-generate API key if blank or placeholder (fallback)."""
+        if not v or v == "<replaceme>":
+            return generate_session_api_key()
+        return v
 
     @field_validator("model")
     @classmethod
