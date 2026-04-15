@@ -61,14 +61,14 @@ def check_prerequisites() -> bool:
         pass
     
     # Check for python/venv as fallback
-    venv_path = Path(__file__).parent / "venv"
+    venv_path = Path(__file__).parent / ".venv"
     if venv_path.exists():
         print("✓ Found: venv directory")
         return True
     
-    print("Error: Neither 'uv' nor 'venv' found.")
+    print("Error: Neither 'uv' nor '.venv' found.")
     print("Please install uv: https://github.com/astral-sh/uv")
-    print("Or create a venv: python -m venv venv")
+    print("Or create a venv: python -m venv .venv")
     return False
 
 
@@ -141,12 +141,12 @@ def start_server(config: dict) -> None:
         print(f"Starting server with uv: {' '.join(cmd)}")
     else:
         # Fallback to venv
-        venv_python = script_dir / "venv" / "Scripts" / "python.exe"
+        venv_python = script_dir / ".venv" / "Scripts" / "python.exe"
         if not venv_python.exists():
-            venv_python = script_dir / "venv" / "bin" / "python"
+            venv_python = script_dir / ".venv" / "bin" / "python"
         
         if not venv_python.exists():
-            print("Error: No venv found. Please run: python -m venv venv")
+            print("Error: No venv found. Please run: python -m venv .venv")
             sys.exit(1)
         
         cmd = [
