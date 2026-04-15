@@ -18,7 +18,7 @@ Claude Code CLI and VSCode extension require an Anthropic API key. NIMbus acts a
 
 1. NVIDIA NIM API key: [build.nvidia.com/settings/api-keys](https://build.nvidia.com/settings/api-keys)
 2. [Claude Code](https://github.com/anthropics/claude-code) installed
-3. [uv](https://github.com/astral-sh/uv) installed
+3. Python 3.10+ installed
 
 ### Setup
 
@@ -37,12 +37,48 @@ MODEL="z-ai/glm5"
 
 The MODEL format is `owner/model-name`.
 
+### Virtual Environment
+
+**Option 1: Using uv (Recommended)**
+
+If you have [uv](https://github.com/astral-sh/uv) installed:
+
+```bash
+# uv automatically manages the virtual environment
+uv run uvicorn server:app --host 0.0.0.0 --port 8082
+```
+
+**Option 2: Using Python venv**
+
+If you don't have `uv`, use Python's built-in `venv`:
+
+```bash
+# Create a virtual environment
+python -m venv .venv
+
+# Activate it
+# On Linux/macOS:
+source .venv/bin/activate
+# On Windows:
+.venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the server
+uvicorn server:app --host 0.0.0.0 --port 8082
+```
+
 ### Run
 
 **Terminal 1 - Start the proxy:**
 
 ```bash
+# Using uv (recommended):
 uv run uvicorn server:app --host 0.0.0.0 --port 8082
+
+# Or using venv (after activating):
+uvicorn server:app --host 0.0.0.0 --port 8082
 ```
 
 **Terminal 2 - Run Claude Code:**
