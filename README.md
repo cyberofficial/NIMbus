@@ -142,7 +142,7 @@ Browse all: [build.nvidia.com/explore/discover](https://build.nvidia.com/explore
 | `HTTP_WRITE_TIMEOUT` | Write timeout in seconds | `10` |
 | `HTTP_CONNECT_TIMEOUT` | Connect timeout in seconds | `2` |
 | `PORT` | Server port | `8082` |
-| `PROXY_API_KEY` | Optional proxy authentication | (empty) |
+| `PROXY_API_KEY` | Optional proxy authentication (auto-generated if empty) | (random) |
 
 ### Optimization Settings
 
