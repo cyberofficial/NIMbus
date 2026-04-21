@@ -234,6 +234,10 @@ class NimbusCog(commands.Cog):
             )
             return
 
+        # Check this is a conversation channel (not DMs, control channel, etc)
+        if not await self._check_conversation_channel(interaction):
+            return
+
         await interaction.response.send_message(
             "🔄 Compacting conversation...", ephemeral=True
         )
@@ -241,6 +245,31 @@ class NimbusCog(commands.Cog):
         await interaction.followup.send(
             "✅ Conversation compacted. New context started."
         )
+
+    async def _check_conversation_channel(self, interaction: discord.Interaction) -> bool:
+        """Check if command is used in a valid conversation channel."""
+        # Check control channel
+        if interaction.channel_id == self.settings.discord_control_channel_id:
+            await interaction.response.send_message(
+                "❌ Cannot use this command in the control channel.", ephemeral=True
+            )
+            return False
+
+        # Check conversation category
+        channel = interaction.channel
+        if not channel or not hasattr(channel, 'category_id'):
+            await interaction.response.send_message(
+                "❌ This command must be used in a text channel.", ephemeral=True
+            )
+            return False
+
+        if channel.category_id != self.settings.discord_conversation_category_id:
+            await interaction.response.send_message(
+                "❌ This command can only be used in conversation channels.", ephemeral=True
+            )
+            return False
+
+        return True
 
     async def _do_compact(self, interaction: discord.Interaction):
         """Perform compaction - summarize and reset."""
@@ -453,6 +482,10 @@ class NimbusCog(commands.Cog):
             await interaction.response.send_message(
                 "🔒 This bot is in owner-only mode.", ephemeral=True
             )
+            return
+
+        # Check this is a conversation channel
+        if not await self._check_conversation_channel(interaction):
             return
 
         await interaction.response.send_message(
