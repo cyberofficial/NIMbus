@@ -117,20 +117,36 @@ class NimbusCog(commands.Cog):
 
         # Send final response
         content = full_text.strip() if full_text else "(No response)"
-        if len(content) > 1990:  # Discord limit with some buffer
-            # Send as file attachment if too long
-            from io import BytesIO
-            file = discord.File(
-                BytesIO(content.encode()),
-                filename=f"response_{datetime.now().strftime('%H%M')}.txt"
-            )
-            await interaction.followup.send(
-                "Response too long - sent as file:", file=file
-            )
+        threshold = self.settings.discord_split_threshold
+        if len(content) > threshold:
+            chunks = self._split_at_word_boundary(content, threshold)
+            for i, chunk in enumerate(chunks):
+                if i == 0:
+                    await interaction.followup.send(chunk)
+                else:
+                    await interaction.channel.send(chunk)
         else:
             await interaction.followup.send(content)
 
         return content
+
+    def _split_at_word_boundary(self, text: str, threshold: int) -> list[str]:
+        """Split text at word boundaries, not mid-word."""
+        chunks = []
+        start = 0
+        while start < len(text):
+            if start + threshold >= len(text):
+                chunks.append(text[start:])
+                break
+            chunk = text[start:start + threshold]
+            last_space = chunk.rfind(' ')
+            if last_space == -1:
+                chunks.append(text[start:start + threshold])
+                start += threshold
+            else:
+                chunks.append(text[start:start + last_space])
+                start += last_space + 1
+        return chunks
 
     @app_commands.command(name="ask", description="Ask NIM a question")
     @app_commands.describe(question="Your question to ask NIM")
