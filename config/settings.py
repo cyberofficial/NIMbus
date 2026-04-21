@@ -76,8 +76,65 @@ class Settings(BaseSettings):
 
     # ==================== Discord Bot ====================
     discord_bot_token: str = Field(default="", validation_alias="DISCORD_BOT_TOKEN")
+
+    # Multiple guilds/servers support (comma-separated list of guild IDs)
+    @property
+    def discord_guild_ids(self) -> set[int]:
+        """Parse DISCORD_GUILD_ID as comma-separated list of guild IDs."""
+        raw = getattr(self, '_discord_guild_id_raw', '')
+        if not raw:
+            return set()
+        try:
+            return set(int(gid.strip()) for gid in raw.split(',') if gid.strip())
+        except ValueError:
+            return set()
+
+    @discord_guild_ids.setter
+    def discord_guild_ids(self, value: set[int]) -> None:
+        """Store guild IDs."""
+        self._discord_guild_id_raw = ','.join(str(gid) for gid in value)
+
+    # Legacy single guild support (for backward compatibility)
     discord_guild_id: int = Field(default=0, validation_alias="DISCORD_GUILD_ID")
+
+    # Multiple control channels (comma-separated list)
+    @property
+    def discord_control_channel_ids(self) -> set[int]:
+        """Parse DISCORD_CONTROL_CHANNEL_ID as comma-separated list."""
+        raw = getattr(self, '_discord_control_channel_id_raw', '')
+        if not raw:
+            return set()
+        try:
+            return set(int(cid.strip()) for cid in raw.split(',') if cid.strip())
+        except ValueError:
+            return set()
+
+    @discord_control_channel_ids.setter
+    def discord_control_channel_ids(self, value: set[int]) -> None:
+        """Store control channel IDs."""
+        self._discord_control_channel_id_raw = ','.join(str(cid) for cid in value)
+
+    # Single control channel ID (legacy)
     discord_control_channel_id: int = Field(default=0, validation_alias="DISCORD_CONTROL_CHANNEL_ID")
+
+    # Multiple conversation categories (comma-separated list)
+    @property
+    def discord_conversation_category_ids(self) -> set[int]:
+        """Parse DISCORD_CONVERSATION_CATEGORY_ID as comma-separated list."""
+        raw = getattr(self, '_discord_conversation_category_id_raw', '')
+        if not raw:
+            return set()
+        try:
+            return set(int(cid.strip()) for cid in raw.split(',') if cid.strip())
+        except ValueError:
+            return set()
+
+    @discord_conversation_category_ids.setter
+    def discord_conversation_category_ids(self, value: set[int]) -> None:
+        """Store conversation category IDs."""
+        self._discord_conversation_category_id_raw = ','.join(str(cid) for cid in value)
+
+    # Single conversation category ID (legacy)
     discord_conversation_category_id: int = Field(default=0, validation_alias="DISCORD_CONVERSATION_CATEGORY_ID")
 
     # Owner configuration for access control
