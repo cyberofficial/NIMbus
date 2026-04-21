@@ -189,7 +189,8 @@ class NimbusDiscordBot(commands.Bot):
                     await self._handle_conversation_message(
                         msg_data['channel'],
                         msg_data['user'],
-                        msg_data['content']
+                        msg_data['content'],
+                        msg_data.get('replied_message')
                     )
                     session.processing_queue.task_done()
                 except asyncio.TimeoutError:
@@ -200,7 +201,7 @@ class NimbusDiscordBot(commands.Bot):
         finally:
             session.is_processing = False
 
-    async def _handle_conversation_message(self, channel, user, content):
+    async def _handle_conversation_message(self, channel, user, content, replied_message=None):
         """Handle a message in a conversation channel."""
         from api.models.anthropic import MessagesRequest, Message
         from providers.rate_limit import GlobalRateLimiter
@@ -232,6 +233,14 @@ class NimbusDiscordBot(commands.Bot):
 
         # Get history
         history = self.conversation_manager.get_history_for_nim(channel.id)
+
+        # Add reply context if this is a reply
+        if replied_message:
+            reply_author = replied_message.author.display_name
+            reply_content = replied_message.content or "(no text content)"
+            if len(reply_content) > 500:
+                reply_content = reply_content[:500] + "..."
+            formatted_content = f"[Replying to {reply_author}'s message: \"{reply_content}\"]\n{formatted_content}"
 
         # Build request with system prompt
         messages = history + [{"role": "user", "content": formatted_content}]
@@ -333,12 +342,22 @@ class NimbusDiscordBot(commands.Bot):
 
         print(f"[DEBUG] Processing message: {message.content[:50]}", flush=True)
 
+        # Handle message replies for additional context
+        replied_message = None
+        if message.reference and message.reference.message_id:
+            try:
+                replied_message = await message.channel.fetch_message(message.reference.message_id)
+                print(f"[DEBUG] Message is reply to: {replied_message.author.display_name}: {replied_message.content[:50]}", flush=True)
+            except Exception as e:
+                print(f"[DEBUG] Failed to fetch replied message: {e}", flush=True)
+
         # Get session and queue message
         session = self.conversation_manager.get_session(message.channel.id)
         await session.processing_queue.put({
             'channel': message.channel,
             'user': message.author,
             'content': message.content,
+            'replied_message': replied_message,
         })
 
         # Process queue
