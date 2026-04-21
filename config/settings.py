@@ -104,6 +104,9 @@ class Settings(BaseSettings):
     # Skip file attachments (future feature: process files)
     discord_skip_files: bool = Field(default=True, validation_alias="DISCORD_SKIP_FILES")
 
+    # Message splitting threshold (Discord has 2000 char limit)
+    discord_split_threshold: int = Field(default=1900, validation_alias="DISCORD_SPLIT_THRESHOLD")
+
     @property
     def discord_enabled(self) -> bool:
         """Check if Discord bot is configured."""

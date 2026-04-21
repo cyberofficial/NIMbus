@@ -305,13 +305,38 @@ class NimbusDiscordBot(commands.Bot):
 
         # Send response (split into chunks if too long for Discord 2000 char limit)
         content_out = full_text.strip() if full_text else "(No response)"
-        if len(content_out) > 1900:
-            # Split into chunks of ~1900 chars and send multiple messages
-            chunks = [content_out[i:i+1900] for i in range(0, len(content_out), 1900)]
+        threshold = self.settings.discord_split_threshold
+        if len(content_out) > threshold:
+            chunks = self._split_at_word_boundary(content_out, threshold)
             for chunk in chunks:
                 await channel.send(chunk)
         else:
             await channel.send(content_out)
+
+    def _split_at_word_boundary(self, text: str, threshold: int) -> list[str]:
+        """Split text at word boundaries, not mid-word."""
+        chunks = []
+        start = 0
+        while start < len(text):
+            if start + threshold >= len(text):
+                # Remaining text fits in threshold
+                chunks.append(text[start:])
+                break
+
+            # Find the last space before threshold
+            chunk = text[start:start + threshold]
+            last_space = chunk.rfind(' ')
+
+            if last_space == -1:
+                # No space found, have to cut mid-word
+                chunks.append(text[start:start + threshold])
+                start += threshold
+            else:
+                # Cut at word boundary
+                chunks.append(text[start:start + last_space])
+                start += last_space + 1  # Skip the space
+
+        return chunks
 
     async def on_message(self, message: discord.Message):
         """Handle messages in conversation channels."""
