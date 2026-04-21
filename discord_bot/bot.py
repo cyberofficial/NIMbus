@@ -340,6 +340,11 @@ class NimbusDiscordBot(commands.Bot):
         if not is_conv:
             return
 
+        # Skip messages with attachments if configured
+        if self.settings.discord_skip_files and message.attachments:
+            print("[DEBUG] Skipping message with attachments", flush=True)
+            return
+
         print(f"[DEBUG] Processing message: {message.content[:50]}", flush=True)
 
         # Handle message replies for additional context

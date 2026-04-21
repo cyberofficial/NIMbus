@@ -101,6 +101,9 @@ class Settings(BaseSettings):
         validation_alias="DISCORD_SYSTEM_PROMPT"
     )
 
+    # Skip file attachments (future feature: process files)
+    discord_skip_files: bool = Field(default=True, validation_alias="DISCORD_SKIP_FILES")
+
     @property
     def discord_enabled(self) -> bool:
         """Check if Discord bot is configured."""
