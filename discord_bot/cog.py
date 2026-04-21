@@ -257,14 +257,15 @@ class NimbusCog(commands.Cog):
 
     async def _check_conversation_channel(self, interaction: discord.Interaction) -> bool:
         """Check if command is used in a valid conversation channel."""
-        # Check control channel
-        if interaction.channel_id == self.settings.discord_control_channel_id:
+        # Check if channel is a control channel
+        control_channel_ids = self.settings.discord_control_channel_ids or {self.settings.discord_control_channel_id}
+        if interaction.channel_id in control_channel_ids:
             await interaction.response.send_message(
                 "❌ Cannot use this command in the control channel.", ephemeral=True
             )
             return False
 
-        # Check conversation category
+        # Check conversation categories
         channel = interaction.channel
         if not channel or not hasattr(channel, 'category_id'):
             await interaction.response.send_message(
@@ -272,7 +273,8 @@ class NimbusCog(commands.Cog):
             )
             return False
 
-        if channel.category_id != self.settings.discord_conversation_category_id:
+        category_ids = self.settings.discord_conversation_category_ids or {self.settings.discord_conversation_category_id}
+        if channel.category_id not in category_ids:
             await interaction.response.send_message(
                 "❌ This command can only be used in conversation channels.", ephemeral=True
             )

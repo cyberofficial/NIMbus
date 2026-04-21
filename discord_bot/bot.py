@@ -47,7 +47,7 @@ class NimbusDiscordBot(commands.Bot):
             compact_threshold=settings.discord_compact_threshold,
         )
 
-        # Guild restriction
+        # Guild restriction (primary guild for backward compatibility)
         self._guild_id = settings.discord_guild_id
 
     async def setup_hook(self) -> None:
@@ -55,61 +55,70 @@ class NimbusDiscordBot(commands.Bot):
         # Add the main cog
         await self.add_cog(NimbusCog(self))
 
-        # Sync commands to specific guild only (faster update)
-        guild = discord.Object(id=self._guild_id)
-        self.tree.copy_global_to(guild=guild)
-        await self.tree.sync(guild=guild)
+        # Sync commands to all configured guilds
+        guild_ids = self.settings.discord_guild_ids or {self._guild_id}
+        for guild_id in guild_ids:
+            if guild_id:
+                guild = discord.Object(id=guild_id)
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+                logger.info(f"Discord bot commands synced to guild {guild_id}")
 
-        logger.info(f"Discord bot commands synced to guild {self._guild_id}")
+        if not self.settings.discord_guild_ids and not self._guild_id:
+            logger.warning("No guilds configured for command sync")
 
     async def on_ready(self) -> None:
         """Called when bot is ready."""
         logger.info(f"Discord bot logged in as {self.user} (ID: {self.user.id})")
 
-        # Send startup message to control channel
+        # Send startup message to control channels
         await self._send_control_startup()
 
     async def _send_control_startup(self) -> None:
-        """Send startup message to control channel and clean old bot messages."""
-        if not self.settings.discord_control_channel_id:
+        """Send startup message to all control channels and clean old bot messages."""
+        control_channel_ids = self.settings.discord_control_channel_ids
+        # Fallback to single channel for backward compatibility
+        if not control_channel_ids and self.settings.discord_control_channel_id:
+            control_channel_ids = {self.settings.discord_control_channel_id}
+
+        if not control_channel_ids:
             return
 
-        try:
-            channel = self.get_channel(self.settings.discord_control_channel_id)
-            if not channel:
-                logger.warning("Control channel not found")
-                return
+        for channel_id in control_channel_ids:
+            try:
+                channel = self.get_channel(channel_id)
+                if not channel:
+                    logger.warning(f"Control channel {channel_id} not found")
+                    continue
 
-            # Clean old bot messages from control channel (max 100 to be safe on startup)
-            await self._cleanup_control_channel(channel)
+                # Clean old bot messages from control channel
+                await self._cleanup_control_channel(channel)
 
-            embed = discord.Embed(
-                title="NIMbus Bot Online",
-                description="Discord bot is ready to handle requests.",
-                color=discord.Color.green(),
-            )
-            embed.add_field(name="Model", value=self.settings.model, inline=True)
-            embed.add_field(
-                name="Max Tokens",
-                value=f"{self.settings.discord_max_tokens:,}",
-                inline=True,
-            )
-            embed.add_field(
-                name="Compact Threshold",
-                value=f"{self.settings.discord_compact_threshold:.0%}",
-                inline=True,
-            )
+                embed = discord.Embed(
+                    title="NIMbus Bot Online",
+                    description="Discord bot is ready to handle requests.",
+                    color=discord.Color.green(),
+                )
+                embed.add_field(name="Model", value=self.settings.model, inline=True)
+                embed.add_field(
+                    name="Max Tokens",
+                    value=f"{self.settings.discord_max_tokens:,}",
+                    inline=True,
+                )
+                embed.add_field(
+                    name="Compact Threshold",
+                    value=f"{self.settings.discord_compact_threshold:.0%}",
+                    inline=True,
+                )
 
-            # Import and add control panel view
-            from .views import ControlPanelView
-            view = ControlPanelView()
-            self.add_view(view)  # Register persistent view
-            await channel.send(embed=embed, view=view)
+                # Import and add control panel view
+                from .views import ControlPanelView
+                view = ControlPanelView()
+                self.add_view(view)  # Register persistent view
+                await channel.send(embed=embed, view=view)
 
-        except Exception as e:
-            logger.error(f"Failed to send control startup: {e}")
-
-
+            except Exception as e:
+                logger.error(f"Failed to send control startup to channel {channel_id}: {e}")
 
     async def _cleanup_control_channel(self, channel: discord.TextChannel, limit: int = 100) -> None:
         """Delete old bot messages from control channel."""
@@ -160,9 +169,15 @@ class NimbusDiscordBot(commands.Bot):
         await self.start(self.settings.discord_bot_token)
 
     async def is_conversation_channel(self, channel_id: int) -> bool:
-        """Check if a channel is in the conversation category."""
-        if not self.settings.discord_conversation_category_id:
+        """Check if a channel is in one of the conversation categories."""
+        category_ids = self.settings.discord_conversation_category_ids
+        # Fallback to single category for backward compatibility
+        if not category_ids and self.settings.discord_conversation_category_id:
+            category_ids = {self.settings.discord_conversation_category_id}
+
+        if not category_ids:
             return False
+
         channel = self.get_channel(channel_id)
         if not channel:
             # Try fetching from API if not in cache
@@ -172,7 +187,8 @@ class NimbusDiscordBot(commands.Bot):
                 return False
         if not channel:
             return False
-        return getattr(channel, 'category_id', None) == self.settings.discord_conversation_category_id
+
+        return getattr(channel, 'category_id', None) in category_ids
 
     async def _process_message_queue(self, channel_id: int):
         """Process messages in FIFO order for a channel."""
@@ -236,9 +252,6 @@ class NimbusDiscordBot(commands.Bot):
         # Format message with username for context
         formatted_content = f"{user.display_name}: {content}"
 
-        # Get history
-        history = self.conversation_manager.get_history_for_nim(channel.id)
-
         # Add reply context if this is a reply
         if replied_message:
             reply_author = replied_message.author.display_name
@@ -246,6 +259,9 @@ class NimbusDiscordBot(commands.Bot):
             if len(reply_content) > 500:
                 reply_content = reply_content[:500] + "..."
             formatted_content = f"[Replying to {reply_author}'s message: \"{reply_content}\"]\n{formatted_content}"
+
+        # Get history
+        history = self.conversation_manager.get_history_for_nim(channel.id)
 
         # Build request with system prompt
         messages = history + [{"role": "user", "content": formatted_content}]
@@ -310,9 +326,9 @@ class NimbusDiscordBot(commands.Bot):
 
         # Send response (split into chunks if too long for Discord 2000 char limit)
         content_out = full_text.strip() if full_text else "(No response)"
-        threshold = self.settings.discord_split_threshold
-        if len(content_out) > threshold:
-            chunks = self._split_at_word_boundary(content_out, threshold)
+        if len(content_out) > 1900:
+            # Split into chunks of ~1900 chars and send multiple messages
+            chunks = [content_out[i:i+1900] for i in range(0, len(content_out), 1900)]
             for chunk in chunks:
                 await channel.send(chunk)
         else:
@@ -365,19 +381,16 @@ class NimbusDiscordBot(commands.Bot):
         if message.content.startswith('/'):
             print("[DEBUG] Skipping command message", flush=True)
             return
-        if message.channel.id == self.settings.discord_control_channel_id:
-            print("[DEBUG] Skipping control channel", flush=True)
+
+        # Skip messages with attachments if configured
+        if self.settings.discord_skip_files and message.attachments:
+            print("[DEBUG] Skipping message with attachments", flush=True)
             return
 
         # Check conversation category
         is_conv = await self.is_conversation_channel(message.channel.id)
         print(f"[DEBUG] is_conversation_channel: {is_conv}", flush=True)
         if not is_conv:
-            return
-
-        # Skip messages with attachments if configured
-        if self.settings.discord_skip_files and message.attachments:
-            print("[DEBUG] Skipping message with attachments", flush=True)
             return
 
         print(f"[DEBUG] Processing message: {message.content[:50]}", flush=True)
