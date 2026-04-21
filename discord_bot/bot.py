@@ -211,6 +211,11 @@ class NimbusDiscordBot(commands.Bot):
         if self.settings.discord_owner_only and user.id != self.settings.discord_owner_id:
             return
 
+        # Check if user is blocked
+        from .user_blocking import is_blocked
+        if is_blocked(user.id):
+            return
+
         # Check rate limits (per-channel cooldown)
         allowed, _ = await self.rate_limiter.check_user_rate(user.id, channel.id)
         if not allowed:
@@ -340,6 +345,11 @@ class NimbusDiscordBot(commands.Bot):
 
     async def on_message(self, message: discord.Message):
         """Handle messages in conversation channels."""
+        # Check if user is blocked
+        from .user_blocking import is_blocked
+        if is_blocked(message.author.id):
+            return
+
         # Always print to console for debugging
         print(f"[DEBUG on_message] {message.author.display_name}: {message.content[:50]}", flush=True)
 

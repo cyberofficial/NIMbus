@@ -61,13 +61,19 @@ class ConversationManager:
 
     def get_history(self, channel_id: int) -> List[dict]:
         """Get conversation history formatted for NIM API."""
+        from .user_blocking import is_blocked
         session = self.get_session(channel_id)
         if not session:
             return []
-        return [{"role": m.role, "content": m.content} for m in session.messages]
+        return [
+            {"role": m.role, "content": m.content}
+            for m in session.messages
+            if m.user_id is None or not is_blocked(m.user_id)
+        ]
 
     def get_history_for_nim(self, channel_id: int) -> List[dict]:
         """Get conversation history with user context for NIM API."""
+        from .user_blocking import is_blocked
         session = self.get_session(channel_id)
         if not session:
             return []
@@ -77,6 +83,8 @@ class ConversationManager:
                 "content": f"{m.username}: {m.content}" if m.username else m.content
             }
             for m in session.messages
+            if m.user_id is None or not is_blocked(m.user_id)
+        ]
         ]
 
     def get_token_count(self, channel_id: int) -> int:

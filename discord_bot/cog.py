@@ -39,6 +39,10 @@ class NimbusCog(commands.Cog):
 
     def _check_owner_access(self, user_id: int) -> bool:
         """Check if user has access based on owner-only mode."""
+        # Check if user is blocked
+        from .user_blocking import is_blocked
+        if is_blocked(user_id):
+            return False
         if not self.settings.discord_owner_only:
             return True  # Public mode - anyone can use
         return user_id == self.settings.discord_owner_id
@@ -152,6 +156,11 @@ class NimbusCog(commands.Cog):
     @app_commands.describe(question="Your question to ask NIM")
     async def ask(self, interaction: discord.Interaction, question: str):
         """Ask NIM a question with conversation history."""
+        # Check if user is blocked (silent fail for blocked users)
+        from .user_blocking import is_blocked
+        if is_blocked(interaction.user.id):
+            return
+
         # Check owner access
         if not self._check_owner_access(interaction.user.id):
             await interaction.response.send_message(
@@ -545,9 +554,98 @@ class NimbusCog(commands.Cog):
 
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(name="block", description="Block a user from using the bot (owner only)")
+    @app_commands.describe(user="The user to block")
+    async def block(self, interaction: discord.Interaction, user: discord.Member):
+        """Block a user from using the bot."""
+        # Only owner can block users
+        if interaction.user.id != self.settings.discord_owner_id:
+            await interaction.response.send_message(
+                "🔒 Only the bot owner can block users.", ephemeral=True
+            )
+            return
+
+        # Can't block the owner
+        if user.id == self.settings.discord_owner_id:
+            await interaction.response.send_message(
+                "❌ Cannot block the bot owner.", ephemeral=True
+            )
+            return
+
+        # Can't block the bot itself
+        if user.id == self.bot.user.id:
+            await interaction.response.send_message(
+                "❌ Cannot block the bot.", ephemeral=True
+            )
+            return
+
+        from .user_blocking import block_user
+        newly_blocked = block_user(user.id)
+
+        if newly_blocked:
+            await interaction.response.send_message(
+                f"🚫 Blocked {user.display_name} ({user.id}). They can no longer use the bot.",
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                f"ℹ️ {user.display_name} is already blocked.", ephemeral=True
+            )
+
+    @app_commands.command(name="unblock", description="Unblock a user (owner only)")
+    @app_commands.describe(user="The user to unblock")
+    async def unblock(self, interaction: discord.Interaction, user: discord.Member):
+        """Unblock a previously blocked user."""
+        # Only owner can unblock users
+        if interaction.user.id != self.settings.discord_owner_id:
+            await interaction.response.send_message(
+                "🔒 Only the bot owner can unblock users.", ephemeral=True
+            )
+            return
+
+        from .user_blocking import unblock_user
+        was_unblocked = unblock_user(user.id)
+
+        if was_unblocked:
+            await interaction.response.send_message(
+                f"✅ Unblocked {user.display_name} ({user.id}). They can now use the bot again.",
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                f"ℹ️ {user.display_name} was not blocked.", ephemeral=True
+            )
+
+    @app_commands.command(name="blocked", description="List blocked users (owner only)")
+    async def blocked(self, interaction: discord.Interaction):
+        """List all blocked users."""
+        # Only owner can see blocked list
+        if interaction.user.id != self.settings.discord_owner_id:
+            await interaction.response.send_message(
+                "🔒 Only the bot owner can view blocked users.", ephemeral=True
+            )
+            return
+
+        from .user_blocking import get_blocked_users
+        blocked_users = get_blocked_users()
+
+        if not blocked_users:
+            await interaction.response.send_message(
+                "✅ No users are currently blocked.", ephemeral=True
+            )
+            return
+
+        blocked_list = "\n".join(f"• <@{uid}> ({uid})" for uid in blocked_users)
+        await interaction.response.send_message(
+            f"🚫 **Blocked Users:**\n{blocked_list}", ephemeral=True
+        )
+
     @ask.error
     @compact.error
     @new.error
+    @block.error
+    @unblock.error
+    @blocked.error
     async def handle_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ):
