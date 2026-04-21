@@ -1,0 +1,359 @@
+"""Discord bot client integration with NIMbus."""
+
+import asyncio
+import os
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+from loguru import logger
+
+from config.settings import Settings
+from providers.provider import NvidiaNimProvider
+
+from .cog import NimbusCog
+from .conversation import ConversationManager
+from .rate_limit import DiscordRateLimiter
+
+
+class NimbusDiscordBot(commands.Bot):
+    """Discord bot for NIMbus - NVIDIA NIM proxy."""
+
+    def __init__(self, settings: Settings, provider: NvidiaNimProvider):
+        # Set up intents - need messages and guilds for live chat
+        intents = discord.Intents.default()
+        intents.messages = True  # Required for on_message event
+        intents.message_content = True  # Required for reading message content
+        intents.guilds = True  # Required for channel category access
+
+        super().__init__(
+            command_prefix=None,  # Slash commands only
+            intents=intents,
+        )
+
+        self.settings = settings
+        self.provider = provider
+
+        # Initialize rate limiter
+        self.rate_limiter = DiscordRateLimiter(
+            user_cooldown=settings.discord_user_cooldown,
+            server_limit=settings.discord_server_limit,
+            server_window=settings.discord_server_window,
+        )
+
+        # Initialize conversation manager
+        self.conversation_manager = ConversationManager(
+            max_tokens=settings.discord_max_tokens,
+            compact_threshold=settings.discord_compact_threshold,
+        )
+
+        # Guild restriction
+        self._guild_id = settings.discord_guild_id
+
+    async def setup_hook(self) -> None:
+        """Set up bot - called before login."""
+        # Add the main cog
+        await self.add_cog(NimbusCog(self))
+
+        # Sync commands to specific guild only (faster update)
+        guild = discord.Object(id=self._guild_id)
+        self.tree.copy_global_to(guild=guild)
+        await self.tree.sync(guild=guild)
+
+        logger.info(f"Discord bot commands synced to guild {self._guild_id}")
+
+    async def on_ready(self) -> None:
+        """Called when bot is ready."""
+        logger.info(f"Discord bot logged in as {self.user} (ID: {self.user.id})")
+
+        # Send startup message to control channel
+        await self._send_control_startup()
+
+    async def _send_control_startup(self) -> None:
+        """Send startup message to control channel and clean old bot messages."""
+        if not self.settings.discord_control_channel_id:
+            return
+
+        try:
+            channel = self.get_channel(self.settings.discord_control_channel_id)
+            if not channel:
+                logger.warning("Control channel not found")
+                return
+
+            # Clean old bot messages from control channel (max 100 to be safe on startup)
+            await self._cleanup_control_channel(channel)
+
+            embed = discord.Embed(
+                title="NIMbus Bot Online",
+                description="Discord bot is ready to handle requests.",
+                color=discord.Color.green(),
+            )
+            embed.add_field(name="Model", value=self.settings.model, inline=True)
+            embed.add_field(
+                name="Max Tokens",
+                value=f"{self.settings.discord_max_tokens:,}",
+                inline=True,
+            )
+            embed.add_field(
+                name="Compact Threshold",
+                value=f"{self.settings.discord_compact_threshold:.0%}",
+                inline=True,
+            )
+
+            # Import and add control panel view
+            from .views import ControlPanelView
+            view = ControlPanelView()
+            self.add_view(view)  # Register persistent view
+            await channel.send(embed=embed, view=view)
+
+        except Exception as e:
+            logger.error(f"Failed to send control startup: {e}")
+
+
+
+    async def _cleanup_control_channel(self, channel: discord.TextChannel, limit: int = 100) -> None:
+        """Delete old bot messages from control channel."""
+        from datetime import datetime, timedelta
+        from discord.utils import utcnow
+
+        now = utcnow()
+        bot_messages = []
+
+        try:
+            async for msg in channel.history(limit=limit):
+                # Delete bot's own messages and messages with our control panel embeds
+                is_bot_msg = msg.author.id == self.user.id
+                # Also delete messages that have our control panel embeds
+                has_embed = bool(msg.embeds) and any(
+                    e.title == "NIMbus Bot Online" for e in msg.embeds
+                )
+                if is_bot_msg or has_embed:
+                    bot_messages.append(msg)
+        except Exception as e:
+            logger.warning(f"Failed to fetch channel history: {e}")
+            return
+
+        if not bot_messages:
+            return
+
+        # Bulk delete recent messages (< 14 days)
+        recent = [m for m in bot_messages if (now - m.created_at) < timedelta(days=14)]
+        old = [m for m in bot_messages if (now - m.created_at) >= timedelta(days=14)]
+
+        if recent:
+            try:
+                await channel.delete_messages(recent)
+                logger.info(f"Cleaned {len(recent)} recent messages from control channel")
+            except Exception as e:
+                logger.warning(f"Bulk delete failed: {e}")
+
+        # Delete old messages individually
+        for msg in old:
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+
+    async def start_bot(self) -> None:
+        """Start the bot - called from FastAPI lifespan."""
+        logger.info("Starting Discord bot...")
+        await self.start(self.settings.discord_bot_token)
+
+    async def is_conversation_channel(self, channel_id: int) -> bool:
+        """Check if a channel is in the conversation category."""
+        if not self.settings.discord_conversation_category_id:
+            return False
+        channel = self.get_channel(channel_id)
+        if not channel:
+            # Try fetching from API if not in cache
+            try:
+                channel = await self.fetch_channel(channel_id)
+            except Exception:
+                return False
+        if not channel:
+            return False
+        return getattr(channel, 'category_id', None) == self.settings.discord_conversation_category_id
+
+    async def _process_message_queue(self, channel_id: int):
+        """Process messages in FIFO order for a channel."""
+        from .conversation import ConversationSession
+        session = self.conversation_manager.get_session(channel_id)
+        if not session or session.is_processing:
+            return
+
+        session.is_processing = True
+        try:
+            while not session.processing_queue.empty():
+                try:
+                    msg_data = await asyncio.wait_for(session.processing_queue.get(), timeout=1.0)
+                    await self._handle_conversation_message(
+                        msg_data['channel'],
+                        msg_data['user'],
+                        msg_data['content']
+                    )
+                    session.processing_queue.task_done()
+                except asyncio.TimeoutError:
+                    break
+                except Exception as e:
+                    logger.error(f"Error processing message in channel {channel_id}: {e}")
+                    break
+        finally:
+            session.is_processing = False
+
+    async def _handle_conversation_message(self, channel, user, content):
+        """Handle a message in a conversation channel."""
+        from api.models.anthropic import MessagesRequest, Message
+        from providers.rate_limit import GlobalRateLimiter
+        from api.request_utils import get_token_count
+
+        # Check owner access for owner-only mode
+        if self.settings.discord_owner_only and user.id != self.settings.discord_owner_id:
+            return
+
+        # Check rate limits (per-channel cooldown)
+        allowed, _ = await self.rate_limiter.check_user_rate(user.id, channel.id)
+        if not allowed:
+            return
+
+        allowed, _ = await self.rate_limiter.check_server_rate()
+        if not allowed:
+            await channel.send("⏳ Server rate limit hit. Please wait a moment.")
+            return
+
+        # Check for auto-compact
+        if self.conversation_manager.should_compact(channel.id):
+            await channel.send("🔄 Auto-compacting conversation...")
+            cog = self.get_cog('NimbusCog')
+            if cog:
+                await cog._do_compact_for_channel(channel)
+
+        # Format message with username for context
+        formatted_content = f"{user.display_name}: {content}"
+
+        # Get history
+        history = self.conversation_manager.get_history_for_nim(channel.id)
+
+        # Build request with system prompt
+        messages = history + [{"role": "user", "content": formatted_content}]
+        system_prompt = self.settings.discord_system_prompt
+        request_data = MessagesRequest(
+            model=self.settings.model,
+            messages=[Message(role=m["role"], content=m["content"]) for m in messages],
+            max_tokens=self.settings.discord_max_tokens,
+            system=system_prompt,
+        )
+
+        # Count tokens including system prompt
+        input_tokens = get_token_count(
+            request_data.messages, system_prompt, request_data.tools
+        )
+
+        # Log request
+        print(
+            f"[DISCORD-LIVE] {user.display_name} ({user.id}) in #{channel.name}: "
+            f"{content[:50]}{'...' if len(content) > 50 else ''}",
+            flush=True
+        )
+
+        # Show typing indicator
+        async with channel.typing():
+            global_limiter = GlobalRateLimiter.get_instance()
+            await global_limiter.wait_if_blocked()
+
+            full_text = ""
+            async with global_limiter.concurrency_slot():
+                try:
+                    import uuid
+                    request_id = f"discord_live_{uuid.uuid4().hex[:8]}"
+                    stream = self.provider.stream_response(
+                        request_data, input_tokens, request_id=request_id
+                    )
+
+                    async for chunk in stream:
+                        if chunk.strip():
+                            try:
+                                event_data = chunk.split("data: ", 1)[-1].strip()
+                                import json
+                                data = json.loads(event_data)
+                                if data.get("type") == "content_block_delta":
+                                    delta = data.get("delta", {})
+                                    if delta.get("type") == "text_delta":
+                                        full_text += delta.get("text", "")
+                            except Exception:
+                                continue
+                except Exception as e:
+                    await channel.send(f"❌ Error: {str(e)[:1900]}")
+                    return
+
+        # Store in conversation
+        if full_text:
+            self.conversation_manager.add_message_with_user(
+                channel.id, "user", content, user.id, user.display_name
+            )
+            self.conversation_manager.add_message_with_user(
+                channel.id, "assistant", full_text, None, "NIM"
+            )
+
+        # Send response (split into chunks if too long for Discord 2000 char limit)
+        content_out = full_text.strip() if full_text else "(No response)"
+        if len(content_out) > 1900:
+            # Split into chunks of ~1900 chars and send multiple messages
+            chunks = [content_out[i:i+1900] for i in range(0, len(content_out), 1900)]
+            for chunk in chunks:
+                await channel.send(chunk)
+        else:
+            await channel.send(content_out)
+
+    async def on_message(self, message: discord.Message):
+        """Handle messages in conversation channels."""
+        # Always print to console for debugging
+        print(f"[DEBUG on_message] {message.author.display_name}: {message.content[:50]}", flush=True)
+
+        # Skip bot messages immediately before any processing
+        if message.author.bot:
+            print("[DEBUG] Skipping bot message", flush=True)
+            return
+
+        # Skip DMs and slash command attempts
+        if not message.guild:
+            print("[DEBUG] Skipping DM", flush=True)
+            return
+        if message.content.startswith('/'):
+            print("[DEBUG] Skipping command message", flush=True)
+            return
+        if message.channel.id == self.settings.discord_control_channel_id:
+            print("[DEBUG] Skipping control channel", flush=True)
+            return
+
+        # Check conversation category
+        is_conv = await self.is_conversation_channel(message.channel.id)
+        print(f"[DEBUG] is_conversation_channel: {is_conv}", flush=True)
+        if not is_conv:
+            return
+
+        print(f"[DEBUG] Processing message: {message.content[:50]}", flush=True)
+
+        # Get session and queue message
+        session = self.conversation_manager.get_session(message.channel.id)
+        await session.processing_queue.put({
+            'channel': message.channel,
+            'user': message.author,
+            'content': message.content,
+        })
+
+        # Process queue
+        asyncio.create_task(self._process_message_queue(message.channel.id))
+
+    async def close_bot(self) -> None:
+        """Close the bot - called from FastAPI shutdown."""
+        logger.info("Shutting down Discord bot...")
+        await self.close()
+
+    async def on_command_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
+        """Handle command errors."""
+        logger.error(f"Command error: {error}")
+
+        if isinstance(error, commands.CommandNotFound):
+            return  # Ignore unknown commands
+
+        await ctx.send(f"An error occurred: {error}")

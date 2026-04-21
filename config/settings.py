@@ -74,6 +74,38 @@ class Settings(BaseSettings):
     log_file: str = "server.log"
     proxy_api_key: str = Field(default="", validation_alias="PROXY_API_KEY")
 
+    # ==================== Discord Bot ====================
+    discord_bot_token: str = Field(default="", validation_alias="DISCORD_BOT_TOKEN")
+    discord_guild_id: int = Field(default=0, validation_alias="DISCORD_GUILD_ID")
+    discord_control_channel_id: int = Field(default=0, validation_alias="DISCORD_CONTROL_CHANNEL_ID")
+    discord_conversation_category_id: int = Field(default=0, validation_alias="DISCORD_CONVERSATION_CATEGORY_ID")
+
+    # Owner configuration for access control
+    discord_owner_id: int = Field(default=0, validation_alias="DISCORD_OWNER_ID")
+    discord_owner_only: bool = Field(default=True, validation_alias="DISCORD_OWNER_ONLY")
+
+    # Token management for compaction
+    discord_max_tokens: int = Field(default=202000, validation_alias="DISCORD_MAX_TOKENS")
+    discord_compact_threshold: float = Field(default=0.8, validation_alias="DISCORD_COMPACT_THRESHOLD")
+
+    # Rate limiting
+    discord_user_cooldown: float = Field(default=10.0, validation_alias="DISCORD_USER_COOLDOWN")
+    discord_server_limit: int = Field(default=20, validation_alias="DISCORD_SERVER_LIMIT")
+    discord_server_window: float = Field(default=60.0, validation_alias="DISCORD_SERVER_WINDOW")
+
+    # System prompt for Discord conversations
+    discord_system_prompt: str = Field(
+        default="You are a helpful Discord bot. Be friendly, casual, and conversational. "
+               "Talk like a normal person - don't use formal analysis headers, bullet points, "
+               "or structured formatting unless specifically asked. Keep responses natural and direct.",
+        validation_alias="DISCORD_SYSTEM_PROMPT"
+    )
+
+    @property
+    def discord_enabled(self) -> bool:
+        """Check if Discord bot is configured."""
+        return bool(self.discord_bot_token and self.discord_guild_id)
+
     @field_validator("proxy_api_key", mode="after")
     @classmethod
     def validate_proxy_api_key(cls, v: str) -> str:
