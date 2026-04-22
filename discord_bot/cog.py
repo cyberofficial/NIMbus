@@ -642,12 +642,114 @@ class NimbusCog(commands.Cog):
             f"🚫 **Blocked Users:**\n{blocked_list}", ephemeral=True
         )
 
+    @app_commands.command(name="newchannel", description="Create a new AI conversation channel")
+    @app_commands.describe(name="Name for the new channel")
+    async def newchannel(self, interaction: discord.Interaction, name: str):
+        """Create a new conversation channel in the current server."""
+        # Check owner access
+        if not self._check_owner_access(interaction.user.id):
+            await interaction.response.send_message(
+                "🔒 This bot is in owner-only mode.", ephemeral=True
+            )
+            return
+
+        # Check if user has manage channels permission
+        if not interaction.user.guild_permissions.manage_channels:
+            await interaction.response.send_message(
+                "❌ You need 'Manage Channels' permission to create channels.", ephemeral=True
+            )
+            return
+
+        # Check this is a guild (not DM)
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "❌ This command can only be used in a server.", ephemeral=True
+            )
+            return
+
+        # Get conversation categories
+        category_ids = self.settings.discord_conversation_category_ids or {self.settings.discord_conversation_category_id}
+        if not category_ids:
+            await interaction.response.send_message(
+                "❌ No conversation categories configured.", ephemeral=True
+            )
+            return
+
+        # Find the category in this guild
+        category = None
+        for cat_id in category_ids:
+            cat = interaction.guild.get_channel(cat_id)
+            if cat:
+                category = cat
+                break
+
+        if not category:
+            await interaction.response.send_message(
+                "❌ Could not find a conversation category in this server.", ephemeral=True
+            )
+            return
+
+        # Clean channel name
+        clean_name = name.lower().replace(' ', '-')
+        clean_name = ''.join(c for c in clean_name if c.isalnum() or c == '-')
+        clean_name = clean_name[:100]  # Discord limit
+
+        if not clean_name:
+            await interaction.response.send_message(
+                "❌ Invalid channel name.", ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message(
+            f"➕ Creating channel #{clean_name}...", ephemeral=True
+        )
+
+        try:
+            # Create the channel
+            new_channel = await interaction.guild.create_text_channel(
+                name=clean_name,
+                category=category,
+                topic=f"NIM conversation thread - Created by {interaction.user.display_name}"
+            )
+
+            await interaction.followup.send(
+                f"✅ Created {new_channel.mention} in {category.mention}", ephemeral=True
+            )
+
+            # Send welcome message in new channel
+            embed = discord.Embed(
+                title="🤖 Live Conversation Channel",
+                description="Just type your messages - NIM will respond automatically! "
+                           "The bot tracks who's speaking for context.",
+                color=discord.Color.blue(),
+            )
+            embed.add_field(
+                name="Commands (also available)",
+                value="`/ask <question>` - One-shot question (no history)\n"
+                      "`/compact` - Summarize and restart\n"
+                      "`/new` - Clear without summary\n"
+                      "`/status` - Show bot status",
+                inline=False,
+            )
+            await new_channel.send(embed=embed)
+
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ I don't have permission to create channels.", ephemeral=True
+            )
+        except Exception as e:
+            logger.error(f"Failed to create channel: {e}")
+            await interaction.followup.send(
+                f"❌ Error creating channel: {e}", ephemeral=True
+            )
+
     @ask.error
     @compact.error
     @new.error
     @block.error
     @unblock.error
     @blocked.error
+    @newchannel.error
     async def handle_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ):
