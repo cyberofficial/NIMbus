@@ -251,9 +251,22 @@ class NimbusDiscordBot(commands.Bot):
             await channel.send("⏳ Server rate limit hit. Please wait a moment.")
             return
 
+        # Check for compaction warning (warns once 5% before threshold)
+        should_warn, percentage = self.conversation_manager.should_warn_about_compact(channel.id)
+        if should_warn:
+            threshold_pct = self.conversation_manager._compact_threshold * 100
+            await channel.send(
+                f"⚠️ This conversation is at **{percentage:.0%}** of the token limit. "
+                f"Auto-compaction will trigger at **{threshold_pct:.0%}** to summarize "
+                f"and reset the conversation."
+            )
+
         # Check for auto-compact
         if self.conversation_manager.should_compact(channel.id):
-            await channel.send("🔄 Auto-compacting conversation...")
+            await channel.send(
+                "🔄 Auto-compacting conversation...\n\n"
+                "*Tip: Run `/compact` manually to backup chat history to your DMs first.*"
+            )
             cog = self.get_cog('NimbusCog')
             if cog:
                 await cog._do_compact_for_channel(channel)

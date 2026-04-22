@@ -13,9 +13,43 @@ from loguru import logger
 from api.models.anthropic import MessagesRequest, Message
 from providers.rate_limit import GlobalRateLimiter
 from providers.text import extract_text_from_content
+from discord.permissions import Permissions
 
 if TYPE_CHECKING:
     from .bot import NimbusDiscordBot
+
+
+class CompactConfirmView(ui.View):
+    """View for confirming compaction with optional backup."""
+
+    def __init__(self, cog: "NimbusCog", channel: discord.TextChannel, user: discord.User):
+        super().__init__(timeout=60.0)
+        self.cog = cog
+        self.channel = channel
+        self.user = user
+        self.backup_requested = False
+
+    @ui.button(label="Backup & Compact", style=discord.ButtonStyle.green, emoji="💾")
+    async def backup_and_compact(
+        self, interaction: discord.Interaction, button: ui.Button
+    ):
+        """Backup chat history as markdown, then compact."""
+        await interaction.response.defer(ephemeral=True)
+        self.backup_requested = True
+        self.stop()
+        await self.cog._backup_and_compact_channel(
+            self.channel, self.user
+        )
+
+    @ui.button(label="Compact Without Backup", style=discord.ButtonStyle.blurple)
+    async def compact_without_backup(
+        self, interaction: discord.Interaction, button: ui.Button
+    ):
+        """Just compact without backing up."""
+        await interaction.response.defer(ephemeral=True)
+        self.backup_requested = False
+        self.stop()
+        await self.cog._compact_channel_direct(self.channel)
 
 
 class NimbusCog(commands.Cog):
@@ -235,7 +269,7 @@ class NimbusCog(commands.Cog):
         name="compact", description="Summarize conversation and restart"
     )
     async def compact(self, interaction: discord.Interaction):
-        """Manually trigger compaction."""
+        """Manually trigger compaction with backup option."""
         # Check owner access
         if not self._check_owner_access(interaction.user.id):
             await interaction.response.send_message(
@@ -247,13 +281,29 @@ class NimbusCog(commands.Cog):
         if not await self._check_conversation_channel(interaction):
             return
 
-        await interaction.response.send_message(
-            "🔄 Compacting conversation...", ephemeral=True
+        # Get conversation to check if there's anything to compact
+        messages, token_count = self.conversation_manager.get_compact_context(
+            interaction.channel_id
         )
-        await self._do_compact(interaction)
-        await interaction.followup.send(
-            "✅ Conversation compacted. New context started."
+        if not messages:
+            await interaction.response.send_message(
+                "❌ Nothing to compact yet.", ephemeral=True
+            )
+            return
+
+        # Show confirmation with backup option
+        embed = discord.Embed(
+            title="🗂️  Compact Conversation?",
+            description="Before compacting, would you like to backup the chat history?\n\n"
+                       "• **Backup & Compact**: DM you full chat log as a markdown file, then summarize\n"
+                       "• **Compact Without Backup**: Summarize without saving history\n\n"
+                       f"*Current: {len(messages)} messages ({token_count:,} tokens)*",
+            color=discord.Color.orange(),
         )
+        embed.set_footer(text="Backup timeout: 60 seconds")
+
+        view = CompactConfirmView(self, interaction.channel, interaction.user)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     async def _check_conversation_channel(self, interaction: discord.Interaction) -> bool:
         """Check if command is used in a valid conversation channel."""
@@ -365,6 +415,163 @@ class NimbusCog(commands.Cog):
             interaction.channel_id,
             f"[Previous conversation summary]: {summary_text}"
         )
+
+    async def _backup_and_compact_channel(
+        self, channel: discord.TextChannel, user: discord.User
+    ):
+        """Backup chat history, then compact."""
+        # Get conversation history
+        from .conversation import ConversationSession
+
+        messages, token_count = self.conversation_manager.get_compact_context(
+            channel.id
+        )
+
+        # Create markdown backup
+        backup_content = self._create_backup_markdown(channel, messages)
+
+        # Send DM with backup file
+        try:
+            dm = await user.create_dm()
+            import io
+            file = discord.File(
+                io.BytesIO(backup_content.encode('utf-8')),
+                filename=f"conversation_{channel.name}_{discord.utils.utcnow().strftime('%Y%m%d_%H%M%S')}.md"
+            )
+            await dm.send(
+                f"Here's the backup for your conversation in **{channel.name}**:",
+                file=file
+            )
+            await channel.send(f"✅ Backup sent to {user.mention}'s DMs!")
+        except Exception as e:
+            logger.warning(f"Failed to DM backup to {user.id}: {e}")
+            await channel.send(
+                f"⚠️ Could not DM backup to {user.mention}. Proceeding without backup..."
+            )
+
+        # Now do the actual compaction
+        await self._compact_channel_direct(channel)
+
+    def _create_backup_markdown(
+        self, channel: discord.TextChannel, messages: list[dict]
+    ) -> str:
+        """Create a markdown backup of the conversation."""
+        lines = [
+            f"# Conversation Backup - {channel.guild.name}",
+            f"**Channel:** {channel.name}",
+            f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"**Messages:** {len(messages)}",
+            "",
+            "---",
+            "",
+            "## Conversation History",
+            "",
+        ]
+
+        for msg in messages:
+            role = msg.get('role', 'unknown')
+            content = msg.get('content', '')
+
+            if role == 'user':
+                lines.append(f"### 👤 User")
+            elif role == 'assistant':
+                lines.append(f"### 🤖 Assistant")
+            else:
+                lines.append(f"### {role.capitalize()}")
+
+            lines.append("")
+            lines.append(content)
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    async def _compact_channel_direct(self, channel: discord.TextChannel):
+        """Compact a channel directly (no interaction context)."""
+        messages, token_count = self.conversation_manager.get_compact_context(
+            channel.id
+        )
+
+        if not messages:
+            await channel.send("Nothing to compact.")
+            return
+
+        await channel.send("🔄 Compacting conversation...")
+
+        # Build summary prompt
+        conversation_text = "\n\n".join(
+            f"{m['role'].capitalize()}: {m['content'][:500]}"
+            for m in messages
+        )
+        summary_prompt = (
+            "Please summarize the following conversation concisely, "
+            "preserving key context and decisions:\n\n"
+            f"{conversation_text[:8000]}"
+            "\n\nSummary:"
+        )
+
+        # Send to NIM for summary
+        summary_request = MessagesRequest(
+            model=self.settings.model,
+            messages=[Message(role="user", content=summary_prompt)],
+            max_tokens=2000,
+        )
+
+        from api.request_utils import get_token_count
+        input_tokens = get_token_count(
+            summary_request.messages, None, None
+        )
+
+        # Wait for summary
+        global_limiter = GlobalRateLimiter.get_instance()
+        await global_limiter.wait_if_blocked()
+
+        summary_text = ""
+        async with global_limiter.concurrency_slot():
+            try:
+                request_id = f"compact_{uuid.uuid4().hex[:8]}"
+                stream = self.provider.stream_response(
+                    summary_request, input_tokens, request_id=request_id
+                )
+
+                async for chunk in stream:
+                    if chunk.strip():
+                        try:
+                            event_data = chunk.split("data: ", 1)[-1].strip()
+                            import json
+                            data = json.loads(event_data)
+                            if data.get("type") == "content_block_delta":
+                                delta = data.get("delta", {})
+                                if delta.get("type") == "text_delta":
+                                    summary_text += delta.get("text", "")
+                        except Exception:
+                            continue
+            except Exception as e:
+                logger.error(f"Summary generation failed: {e}")
+                summary_text = "[Summary generation failed]"
+
+        # Delete messages from channel
+        await self._clear_channel_messages(channel)
+
+        # Post summary as new first message
+        if summary_text:
+            embed = discord.Embed(
+                title="📝 Conversation Summary",
+                description=summary_text[:4000],
+                color=discord.Color.blue(),
+                timestamp=discord.utils.utcnow(),
+            )
+            embed.set_footer(text="New conversation context started from summary")
+            await channel.send(embed=embed)
+
+        # Update conversation manager with summary
+        self.conversation_manager.compact(
+            channel.id,
+            f"[Previous conversation summary]: {summary_text}"
+        )
+
+        await channel.send("✅ Conversation compacted. New context started.")
 
     async def _do_compact_for_channel(self, channel: discord.TextChannel):
         """Perform compaction for a channel (used by live mode auto-compact)."""
@@ -512,6 +719,66 @@ class NimbusCog(commands.Cog):
         await interaction.followup.send(
             "✅ Conversation cleared. New context started."
         )
+
+    @app_commands.command(
+        name="download", description="Download conversation history as markdown"
+    )
+    async def download(self, interaction: discord.Interaction):
+        """Send current conversation history to user's DMs as a file."""
+        # Check owner access
+        if not self._check_owner_access(interaction.user.id):
+            await interaction.response.send_message(
+                "🔒 This bot is in owner-only mode.", ephemeral=True
+            )
+            return
+
+        # Check this is a conversation channel
+        if not await self._check_conversation_channel(interaction):
+            return
+
+        messages, token_count = self.conversation_manager.get_compact_context(
+            interaction.channel_id
+        )
+
+        if not messages:
+            await interaction.response.send_message(
+                "❌ No conversation history to download yet.", ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message(
+            "📨 Sending conversation backup to your DMs...", ephemeral=True
+        )
+
+        # Generate backup
+        import io
+        from datetime import datetime
+
+        backup_content = self._create_backup_markdown(
+            interaction.channel, messages
+        )
+
+        # Send DM
+        try:
+            dm = await interaction.user.create_dm()
+            file = discord.File(
+                io.BytesIO(backup_content.encode('utf-8')),
+                filename=f"conversation_{interaction.channel.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+            )
+            await dm.send(
+                f"Here's the backup for conversation in **{interaction.channel.name}** "
+                f"({len(messages)} messages, {token_count:,} tokens):",
+                file=file
+            )
+            await interaction.followup.send(
+                "✅ Backup sent! Check your DMs.", ephemeral=True
+            )
+        except Exception as e:
+            logger.warning(f"Failed to DM backup: {e}")
+            await interaction.followup.send(
+                "❌ Couldn't DM you the backup. Make sure your DMs are open.",
+                ephemeral=True
+            )
 
     @app_commands.command(name="status", description="Show bot and rate limit status")
     async def status(self, interaction: discord.Interaction):

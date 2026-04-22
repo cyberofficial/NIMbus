@@ -27,6 +27,7 @@ class ConversationSession:
     last_activity: float = field(default_factory=time.monotonic)
     processing_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
     is_processing: bool = False
+    compaction_warning_shown: bool = False  # Track if we warned about auto-compact
 
 
 class ConversationManager:
@@ -97,6 +98,36 @@ class ConversationManager:
         """Check if conversation should be auto-compacted."""
         tokens = self.get_token_count(channel_id)
         return tokens >= (self._max_tokens * self._compact_threshold)
+
+    def should_warn_about_compact(self, channel_id: int) -> tuple[bool, float]:
+        """
+        Check if we should warn about upcoming auto-compaction.
+        Returns (should_warn, percentage).
+        Warns at 5% before the threshold (e.g., if threshold is 0.8, warn at 0.75).
+        """
+        tokens = self.get_token_count(channel_id)
+        warning_threshold = self._compact_threshold - 0.05
+        warning_threshold = max(0.0, warning_threshold)  # Don't go below 0
+        percentage = tokens / self._max_tokens if self._max_tokens > 0 else 0
+
+        session = self._sessions.get(channel_id)
+        if not session:
+            return False, percentage
+
+        # Only warn once per session unless warning flag is reset
+        if session.compaction_warning_shown:
+            return False, percentage
+
+        should_warn = percentage >= warning_threshold and percentage < self._compact_threshold
+        if should_warn:
+            session.compaction_warning_shown = True
+        return should_warn, percentage
+
+    def reset_compaction_warning(self, channel_id: int) -> None:
+        """Reset the compaction warning flag (called after compaction)."""
+        session = self._sessions.get(channel_id)
+        if session:
+            session.compaction_warning_shown = False
 
     def add_message(self, channel_id: int, role: str, content: str) -> dict:
         """
@@ -177,6 +208,9 @@ class ConversationManager:
             messages=[ConversationMessage(role="assistant", content=summary, username="Summary")],
             token_count=summary_tokens,
         )
+        # Persist after compaction and reset warning flag
+        from .persistence import save_conversations
+        save_conversations(self._sessions)
 
     def cleanup_inactive(self, max_age_hours: float = 24.0) -> int:
         """Remove sessions inactive longer than threshold. Returns count cleaned."""
