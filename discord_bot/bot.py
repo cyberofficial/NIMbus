@@ -86,11 +86,14 @@ class NimbusDiscordBot(commands.Bot):
     async def _send_control_startup(self) -> None:
         """Send startup message to all control channels and clean old bot messages."""
         control_channel_ids = self.settings.discord_control_channel_ids
-        # Fallback to single channel for backward compatibility
+        # Fallback to single channel for backward compatibility (only if set and non-zero)
         if not control_channel_ids and self.settings.discord_control_channel_id:
-            control_channel_ids = {self.settings.discord_control_channel_id}
+            single_id = self.settings.discord_control_channel_id
+            if single_id and single_id != 0:
+                control_channel_ids = {single_id}
 
         if not control_channel_ids:
+            logger.debug("No control channels configured, skipping startup message")
             return
 
         for channel_id in control_channel_ids:
