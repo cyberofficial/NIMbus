@@ -55,24 +55,33 @@ class NimbusDiscordBot(commands.Bot):
         # Add the main cog
         await self.add_cog(NimbusCog(self))
 
-        # Sync commands to all configured guilds
-        guild_ids = self.settings.discord_guild_ids or {self._guild_id}
-        for guild_id in guild_ids:
-            if guild_id:
-                guild = discord.Object(id=guild_id)
-                self.tree.copy_global_to(guild=guild)
-                await self.tree.sync(guild=guild)
-                logger.info(f"Discord bot commands synced to guild {guild_id}")
-
-        if not self.settings.discord_guild_ids and not self._guild_id:
-            logger.warning("No guilds configured for command sync")
+        # Commands are synced in on_ready after bot connects
 
     async def on_ready(self) -> None:
         """Called when bot is ready."""
         logger.info(f"Discord bot logged in as {self.user} (ID: {self.user.id})")
 
+        # Sync commands on every startup (Discord sometimes clears them)
+        await self._sync_commands_to_all_guilds()
+
         # Send startup message to control channels
         await self._send_control_startup()
+
+    async def _sync_commands_to_all_guilds(self) -> None:
+        """Sync slash commands to all configured guilds."""
+        guild_ids = self.settings.discord_guild_ids or {self._guild_id}
+        synced_count = 0
+        for guild_id in guild_ids:
+            if guild_id:
+                try:
+                    guild = discord.Object(id=guild_id)
+                    self.tree.copy_global_to(guild=guild)
+                    await self.tree.sync(guild=guild)
+                    synced_count += 1
+                    logger.info(f"Commands synced to guild {guild_id}")
+                except Exception as e:
+                    logger.error(f"Failed to sync commands to guild {guild_id}: {e}")
+        logger.info(f"Commands synced to {synced_count} guild(s)")
 
     async def _send_control_startup(self) -> None:
         """Send startup message to all control channels and clean old bot messages."""
