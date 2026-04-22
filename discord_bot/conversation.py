@@ -85,7 +85,6 @@ class ConversationManager:
             for m in session.messages
             if m.user_id is None or not is_blocked(m.user_id)
         ]
-        ]
 
     def get_token_count(self, channel_id: int) -> int:
         """Get current token count for a conversation (includes system prompt)."""
