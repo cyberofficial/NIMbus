@@ -192,6 +192,45 @@ Logs are written to the console. For verbose output, check the terminal where th
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
+## Discord Bot (Optional)
+
+A Discord bot integration is included for multi-user access through Discord channels.
+
+### Setup
+
+1. Create a Discord application at https://discord.com/developers/applications
+2. Enable "Message Content Intent" in the Bot section
+3. Invite the bot to your server with these permissions:
+   - Send Messages
+   - Read Messages/View Channels
+   - Manage Channels
+   - Read Message History
+6. Configure in `.env`:
+
+```dotenv
+DISCORD_BOT_TOKEN="your-bot-token-here"
+DISCORD_GUILD_ID="123456789"              # Your server ID (comma-separated for multiple)
+DISCORD_CONTROL_CHANNEL_ID="123456789"    # Admin channel for status (comma-separated)
+DISCORD_CONVERSATION_CATEGORY_ID="123456789"  # Category for AI channels (comma-separated)
+DISCORD_OWNER_ID="123456789"              # Your Discord user ID
+DISCORD_OWNER_ONLY=true                   # true = owner only, false = anyone in server
+```
+
+### Bot Commands
+
+| Command | Description |
+|---------|-------------|
+| `/newchannel [name]` | Create a new AI conversation channel |
+| `/clear` | Clear conversation history in current channel |
+| `/conversation [prompt]` | Start a conversation in current channel |
+
+### Features
+
+- **Multi-server support**: Configure multiple guilds/servers with comma-separated IDs
+- **Rate limiting**: Per-user cooldown and server-wide limits
+- **Conversation compaction**: Auto-summarizes long conversations when token limit approaches
+- **Message splitting**: Automatically splits long responses for Discord's 2000 char limit
+
 ## License
 
 AGPL-3.0 - See [LICENSE](LICENSE) for details.
