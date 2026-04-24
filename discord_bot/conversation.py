@@ -129,35 +129,51 @@ class ConversationManager:
         if session:
             session.compaction_warning_shown = False
 
-    def add_message(self, channel_id: int, role: str, content: str) -> dict:
+    def add_message(self, channel_id: int, role: str, content: str, auto_compact: bool = True) -> dict:
         """
         Add message and return status.
 
-        Returns: {"status": "ok" | "auto_compact" | "needs_compaction"}
+        Returns: {"status": "ok" | "auto_compact" | "needs_compaction" | "dropped"}
         """
-        return self.add_message_with_user(channel_id, role, content, None, "")
+        return self.add_message_with_user(channel_id, role, content, None, "", auto_compact)
 
     def add_message_with_user(
         self, channel_id: int, role: str, content: str,
-        user_id: Optional[int] = None, username: str = ""
+        user_id: Optional[int] = None, username: str = "",
+        auto_compact: bool = True
     ) -> dict:
         """
         Add message with user context and return status.
 
-        Returns: {"status": "ok" | "auto_compact" | "needs_compaction"}
+        Args:
+            auto_compact: If False and token limit reached, drop oldest messages instead of compacting
+
+        Returns: {"status": "ok" | "auto_compact" | "needs_compaction" | "dropped"}
         """
         msg_tokens = self._count_tokens(content)
         current_tokens = self.get_token_count(channel_id)
-
-        # Check if this message would exceed hard limit
-        if current_tokens + msg_tokens > self._max_tokens:
-            return {"status": "needs_compaction", "tokens": msg_tokens}
 
         # Get or create session
         session = self.get_session(channel_id)
         if session is None:
             session = ConversationSession(channel_id=channel_id)
             self._sessions[channel_id] = session
+
+        # If auto-compact is disabled, drop oldest messages until we have room
+        if not auto_compact:
+            # If this single message exceeds the limit, we can't add it
+            if msg_tokens > self._max_tokens:
+                return {"status": "needs_compaction", "tokens": msg_tokens}
+
+            # Drop oldest messages until we have room
+            while session.messages and (session.token_count + msg_tokens) > self._max_tokens:
+                # Remove oldest message (index 1 to preserve system/first message if possible, or index 0)
+                # Actually we want FIFO, so remove from index 0
+                oldest = session.messages.pop(0)
+                oldest_tokens = self._count_tokens(oldest.content)
+                session.token_count -= oldest_tokens
+                if session.token_count < 0:
+                    session.token_count = 0
 
         msg = ConversationMessage(
             role=role, content=content, user_id=user_id, username=username
@@ -166,8 +182,8 @@ class ConversationManager:
         session.token_count += msg_tokens
         session.last_activity = time.monotonic()
 
-        # Check if we should auto-compact
-        if self.should_compact(channel_id):
+        # Check if we should auto-compact (only if auto_compact is enabled)
+        if auto_compact and self.should_compact(channel_id):
             # Save before returning auto_compact status
             from .persistence import save_conversations
             save_conversations(self._sessions)
