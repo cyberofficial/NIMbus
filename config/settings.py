@@ -121,7 +121,7 @@ class Settings(BaseSettings):
     @property
     def discord_conversation_channel_ids(self) -> set[int]:
         """Parse DISCORD_CONVERSATION_CHANNEL_ID as comma-separated list of channel IDs."""
-        raw = getattr(self, '_discord_conversation_channel_id_raw', '')
+        raw = getattr(self, 'discord_conversation_channel_id_raw', '')
         if not raw:
             return set()
         try:
@@ -132,10 +132,10 @@ class Settings(BaseSettings):
     @discord_conversation_channel_ids.setter
     def discord_conversation_channel_ids(self, value: set[int]) -> None:
         """Store conversation channel IDs."""
-        self._discord_conversation_channel_id_raw = ','.join(str(cid) for cid in value)
+        self.discord_conversation_channel_id_raw = ','.join(str(cid) for cid in value)
 
     # Raw storage for conversation channel IDs (loaded from env)
-    _discord_conversation_channel_id_raw: str = Field(default="", validation_alias="DISCORD_CONVERSATION_CHANNEL_ID")
+    discord_conversation_channel_id_raw: str = Field(default="", validation_alias="DISCORD_CONVERSATION_CHANNEL_ID")
 
     # Multiple conversation categories (comma-separated list)
     @property

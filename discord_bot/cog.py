@@ -260,10 +260,10 @@ class NimbusCog(commands.Cog):
             # Store in conversation history
             if response_text:
                 self.conversation_manager.add_message(
-                    interaction.channel_id, "user", question
+                    interaction.channel_id, "user", question, self.settings.discord_auto_compact
                 )
                 self.conversation_manager.add_message(
-                    interaction.channel_id, "assistant", response_text
+                    interaction.channel_id, "assistant", response_text, self.settings.discord_auto_compact
                 )
 
     @app_commands.command(

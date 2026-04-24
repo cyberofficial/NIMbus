@@ -383,10 +383,12 @@ class NimbusDiscordBot(commands.Bot):
             # Store in conversation
             if full_text:
                 self.conversation_manager.add_message_with_user(
-                    channel.id, "user", content, user.id, user.display_name
+                    channel.id, "user", content, user.id, user.display_name,
+                    auto_compact=self.settings.discord_auto_compact
                 )
                 self.conversation_manager.add_message_with_user(
-                    channel.id, "assistant", full_text, None, "NIM"
+                    channel.id, "assistant", full_text, None, "NIM",
+                    auto_compact=self.settings.discord_auto_compact
                 )
 
             # Send response (split into chunks if too long for Discord 2000 char limit)
