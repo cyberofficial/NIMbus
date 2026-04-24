@@ -184,6 +184,20 @@ class Settings(BaseSettings):
     # Message splitting threshold (Discord has 2000 char limit)
     discord_split_threshold: int = Field(default=1900, validation_alias="DISCORD_SPLIT_THRESHOLD")
 
+    # Auto-compact feature toggle
+    discord_auto_compact: bool = Field(default=True, validation_alias="DISCORD_AUTO_COMPACT")
+
+    # Command toggles (all default to true)
+    discord_cmd_ask: bool = Field(default=True, validation_alias="DISCORD_CMD_ASK")
+    discord_cmd_compact: bool = Field(default=True, validation_alias="DISCORD_CMD_COMPACT")
+    discord_cmd_new: bool = Field(default=True, validation_alias="DISCORD_CMD_NEW")
+    discord_cmd_status: bool = Field(default=True, validation_alias="DISCORD_CMD_STATUS")
+    discord_cmd_download: bool = Field(default=True, validation_alias="DISCORD_CMD_DOWNLOAD")
+    discord_cmd_block: bool = Field(default=True, validation_alias="DISCORD_CMD_BLOCK")
+    discord_cmd_unblock: bool = Field(default=True, validation_alias="DISCORD_CMD_UNBLOCK")
+    discord_cmd_blocked: bool = Field(default=True, validation_alias="DISCORD_CMD_BLOCKED")
+    discord_cmd_newchannel: bool = Field(default=True, validation_alias="DISCORD_CMD_NEWCHANNEL")
+
     @property
     def discord_enabled(self) -> bool:
         """Check if Discord bot is configured."""

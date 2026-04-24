@@ -218,16 +218,17 @@ class NimbusCog(commands.Cog):
         # Acquire channel lock
         channel_lock = self.rate_limiter.acquire_channel_lock(interaction.channel_id)
         async with channel_lock:
-            # Check if auto-compact needed
-            if self.conversation_manager.should_compact(interaction.channel_id):
-                await interaction.response.send_message(
-                    "🔄 Auto-compacting conversation before proceeding...",
-                    ephemeral=True
-                )
-                await self._do_compact(interaction)
-                await interaction.followup.send(
-                    "Compaction complete. Now processing your question..."
-                )
+            # Check if auto-compact needed (if enabled)
+            if self.settings.discord_auto_compact:
+                if self.conversation_manager.should_compact(interaction.channel_id):
+                    await interaction.response.send_message(
+                        "🔄 Auto-compacting conversation before proceeding...",
+                        ephemeral=True
+                    )
+                    await self._do_compact(interaction)
+                    await interaction.followup.send(
+                        "Compaction complete. Now processing your question..."
+                    )
 
             # Get conversation history
             history = self.conversation_manager.get_history(interaction.channel_id)
