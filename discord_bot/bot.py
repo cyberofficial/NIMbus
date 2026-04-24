@@ -181,26 +181,35 @@ class NimbusDiscordBot(commands.Bot):
         await self.start(self.settings.discord_bot_token)
 
     async def is_conversation_channel(self, channel_id: int) -> bool:
-        """Check if a channel is in one of the conversation categories."""
+        """Check if a channel is in one of the conversation categories or conversation channels."""
+        # First check if it's a directly specified conversation channel
+        channel_ids = self.settings.discord_conversation_channel_ids
+        if channel_ids and channel_id in channel_ids:
+            return True
+
+        # Check category-based configuration
         category_ids = self.settings.discord_conversation_category_ids
         # Fallback to single category for backward compatibility
         if not category_ids and self.settings.discord_conversation_category_id:
             category_ids = {self.settings.discord_conversation_category_id}
 
-        if not category_ids:
-            return False
-
-        channel = self.get_channel(channel_id)
-        if not channel:
-            # Try fetching from API if not in cache
-            try:
-                channel = await self.fetch_channel(channel_id)
-            except Exception:
+        # If category IDs configured, check channel's category
+        if category_ids:
+            channel = self.get_channel(channel_id)
+            if not channel:
+                # Try fetching from API if not in cache
+                try:
+                    channel = await self.fetch_channel(channel_id)
+                except Exception:
+                    return False
+            if not channel:
                 return False
-        if not channel:
-            return False
 
-        return getattr(channel, 'category_id', None) in category_ids
+            return getattr(channel, 'category_id', None) in category_ids
+
+        # If no category IDs configured but we have specific channels, deny this channel
+        # If no configuration at all, deny (safer default)
+        return False
 
     async def _process_message_queue(self, channel_id: int):
         """Process messages in FIFO order for a channel."""
@@ -337,27 +346,27 @@ class NimbusDiscordBot(commands.Bot):
                             except Exception:
                                 continue
                 except Exception as e:
-                    await channel.send(f"❌ Error: {str(e)[:1900]}")
+                    await channel.send(f"Error: {str(e)[:1900]}")
                     return
 
-        # Store in conversation
-        if full_text:
-            self.conversation_manager.add_message_with_user(
-                channel.id, "user", content, user.id, user.display_name
-            )
-            self.conversation_manager.add_message_with_user(
-                channel.id, "assistant", full_text, None, "NIM"
-            )
+            # Store in conversation
+            if full_text:
+                self.conversation_manager.add_message_with_user(
+                    channel.id, "user", content, user.id, user.display_name
+                )
+                self.conversation_manager.add_message_with_user(
+                    channel.id, "assistant", full_text, None, "NIM"
+                )
 
-        # Send response (split into chunks if too long for Discord 2000 char limit)
-        content_out = full_text.strip() if full_text else "(No response)"
-        if len(content_out) > 1900:
-            # Split into chunks of ~1900 chars and send multiple messages
-            chunks = [content_out[i:i+1900] for i in range(0, len(content_out), 1900)]
-            for chunk in chunks:
-                await channel.send(chunk)
-        else:
-            await channel.send(content_out)
+            # Send response (split into chunks if too long for Discord 2000 char limit)
+            content_out = full_text.strip() if full_text else "(No response)"
+            if len(content_out) > 1900:
+                # Split into chunks of ~1900 chars and send multiple messages
+                chunks = [content_out[i:i+1900] for i in range(0, len(content_out), 1900)]
+                for chunk in chunks:
+                    await channel.send(chunk)
+            else:
+                await channel.send(content_out)
 
     def _split_at_word_boundary(self, text: str, threshold: int) -> list[str]:
         """Split text at word boundaries, not mid-word."""

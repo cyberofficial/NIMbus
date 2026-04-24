@@ -117,6 +117,26 @@ class Settings(BaseSettings):
     # Single control channel ID (legacy)
     discord_control_channel_id: int = Field(default=0, validation_alias="DISCORD_CONTROL_CHANNEL_ID")
 
+    # Multiple conversation channels - specific channels to respond in (comma-separated)
+    @property
+    def discord_conversation_channel_ids(self) -> set[int]:
+        """Parse DISCORD_CONVERSATION_CHANNEL_ID as comma-separated list of channel IDs."""
+        raw = getattr(self, '_discord_conversation_channel_id_raw', '')
+        if not raw:
+            return set()
+        try:
+            return set(int(cid.strip()) for cid in raw.split(',') if cid.strip())
+        except ValueError:
+            return set()
+
+    @discord_conversation_channel_ids.setter
+    def discord_conversation_channel_ids(self, value: set[int]) -> None:
+        """Store conversation channel IDs."""
+        self._discord_conversation_channel_id_raw = ','.join(str(cid) for cid in value)
+
+    # Raw storage for conversation channel IDs (loaded from env)
+    _discord_conversation_channel_id_raw: str = Field(default="", validation_alias="DISCORD_CONVERSATION_CHANNEL_ID")
+
     # Multiple conversation categories (comma-separated list)
     @property
     def discord_conversation_category_ids(self) -> set[int]:
@@ -168,6 +188,42 @@ class Settings(BaseSettings):
     def discord_enabled(self) -> bool:
         """Check if Discord bot is configured."""
         return bool(self.discord_bot_token and self.discord_guild_id)
+
+    def is_conversation_channel(self, channel_id: int, category_id: int | None = None) -> bool:
+        """Check if a channel is a valid conversation channel.
+
+        Priority:
+        1. If specific conversation channels are configured, check if channel_id is in the list
+        2. If conversation categories are configured, check if category_id matches
+        3. If neither, return False (no allowed channels)
+
+        If both channels AND categories are set, channel must be in either list.
+        """
+        channel_ids = self.discord_conversation_channel_ids
+        category_ids = self.discord_conversation_category_ids
+
+        # Check if in specific channels list
+        in_channels = channel_id in channel_ids if channel_ids else False
+
+        # Check if in categories (direct match or passed category_id)
+        in_categories = False
+        if category_ids and category_id is not None:
+            in_categories = category_id in category_ids
+
+        # If both configured, check either
+        if channel_ids and category_ids:
+            return in_channels or in_categories
+
+        # If only channels configured
+        if channel_ids:
+            return in_channels
+
+        # If only categories configured
+        if category_ids:
+            return in_categories
+
+        # Nothing configured - allow nothing (safer default)
+        return False
 
     @field_validator("proxy_api_key", mode="after")
     @classmethod
