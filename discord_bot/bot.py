@@ -55,7 +55,37 @@ class NimbusDiscordBot(commands.Bot):
         # Add the main cog
         await self.add_cog(NimbusCog(self))
 
+        # Filter commands based on settings
+        await self._filter_commands_by_settings()
+
         # Commands are synced in on_ready after bot connects
+
+    async def _filter_commands_by_settings(self) -> None:
+        """Unregister commands that are disabled in settings."""
+        # Map command names to their setting
+        command_toggles = {
+            'ask': self.settings.discord_cmd_ask,
+            'compact': self.settings.discord_cmd_compact,
+            'new': self.settings.discord_cmd_new,
+            'status': self.settings.discord_cmd_status,
+            'download': self.settings.discord_cmd_download,
+            'block': self.settings.discord_cmd_block,
+            'unblock': self.settings.discord_cmd_blocked,
+            'blocked': self.settings.discord_cmd_blocked,
+            'newchannel': self.settings.discord_cmd_newchannel,
+        }
+
+        removed = []
+        for command_name, is_enabled in command_toggles.items():
+            if not is_enabled:
+                try:
+                    self.tree.remove_command(command_name)
+                    removed.append(command_name)
+                except Exception as e:
+                    logger.debug(f"Could not remove command {command_name}: {e}")
+
+        if removed:
+            logger.info(f"Disabled Discord commands: {', '.join(removed)}")
 
     async def on_ready(self) -> None:
         """Called when bot is ready."""
@@ -273,15 +303,16 @@ class NimbusDiscordBot(commands.Bot):
                 f"and reset the conversation."
             )
 
-        # Check for auto-compact
-        if self.conversation_manager.should_compact(channel.id):
-            await channel.send(
-                "🔄 Auto-compacting conversation...\n\n"
-                "*Tip: Run `/compact` manually to backup chat history to your DMs first.*"
-            )
-            cog = self.get_cog('NimbusCog')
-            if cog:
-                await cog._do_compact_for_channel(channel)
+        # Check for auto-compact (if enabled)
+        if self.settings.discord_auto_compact:
+            if self.conversation_manager.should_compact(channel.id):
+                await channel.send(
+                    "🔄 Auto-compacting conversation...\n\n"
+                    "*Tip: Run `/compact` manually to backup chat history to your DMs first.*"
+                )
+                cog = self.get_cog('NimbusCog')
+                if cog:
+                    await cog._do_compact_for_channel(channel)
 
         # Format message with username for context
         formatted_content = f"{user.display_name}: {content}"
