@@ -315,7 +315,7 @@ class NimbusCog(commands.Cog):
             )
             return False
 
-        # Check conversation categories
+        # Check conversation channel validity
         channel = interaction.channel
         if not channel or not hasattr(channel, 'category_id'):
             await interaction.response.send_message(
@@ -323,10 +323,13 @@ class NimbusCog(commands.Cog):
             )
             return False
 
-        category_ids = self.settings.discord_conversation_category_ids or {self.settings.discord_conversation_category_id}
-        if channel.category_id not in category_ids:
+        channel = channel  # type: discord.TextChannel
+
+        # Use the settings helper to check if this is a valid conversation channel
+        category_id = getattr(channel, 'category_id', None)
+        if not self.settings.is_conversation_channel(interaction.channel_id, category_id):
             await interaction.response.send_message(
-                "❌ This command can only be used in conversation channels.", ephemeral=True
+                "❌ This command can only be used in configured conversation channels.", ephemeral=True
             )
             return False
 
@@ -936,11 +939,6 @@ class NimbusCog(commands.Cog):
 
         # Get conversation categories
         category_ids = self.settings.discord_conversation_category_ids or {self.settings.discord_conversation_category_id}
-        if not category_ids:
-            await interaction.response.send_message(
-                "❌ No conversation categories configured.", ephemeral=True
-            )
-            return
 
         # Find the category in this guild
         category = None
