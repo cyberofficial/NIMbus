@@ -208,13 +208,21 @@ A Discord bot integration is included for multi-user access through Discord chan
 6. Configure in `.env`:
 
 ```dotenv
+DISCORD_ENABLED=true                        # Master toggle - must be true to start bot
 DISCORD_BOT_TOKEN="your-bot-token-here"
-DISCORD_GUILD_ID="123456789"              # Your server ID (comma-separated for multiple)
-DISCORD_CONTROL_CHANNEL_ID="123456789"    # Admin channel for status (comma-separated)
+DISCORD_GUILD_ID="123456789"               # Your server ID (comma-separated for multiple)
+DISCORD_CONTROL_CHANNEL_ID="123456789"     # Admin channel for status (comma-separated)
 DISCORD_CONVERSATION_CATEGORY_ID="123456789"  # Category for AI channels (comma-separated)
-DISCORD_OWNER_ID="123456789"              # Your Discord user ID
-DISCORD_OWNER_ONLY=true                   # true = owner only, false = anyone in server
+DISCORD_CONVERSATION_CHANNEL_ID=""         # Specific channel IDs (alternative to categories)
+DISCORD_OWNER_ID="123456789"               # Your Discord user ID
+DISCORD_OWNER_ONLY=true                    # true = owner only, false = anyone in server
+DISCORD_AUTO_COMPACT=true                  # true = summarize/restart, false = drop oldest messages
 ```
+
+**Channel Configuration:**
+- **Categories**: Bot responds in any channel under `DISCORD_CONVERSATION_CATEGORY_ID`
+- **Specific Channels**: Bot only responds in `DISCORD_CONVERSATION_CHANNEL_ID` channels
+- **Both**: Can combine (bot responds in specified channels OR channels in categories)
 
 ### Bot Commands
 
@@ -228,8 +236,11 @@ DISCORD_OWNER_ONLY=true                   # true = owner only, false = anyone in
 
 - **Multi-server support**: Configure multiple guilds/servers with comma-separated IDs
 - **Rate limiting**: Per-user cooldown and server-wide limits
-- **Conversation compaction**: Auto-summarizes long conversations when token limit approaches
+- **Conversation modes**:
+  - `DISCORD_AUTO_COMPACT=true` (default): Summarizes and restarts conversation when token limit reached
+  - `DISCORD_AUTO_COMPACT=false`: Silently drops oldest messages to make room for new ones
 - **Message splitting**: Automatically splits long responses for Discord's 2000 char limit
+- **Command toggles**: Disable individual slash commands via `DISCORD_CMD_*` settings
 
 ## License
 
