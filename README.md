@@ -127,6 +127,9 @@ Browse all: [build.nvidia.com/explore/discover](https://build.nvidia.com/explore
 | Model | Use Case | Context |
 | --- | --- | --- |
 | `z-ai/glm5` | Coding and technical tasks | 202K |
+| `deepseek-ai/deepseek-v4-flash` | Fast, reasoning-enabled | 128K |
+| `deepseek-ai/deepseek-v4-pro` | Full power, no thinking | 128K |
+| `qwen/qwen3.5-397b-a17b` | Large general purpose | 32K |
 
 ## Configuration
 
@@ -135,6 +138,8 @@ Browse all: [build.nvidia.com/explore/discover](https://build.nvidia.com/explore
 | `MODEL` | Model identifier (`owner/model-name`) | `z-ai/glm5` |
 | `NVIDIA_NIM_API_KEY` | NVIDIA API key | **required** |
 | `NIM_MAX_TOKENS` | Max tokens for responses | `202000` |
+| `NIM_THINKING` | Enable thinking/reasoning content | `true` |
+| `NIM_REASONING_EFFORT` | Reasoning effort: `low`, `medium`, or `high` | `high` |
 | `PROVIDER_RATE_LIMIT` | Requests per window | `40` |
 | `PROVIDER_RATE_WINDOW` | Rate window in seconds | `60` |
 | `PROVIDER_MAX_CONCURRENCY` | Max concurrent streams | `5` |
@@ -143,6 +148,58 @@ Browse all: [build.nvidia.com/explore/discover](https://build.nvidia.com/explore
 | `HTTP_CONNECT_TIMEOUT` | Connect timeout in seconds | `2` |
 | `PORT` | Server port | `8082` |
 | `PROXY_API_KEY` | Optional proxy authentication (auto-generated if empty) | (random) |
+
+### Stream vs Buffer Modes
+
+NIMbus has two server modes controlled by `SERVER_TYPE`. Both produce Anthropic-format responses compatible with Claude Code, but they trade off latency for reliability differently.
+
+#### Stream Mode (`SERVER_TYPE=stream` — default)
+
+Tokens are relayed to Claude Code as NVIDIA generates them, just like a direct connection.
+
+- **Lowest latency** — Claude Code sees tokens immediately
+- **What happens during backend cutout**: The proxy sends a partial response with `stop_reason="max_tokens"` and logs a warning. Claude Code receives whatever was generated before the interruption.
+- **No retry** — streaming cannot replay already-sent tokens, so a dropped connection means a partial response.
+- **Best for** interactive use where you want to see output as it's produced.
+
+```
+Claude Code ──── SSE stream ──── NIMbus ──── SSE stream ──── NVIDIA NIM
+              (live tokens)               (live tokens)
+```
+
+If NVIDIA's backend cuts out mid-stream, the `SSEBuilder.truncated` flag is set and the final `message_delta` event carries `stop_reason: "max_tokens"`.
+
+#### Buffer Mode (`SERVER_TYPE=buffer`)
+
+The proxy waits for NVIDIA to finish generating the **complete** response before sending anything to Claude Code. If the backend drops the connection, the proxy automatically retries.
+
+- **Higher latency** — Claude Code waits until the full response is ready
+- **Automatic retry with exponential backoff** on connection loss (`APIConnectionError`) and timeouts (`APITimeoutError`)
+- **Configurable retry behavior**:
+  | Setting | Default | What it does |
+  |---|---|---|
+  | `PROVIDER_RETRY_ON_TRUNCATION` | `3` | Number of retry attempts before giving up |
+  | `PROVIDER_RETRY_DELAY` | `1.0` | Base delay between retries (seconds) — multiplies by attempt number |
+  | `PROVIDER_MAX_WAIT_TIME` | `30` | Seconds to wait for NVIDIA before timing out and retrying |
+- **Retries count against the rate limit** to prevent exceeding your quota when the backend is unstable
+- If all retries are exhausted, raises `StreamTruncatedError` (mapped to an HTTP 500 error)
+- **Best for** long-generation tasks where losing the response is worse than waiting
+
+```
+Claude Code ──── JSON response ──── NIMbus ──── (wait + retry if needed) ──── NVIDIA NIM
+              (all at once)                   (accumulate complete response)
+```
+
+**Which should I choose?**
+
+| Scenario | Recommendation |
+|---|---|
+| Interactive coding / quick questions | `stream` (default) |
+| Batch processing / generating large files | `buffer` |
+| Spotty network or unstable backend | `buffer` |
+| Lowest latency matters most | `stream` |
+
+> **Note:** NVIDIA's free tier occasionally drops connections mid-response. Stream mode will produce a partial answer; buffer mode will retry up to `PROVIDER_RETRY_ON_TRUNCATION` times to get a complete response.
 
 ### Optimization Settings
 
@@ -163,6 +220,7 @@ See [`.env.example`](.env.example) for all options.
 | Endpoint | Description |
 | --- | --- |
 | `POST /v1/messages` | Create a message (streaming) |
+| `POST /v1/messages/buffered` | Create a message (buffered, with retry) |
 | `POST /v1/messages/count_tokens` | Count tokens for a request |
 | `GET /health` | Health check |
 | `GET /status` | Server status |
@@ -205,10 +263,9 @@ A Discord bot integration is included for multi-user access through Discord chan
    - Read Messages/View Channels
    - Manage Channels
    - Read Message History
-6. Configure in `.env`:
+4. Configure in `.env`:
 
 ```dotenv
-DISCORD_ENABLED=true                        # Master toggle - must be true to start bot
 DISCORD_BOT_TOKEN="your-bot-token-here"
 DISCORD_GUILD_ID="123456789"               # Your server ID (comma-separated for multiple)
 DISCORD_CONTROL_CHANNEL_ID="123456789"     # Admin channel for status (comma-separated)
@@ -228,9 +285,15 @@ DISCORD_AUTO_COMPACT=true                  # true = summarize/restart, false = d
 
 | Command | Description |
 |---------|-------------|
+| `/ask [question]` | Ask NIM a question with conversation history |
+| `/compact` | Summarize conversation and restart (with backup option) |
+| `/new` | Clear conversation history without summary |
+| `/download` | Download conversation history as markdown |
+| `/status` | Show bot and rate limit status |
+| `/block [user]` | Block a user from using the bot (owner only) |
+| `/unblock [user]` | Unblock a user (owner only) |
+| `/blocked` | List blocked users (owner only) |
 | `/newchannel [name]` | Create a new AI conversation channel |
-| `/clear` | Clear conversation history in current channel |
-| `/conversation [prompt]` | Start a conversation in current channel |
 
 ### Features
 
