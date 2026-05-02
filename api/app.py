@@ -94,14 +94,32 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     logger.info("Starting Claude Code Proxy...")
 
-    # Messaging platform initialization removed - Discord/Telegram no longer supported
-    # This codebase exclusively uses NVIDIA NIM API endpoints
-    logger.info("Messaging platforms (Discord/Telegram) have been removed")
-
     # Store in app state for access in routes
     app.state.messaging_platform = None
     app.state.message_handler = None
     app.state.cli_manager = None
+    app.state.discord_bot = None
+
+    settings = get_settings()
+
+    # Discord Bot initialization (optional)
+    discord_bot = None
+    if settings.discord_enabled:
+        try:
+            from discord_bot.bot import NimbusDiscordBot
+            from api.dependencies import get_provider
+
+            provider = get_provider()
+            discord_bot = NimbusDiscordBot(settings, provider)
+
+            # Start bot in background task
+            asyncio.create_task(discord_bot.start_bot())
+            app.state.discord_bot = discord_bot
+            logger.info("Discord bot started")
+        except Exception as e:
+            logger.error(f"Failed to start Discord bot: {e}")
+    else:
+        logger.info("Discord bot not configured (DISCORD_BOT_TOKEN or DISCORD_GUILD_ID missing)")
 
     # Start background rate limit status updater
     status_task = asyncio.create_task(_rate_limit_status_updater())
@@ -111,10 +129,15 @@ async def lifespan(app: FastAPI):
     # Cleanup
     if status_task:
         status_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await status_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await status_task
 
-    # Messaging platform cleanup removed - Discord/Telegram no longer supported
+    # Discord bot cleanup
+    if discord_bot:
+        logger.info("Shutting down Discord bot...")
+        await _best_effort("discord_bot", discord_bot.close_bot())
+
+    # Provider cleanup
     logger.info("Shutdown requested, cleaning up...")
     await _best_effort("cleanup_provider", cleanup_provider())
 

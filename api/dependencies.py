@@ -42,6 +42,10 @@ def _create_provider(settings: Settings) -> BaseProvider:
         http_read_timeout=settings.http_read_timeout,
         http_write_timeout=settings.http_write_timeout,
         http_connect_timeout=settings.http_connect_timeout,
+        server_type=settings.server_type,
+        max_wait_time=settings.provider_max_wait_time,
+        retry_on_truncation=settings.provider_retry_on_truncation,
+        retry_delay=settings.provider_retry_delay,
     )
     provider = NvidiaNimProvider(config, nim_settings=settings.nim)
     logger.info("Provider initialized: NVIDIA NIM")

@@ -11,7 +11,7 @@ from loguru import logger
 from config.settings import Settings
 from providers.base import BaseProvider
 from providers.error_mapping import get_user_facing_error_message
-from providers.exceptions import InvalidRequestError, ProviderError
+from providers.exceptions import InvalidRequestError, ProviderError, StreamTruncatedError
 from providers.logging_utils import build_request_summary, log_request_compact
 
 from .dependencies import get_provider, get_settings
@@ -108,6 +108,102 @@ async def create_message(
             },
         )
 
+    except ProviderError:
+        raise
+    except Exception as e:
+        logger.error(f"Error: {e!s}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=getattr(e, "status_code", 500),
+            detail=get_user_facing_error_message(e),
+        ) from e
+
+
+@router.post("/v1/messages/buffered")
+async def create_message_buffered(
+    request_data: MessagesRequest,
+    raw_request: Request,
+    provider: BaseProvider = Depends(get_provider),
+    settings: Settings = Depends(get_settings),
+):
+    """Create a message (buffered/non-streaming mode).
+
+    Collects the full response before returning as JSON, with automatic
+    retry on transient NVIDIA backend connection drops. No streaming involved.
+    """
+    try:
+        if not request_data.messages:
+            raise InvalidRequestError("messages cannot be empty")
+
+        optimized = try_optimizations(request_data, settings)
+        if optimized is not None:
+            return optimized
+
+        request_id = f"req_{uuid.uuid4().hex[:12]}"
+        log_request_compact(logger, request_id, request_data)
+
+        input_tokens = get_token_count(
+            request_data.messages, request_data.system, request_data.tools
+        )
+
+        # Acquire rate limit slot (same as streaming path)
+        from providers.rate_limit import GlobalRateLimiter
+
+        limiter = GlobalRateLimiter.get_instance()
+        await limiter.wait_if_blocked()
+
+        # Log rate limit status (same as streaming path)
+        status = limiter.get_status()
+        current = status["current"]
+        max_req = status["max"]
+        remaining = status["remaining"]
+        reset_in = status["reset_in_seconds"]
+
+        if current > 0:
+            percentage = (current / max_req) * 100
+            if percentage >= 90:
+                emoji = "🔴"
+            elif percentage >= 70:
+                emoji = "🟡"
+            else:
+                emoji = "🟢"
+
+            bar_width = 20
+            filled = int((current / max_req) * bar_width)
+            bar = "█" * filled + "░" * (bar_width - filled)
+
+            if reset_in > 0:
+                print(
+                    f"{emoji} Rate Limit: [{bar}] {current}/{max_req} ({percentage:.0f}%) | {remaining} left | Resets in {reset_in:.1f}s | BUFFERED",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"{emoji} Rate Limit: [{bar}] {current}/{max_req} ({percentage:.0f}%) | {remaining} left | BUFFERED",
+                    flush=True,
+                )
+
+        response = await provider.buffered_request(
+            request_data,
+            input_tokens=input_tokens,
+            request_id=request_id,
+        )
+
+        # Use FastAPI's JSONResponse for proper content negotiation
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            content=response,
+            headers={
+                "X-Buffered": "true",
+                "X-Request-ID": request_id,
+            },
+        )
+
+    except StreamTruncatedError as e:
+        logger.error(f"BUFFERED_ERROR: {e!s}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"NVIDIA backend connection issue: {e!s}",
+        ) from e
     except ProviderError:
         raise
     except Exception as e:

@@ -8,6 +8,7 @@ included at top level for easy grep/filter.
 
 import json
 import logging
+import sys
 from pathlib import Path
 
 from loguru import logger
@@ -73,6 +74,19 @@ def configure_logging(log_file: str, *, force: bool = False) -> None:
 
     # Truncate log file on fresh start for clean debugging
     Path(log_file).write_text("")
+
+    # Add console sink: human-readable colored output at INFO+ level so
+    # connection failures and retries are visible in real-time.
+    logger.add(
+        sys.stderr,
+        level="INFO",
+        format=(
+            "<green>{time:HH:mm:ss.SSS}</green> | "
+            "<level>{level: <8}</level> | "
+            "<level>{message}</level>"
+        ),
+        colorize=True,
+    )
 
     # Add file sink: JSON lines, DEBUG level, context vars at top level
     logger.add(

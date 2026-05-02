@@ -78,6 +78,18 @@ class OverloadedError(ProviderError):
         )
 
 
+class StreamTruncatedError(ProviderError):
+    """Raised when the streaming response was cut off mid-stream."""
+
+    def __init__(self, message: str, raw_error: Any = None):
+        super().__init__(
+            message,
+            status_code=502,
+            error_type="stream_truncated_error",
+            raw_error=raw_error,
+        )
+
+
 class APIError(ProviderError):
     """Raised when the provider returns a generic API error."""
 
