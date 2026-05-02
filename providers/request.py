@@ -69,9 +69,9 @@ def build_request_body(request_data: Any, nim: NimSettings) -> dict:
     extra_body.setdefault(
         "chat_template_kwargs",
         {
-            "thinking": True,
-            "enable_thinking": True,
-            "reasoning_split": True,
+            "thinking": nim.thinking,
+            "enable_thinking": nim.thinking,
+            "reasoning_split": nim.thinking,
             "clear_thinking": False,
         },
     )
