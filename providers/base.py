@@ -22,6 +22,10 @@ class ProviderConfig(BaseModel):
     http_read_timeout: float = 300.0
     http_write_timeout: float = 10.0
     http_connect_timeout: float = 2.0
+    server_type: str = "stream"
+    max_wait_time: float = 30.0
+    retry_on_truncation: int = 3
+    retry_delay: float = 1.0
 
 
 class BaseProvider(ABC):
@@ -45,3 +49,14 @@ class BaseProvider(ABC):
         """Stream response in Anthropic SSE format."""
         if False:
             yield ""  # Required for ty/mypy to accept abstract async generator
+
+    @abstractmethod
+    async def buffered_request(
+        self,
+        request: Any,
+        input_tokens: int = 0,
+        *,
+        request_id: str | None = None,
+    ) -> dict:
+        """Send a non-streaming request and return complete Anthropic-format JSON response."""
+        ...
