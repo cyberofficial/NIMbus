@@ -46,6 +46,18 @@ class Settings(BaseSettings):
         default=5, validation_alias="PROVIDER_MAX_CONCURRENCY"
     )
 
+    # ==================== Server Type ====================
+    server_type: str = Field(default="stream", validation_alias="SERVER_TYPE")
+    provider_max_wait_time: float = Field(
+        default=30.0, ge=1.0, validation_alias="PROVIDER_MAX_WAIT_TIME"
+    )
+    provider_retry_on_truncation: int = Field(
+        default=3, ge=0, validation_alias="PROVIDER_RETRY_ON_TRUNCATION"
+    )
+    provider_retry_delay: float = Field(
+        default=1.0, ge=0, validation_alias="PROVIDER_RETRY_DELAY"
+    )
+
     # ==================== HTTP Client Timeouts ====================
     http_read_timeout: float = Field(
         default=300.0, validation_alias="HTTP_READ_TIMEOUT"
@@ -245,6 +257,14 @@ class Settings(BaseSettings):
         """Auto-generate API key if blank or placeholder (fallback)."""
         if not v or v == "<replaceme>":
             return generate_session_api_key()
+        return v
+
+    @field_validator("server_type", mode="after")
+    @classmethod
+    def validate_server_type(cls, v: str) -> str:
+        """Validate server_type is 'stream' or 'buffer'."""
+        if v not in ("stream", "buffer"):
+            raise ValueError(f"SERVER_TYPE must be 'stream' or 'buffer', got: {v!r}")
         return v
 
     @field_validator("model")
