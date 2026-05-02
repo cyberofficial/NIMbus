@@ -6,6 +6,7 @@ This module contains the NIM provider which handles:
 - Streaming response handling with SSE format conversion
 """
 
+import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator, Iterator
@@ -13,7 +14,7 @@ from typing import Any
 
 import httpx
 from loguru import logger
-from openai import AsyncOpenAI
+from openai import APIConnectionError, APITimeoutError, AsyncOpenAI
 
 from config.nim import NimSettings
 from providers.base import BaseProvider, ProviderConfig
@@ -26,6 +27,7 @@ from providers.header_capture import CapturedHeaders, HeaderCapturingTransport
 from providers.heuristic_tool_parser import HeuristicToolParser
 from providers.rate_limit import GlobalRateLimiter
 from providers.request import build_request_body
+from providers.exceptions import StreamTruncatedError
 from providers.sse_builder import SSEBuilder, map_stop_reason
 from providers.think_parser import ContentType, ThinkTagParser
 
@@ -79,6 +81,159 @@ class NvidiaNimProvider(BaseProvider):
         """Build request body for NIM API."""
         assert self._nim_settings is not None
         return build_request_body(request, self._nim_settings)
+
+    async def buffered_request(
+        self,
+        request: Any,
+        input_tokens: int = 0,
+        *,
+        request_id: str | None = None,
+    ) -> dict:
+        """Send a non-streaming request and return complete Anthropic-format JSON response.
+
+        With retry_on_truncation set, this will retry on transient errors
+        (APIConnectionError, APITimeoutError, and similar dropped connections)
+        to handle NVIDIA backend cutouts.
+        """
+        tag = self._provider_name
+        max_retries = self._config.retry_on_truncation
+        retry_delay = self._config.retry_delay
+        last_error = None
+
+        for attempt in range(max_retries + 1):
+            try:
+                if attempt > 0:
+                    logger.warning(
+                        "{}_BUFFERED: Retry attempt {}/{} after {}s delay",
+                        tag,
+                        attempt,
+                        max_retries,
+                        retry_delay * attempt,
+                    )
+                    await asyncio.sleep(retry_delay * attempt)
+
+                body = self._build_request_body(request)
+                req_tag = f" request_id={request_id}" if request_id else ""
+                logger.info(
+                    "{}_BUFFERED: attempt={}{} model={} msgs={} tools={}",
+                    tag,
+                    attempt + 1,
+                    req_tag,
+                    body.get("model"),
+                    len(body.get("messages", [])),
+                    len(body.get("tools", [])),
+                )
+
+                # Count every attempt (including retries) against the
+                # global rate limit so the real RPM is tracked, not just
+                # successful requests.  This prevents silent rate limit
+                # overshoot when NVIDIA backend cutouts cause retries.
+                await self._global_rate_limiter.wait_if_blocked()
+
+                async with self._global_rate_limiter.concurrency_slot():
+                    response = await self._client.chat.completions.create(
+                        **body, stream=False,
+                    )
+
+                result = self._build_anthropic_response(response, request, input_tokens)
+                logger.info(
+                    "{}_BUFFERED: success attempt={}{}",
+                    tag,
+                    attempt + 1,
+                    req_tag,
+                )
+                return result
+
+            except (APIConnectionError, APITimeoutError) as e:
+                last_error = e
+                logger.error(
+                    "{}_BUFFERED: Connection/timeout error attempt={}/{}: {}",
+                    tag,
+                    attempt + 1,
+                    max_retries + 1,
+                    e,
+                )
+                if attempt >= max_retries:
+                    raise StreamTruncatedError(
+                        f"NVIDIA backend dropped connection after "
+                        f"{max_retries + 1} attempts: {e}"
+                    ) from e
+
+        # This shouldn't be reached, but just in case
+        raise StreamTruncatedError(
+            f"NVIDIA backend dropped connection after all retries"
+        ) from last_error
+
+    def _build_anthropic_response(
+        self,
+        response: Any,
+        request: Any,
+        input_tokens: int,
+    ) -> dict:
+        """Convert an OpenAI-compatible completion response into Anthropic format."""
+        message_id = f"msg_{uuid.uuid4()}"
+        choice = response.choices[0] if response.choices else None
+        content = choice.message if choice else None
+
+        # Build content blocks
+        content_blocks: list[dict] = []
+
+        if content is not None:
+            if content.content:
+                content_blocks.append({
+                    "type": "text",
+                    "text": content.content,
+                })
+
+            if content.tool_calls:
+                for tc in content.tool_calls:
+                    tool_block = {
+                        "type": "tool_use",
+                        "id": tc.id or f"tool_{uuid.uuid4()}",
+                        "name": tc.function.name if tc.function else "unknown",
+                        "input": {},
+                    }
+                    if tc.function and tc.function.arguments:
+                        try:
+                            tool_block["input"] = json.loads(tc.function.arguments)
+                        except json.JSONDecodeError:
+                            tool_block["input"] = {"raw": tc.function.arguments}
+                    content_blocks.append(tool_block)
+
+        if not content_blocks:
+            content_blocks.append({"type": "text", "text": ""})
+
+        # Extract usage info
+        usage = getattr(response, "usage", None)
+        output_tokens = (
+            usage.completion_tokens
+            if usage and hasattr(usage, "completion_tokens")
+            else 0
+        )
+        provider_input = (
+            usage.prompt_tokens
+            if usage and hasattr(usage, "prompt_tokens")
+            else input_tokens
+        )
+
+        # Determine stop reason
+        stop_reason = "end_turn"
+        if choice and choice.finish_reason:
+            stop_reason = map_stop_reason(choice.finish_reason)
+
+        return {
+            "id": message_id,
+            "type": "message",
+            "role": "assistant",
+            "content": content_blocks,
+            "model": request.model,
+            "stop_reason": stop_reason,
+            "stop_sequence": None,
+            "usage": {
+                "input_tokens": provider_input,
+                "output_tokens": output_tokens,
+            },
+        }
 
     def _process_tool_call(self, tc: dict, sse: SSEBuilder) -> Iterator[str]:
         """Process a single tool call delta and yield SSE events."""
@@ -271,6 +426,21 @@ class NvidiaNimProvider(BaseProvider):
                 for event in sse.emit_error(error_message):
                     yield event
 
+        # Detect truncated streams (backend cut out without proper finish_reason)
+        has_any_content = (
+            sse.accumulated_text
+            or sse.accumulated_reasoning
+            or sse.blocks.tool_states
+        )
+        if error_occurred and not has_any_content:
+            sse.mark_truncated(
+                "Backend connection lost before any content was produced"
+            )
+        elif error_occurred:
+            sse.mark_truncated(
+                "Backend connection lost mid-stream (partial response)"
+            )
+
         # Flush remaining content
         remaining = think_parser.flush()
         if remaining:
@@ -334,5 +504,9 @@ class NvidiaNimProvider(BaseProvider):
                     provider_input,
                     provider_input - input_tokens,
                 )
+        # When truncated and no explicit finish_reason, signal truncation clearly
+        if sse.truncated and finish_reason is None:
+            finish_reason = "length"  # maps to "max_tokens" per STOP_REASON_MAP
+
         yield sse.message_delta(map_stop_reason(finish_reason), output_tokens)
         yield sse.message_stop()

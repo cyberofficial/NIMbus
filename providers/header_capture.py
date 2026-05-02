@@ -71,10 +71,9 @@ class HeaderCapturingTransport(httpx.AsyncHTTPTransport):
         Returns:
             HTTP response with headers captured
         """
-        # Debug: confirm transport is being used
-        print(
-            f"🚀 HeaderCapturingTransport handling request to {request.url}", flush=True
-        )
+        # Log outgoing request
+        method = request.method
+        print(f"→ {method} {request.url}", flush=True)
 
         response = await super().handle_async_request(request)
 
@@ -82,11 +81,7 @@ class HeaderCapturingTransport(httpx.AsyncHTTPTransport):
         request_id = id(request)
         headers = dict(response.headers)
 
-        # Debug: show all headers received
-        print(f"📋 Response headers: {list(headers.keys())}", flush=True)
-
         # Filter to rate-limit-related headers only
-        # Try multiple header patterns: x-ratelimit-*, retry-after, nvcf-*
         rate_limit_headers = {
             k: v
             for k, v in headers.items()
@@ -96,11 +91,10 @@ class HeaderCapturingTransport(httpx.AsyncHTTPTransport):
 
         if rate_limit_headers:
             self._capture_store.set_headers(request_id, rate_limit_headers)
-            # Use print for visibility (like rate limit status bar)
-            print(
-                f"📥 Captured rate limit headers: {rate_limit_headers}",
-                flush=True,
-            )
+            # Log clean response line with nvcf-reqid and status
+            req_id = rate_limit_headers.get("nvcf-reqid", "?")
+            status = rate_limit_headers.get("nvcf-status", "unknown")
+            print(f"← nvcf-reqid: {req_id}  ✓ {status}", flush=True)
             logger.debug(
                 f"Captured rate limit headers for request {request_id}: "
                 f"{rate_limit_headers}"

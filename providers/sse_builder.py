@@ -141,6 +141,15 @@ class SSEBuilder:
         self.blocks = ContentBlockManager()
         self._accumulated_text_parts: list[str] = []
         self._accumulated_reasoning_parts: list[str] = []
+        self.truncated: bool = False
+
+    def mark_truncated(self, reason: str = "") -> None:
+        """Mark this stream as having been truncated before completion."""
+        self.truncated = True
+        if reason:
+            logger.warning("Stream marked as truncated: {}", reason)
+        else:
+            logger.warning("Stream marked as truncated (backend cut out)")
 
     def _format_event(self, event_type: str, data: dict[str, Any]) -> str:
         """Format as SSE string."""

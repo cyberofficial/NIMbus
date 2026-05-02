@@ -38,6 +38,10 @@ class NimSettings(BaseModel):
 
     reasoning_effort: Literal["low", "medium", "high"] = "high"
     include_reasoning: bool = True
+    thinking: bool = Field(
+        default_factory=lambda: os.environ.get("NIM_THINKING", "true").lower()
+        not in ("false", "0", "no", "off")
+    )
 
     model_config = ConfigDict(extra="forbid")
 

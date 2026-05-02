@@ -10,6 +10,7 @@ from providers.exceptions import (
     OverloadedError,
     ProviderError,
     RateLimitError,
+    StreamTruncatedError,
 )
 from providers.rate_limit import GlobalRateLimiter
 
@@ -24,6 +25,8 @@ def get_user_facing_error_message(
     if message:
         return message
 
+    if isinstance(e, StreamTruncatedError):
+        return "Provider stream was interrupted mid-response."
     if isinstance(e, httpx.ReadTimeout):
         if read_timeout_s is not None:
             return f"Provider request timed out after {read_timeout_s:g}s."
@@ -97,6 +100,11 @@ def map_error(e: Exception) -> Exception:
         if "overloaded" in raw_message.lower() or "capacity" in raw_message.lower():
             return OverloadedError(message, raw_error=raw_message)
         return APIError(message, status_code=500, raw_error=str(e))
+    if isinstance(e, openai.APIConnectionError):
+        return StreamTruncatedError(
+            "Provider stream lost connection — response may be incomplete",
+            raw_error=str(e),
+        )
     if isinstance(e, openai.APIError):
         return APIError(
             message, status_code=getattr(e, "status_code", 500), raw_error=str(e)

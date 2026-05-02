@@ -46,6 +46,7 @@ agent_workspace/
 server.log
 banned_ips.txt
 *.log
+.discord_data/
 
 # Sensitive scripts (may contain keys)
 *.bat
