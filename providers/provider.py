@@ -23,7 +23,7 @@ from providers.error_mapping import (
     get_user_facing_error_message,
     map_error,
 )
-from providers.header_capture import CapturedHeaders, HeaderCapturingTransport
+from providers.header_capture import CapturedHeaders, HeaderCapturingTransport, request_id_var
 from providers.heuristic_tool_parser import HeuristicToolParser
 from providers.rate_limit import GlobalRateLimiter
 from providers.request import build_request_body
@@ -131,9 +131,13 @@ class NvidiaNimProvider(BaseProvider):
                 await self._global_rate_limiter.wait_if_blocked()
 
                 async with self._global_rate_limiter.concurrency_slot():
-                    response = await self._client.chat.completions.create(
-                        **body, stream=False,
-                    )
+                    req_token = request_id_var.set(request_id)
+                    try:
+                        response = await self._client.chat.completions.create(
+                            **body, stream=False,
+                        )
+                    finally:
+                        request_id_var.reset(req_token)
 
                 result = self._build_anthropic_response(response, request, input_tokens)
                 logger.info(
@@ -324,9 +328,14 @@ class NvidiaNimProvider(BaseProvider):
 
         async with self._global_rate_limiter.concurrency_slot():
             try:
-                stream = await self._global_rate_limiter.execute_with_retry(
-                    self._client.chat.completions.create, **body, stream=True
-                )
+                # Set request_id for transport-layer correlation logging
+                req_token = request_id_var.set(request_id)
+                try:
+                    stream = await self._global_rate_limiter.execute_with_retry(
+                        self._client.chat.completions.create, **body, stream=True
+                    )
+                finally:
+                    request_id_var.reset(req_token)
                 async for chunk in stream:
                     if getattr(chunk, "usage", None):
                         usage_info = chunk.usage

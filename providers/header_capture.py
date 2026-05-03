@@ -1,10 +1,15 @@
 """HTTPX transport that captures response headers for rate limit parsing."""
 
+import time
 import threading
+from contextvars import ContextVar
 from typing import ClassVar
 
 import httpx
 from loguru import logger
+
+# Context variable to carry request_id from provider into the transport layer
+request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 
 
 class CapturedHeaders:
@@ -71,14 +76,19 @@ class HeaderCapturingTransport(httpx.AsyncHTTPTransport):
         Returns:
             HTTP response with headers captured
         """
-        # Log outgoing request
+        # Log outgoing request with correlation ID
         method = request.method
-        print(f"→ {method} {request.url}", flush=True)
+        corr_id = request_id_var.get()
+        corr_tag = f" ({corr_id})" if corr_id else ""
+        print(f"→ {method} {request.url}{corr_tag}", flush=True)
+        start_time = time.monotonic()
 
         response = await super().handle_async_request(request)
 
+        elapsed = time.monotonic() - start_time
+
         # Capture headers for rate limit parsing
-        request_id = id(request)
+        req_int_id = id(request)
         headers = dict(response.headers)
 
         # Filter to rate-limit-related headers only
@@ -90,16 +100,36 @@ class HeaderCapturingTransport(httpx.AsyncHTTPTransport):
         }
 
         if rate_limit_headers:
-            self._capture_store.set_headers(request_id, rate_limit_headers)
-            # Log clean response line with nvcf-reqid and status
-            req_id = rate_limit_headers.get("nvcf-reqid", "?")
-            status = rate_limit_headers.get("nvcf-status", "unknown")
-            print(f"← nvcf-reqid: {req_id}  ✓ {status}", flush=True)
+            self._capture_store.set_headers(req_int_id, rate_limit_headers)
+
+            nvcf_id = rate_limit_headers.get("nvcf-reqid", "?")
+            nvcf_status = rate_limit_headers.get("nvcf-status", "fulfilled")
+
+            # Build error detail string when request failed
+            status_code = response.status_code
+            if status_code >= 400 or nvcf_status == "errored":
+                reason = response.reason_phrase or ""
+                error_detail = f" {status_code} {reason}".strip() if reason else f" HTTP {status_code}"
+            else:
+                error_detail = ""
+
+            print(
+                f"← nvcf-reqid: {nvcf_id}  ✓ {nvcf_status}{error_detail}{corr_tag}"
+                f" Took {elapsed:.1f}s",
+                flush=True,
+            )
             logger.debug(
-                f"Captured rate limit headers for request {request_id}: "
+                f"Captured rate limit headers for request {req_int_id}: "
                 f"{rate_limit_headers}"
             )
             # Store request_id on response for retrieval
-            response._rate_limit_request_id = request_id  # type: ignore[attr-defined]
+            response._rate_limit_request_id = req_int_id  # type: ignore[attr-defined]
+        else:
+            # No rate-limit headers but still log timing for every request
+            status_code = response.status_code
+            if status_code >= 400:
+                reason = response.reason_phrase or ""
+                error_detail = f" {status_code} {reason}".strip() if reason else f" HTTP {status_code}"
+                print(f"← {method} {response.url}{error_detail}{corr_tag} Took {elapsed:.1f}s", flush=True)
 
         return response
