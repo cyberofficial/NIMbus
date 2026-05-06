@@ -111,10 +111,10 @@ class MessagesRequest(BaseModel):
         if self.original_model is None:
             self.original_model = self.model
 
-        self.model = settings.model_name
+        self.model = settings.get_model_for_claude(self.original_model)
 
         if self.model != self.original_model:
-            logger.debug(f"MODEL MAPPING: '{self.original_model}' -> '{self.model}'")
+            logger.info(f"MODEL MAPPING: '{self.original_model}' -> '{self.model}'")
 
         return self
 
@@ -132,4 +132,4 @@ class TokenCountRequest(BaseModel):
     def validate_model_field(cls, v, info):
         """Map any Claude model name to the configured model."""
         settings = get_settings()
-        return settings.model_name
+        return settings.get_model_for_claude(v)

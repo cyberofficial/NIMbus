@@ -34,8 +34,16 @@ class Settings(BaseSettings):
     api_key: str = Field(default="", validation_alias="NVIDIA_NIM_API_KEY")
 
     # ==================== Model ====================
-    # Model name without provider prefix (e.g., "meta/llama3-70b-instruct")
-    model: str = "z-ai/glm5"
+    # Comma-separated model list mapping to Claude Code tiers by position:
+    #   1 model:  All Claude tiers use the same NIM model
+    #   2 models: Sonnet+Opus use first, Haiku uses second
+    #   3 models: Sonnet, Opus, Haiku each get their own model
+    # Format: owner/model-name (without provider prefix)
+    # Examples:
+    #   "deepseek-ai/deepseek-v4-flash"
+    #   "qwen/qwen3-coder-480b-a35b-instruct,deepseek-ai/deepseek-v4-flash"
+    #   "qwen/qwen3-coder-480b-a35b-instruct,minimaxai/minimax-m2.7,deepseek-ai/deepseek-v4-flash"
+    model: str = "deepseek-ai/deepseek-v4-flash"
 
     # ==================== Provider Rate Limiting ====================
     provider_rate_limit: int = Field(default=40, validation_alias="PROVIDER_RATE_LIMIT")
@@ -272,23 +280,93 @@ class Settings(BaseSettings):
     def validate_model_format(cls, v: str) -> str:
         """Validate model name format.
 
-        Model should be in format: owner/model-name
+        MODEL may be a single model or comma-separated list.
+        Each entry must be in format: owner/model-name
         (e.g., "meta/llama3-70b-instruct", "qwen/qwen3.5-397b-a17b")
         """
         if not v or not v.strip():
             raise ValueError("Model name cannot be empty")
         v = v.strip()
-        if "/" not in v:
-            raise ValueError(
-                f"Model must be in format 'owner/model-name'. "
-                f"Got: {v!r}. Examples: 'meta/llama3-70b-instruct', 'qwen/qwen3.5-397b-a17b'"
+        for part in v.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "/" not in part:
+                raise ValueError(
+                    f"Each model in MODEL must be in format 'owner/model-name'. "
+                    f"Got invalid entry: {part!r}. "
+                    f"Examples: 'meta/llama3-70b-instruct', 'qwen/qwen3.5-397b-a17b'"
+                )
+        return v
+
+    @field_validator("nim", mode="after")
+    @classmethod
+    def disable_thinking_for_multi_model(cls, v: NimSettings, info) -> NimSettings:
+        """Force-disable thinking when multiple models are configured.
+
+        Thinking/reasoning parameters (thinking, reasoning_split, chat_template_kwargs,
+        reasoning_effort, include_reasoning, return_tokens_as_token_ids) are not
+        universally supported across NIM models (e.g., Qwen rejects them at the API level).
+        When running multi-model setups, disable thinking to prevent API errors.
+        """
+        model_raw = info.data.get("model", "")
+        model_count = len([m.strip() for m in model_raw.split(",") if m.strip()])
+        if model_count > 1 and v.thinking:
+            from loguru import logger
+            logger.info(
+                "NIM config: {} models configured in MODEL - force-disabling thinking "
+                "(unsupported by some models like qwen). Set a single MODEL to re-enable.",
+                model_count,
             )
+            v.thinking = False
         return v
 
     @property
+    def model_list(self) -> list[str]:
+        """Parse MODEL as comma-separated list of model names."""
+        return [m.strip() for m in self.model.split(",") if m.strip()]
+
+    # Claude model ID keyword → position in MODEL list
+    # Claude API IDs: claude-sonnet-4-6, claude-opus-4-7, claude-haiku-4-5-20251001
+    _CLAUDE_MODEL_MAP: dict[str, int] = {
+        "sonnet": 0,  # Default/Sonnet 4.6
+        "opus": 1,    # Opus 4.7
+        "haiku": 2,   # Haiku 4.5
+    }
+
+    def get_model_for_claude(self, claude_id: str) -> str:
+        """Map a Claude model ID to the corresponding NIM model by position.
+
+        Uses substring matching on the Claude model ID to determine which tier
+        it belongs to, then selects the NIM model from the corresponding position
+        in the comma-separated MODEL list.
+
+        Mapping (based on comma-separated positions in MODEL):
+          1 model:  position 0 for everything
+          2 models: position 0 for Sonnet+Opus, position 1 for Haiku
+          3 models: position 0 for Sonnet, 1 for Opus, 2 for Haiku
+
+        Falls back to models[0] if the Claude ID doesn't match any known tier.
+        """
+        models = self.model_list
+        if not models:
+            return self.model
+        claude_lower = claude_id.lower()
+        for keyword, position in self._CLAUDE_MODEL_MAP.items():
+            if keyword in claude_lower:
+                target = min(position, len(models) - 1)
+                return models[target]
+        # Unknown Claude model → fall back to first NIM model
+        return models[0]
+
+    @property
     def model_name(self) -> str:
-        """Get the model name (same as model for NVIDIA NIM-only config)."""
-        return self.model
+        """Get the primary model name (first in the list).
+
+        Kept for backward compatibility; prefer get_model_for_claude()
+        for request-specific mapping.
+        """
+        return self.model_list[0] if self.model_list else self.model
 
     model_config = SettingsConfigDict(
         env_file=".env",

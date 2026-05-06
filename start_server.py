@@ -193,6 +193,38 @@ def start_server(config: dict) -> None:
         print("\nServer stopped.")
 
 
+CLAUDE_TIERS_3 = [
+    ("Default / Sonnet 4.6", "1M context"),
+    ("Opus 4.7", "1M context"),
+    ("Haiku 4.5", "200k context"),
+]
+
+
+def print_model_mapping(model_raw: str) -> None:
+    """Display which Claude tier maps to which NIM model."""
+    models = [m.strip() for m in model_raw.split(",") if m.strip()]
+    count = len(models)
+
+    print()
+    print(f"Claude Model Mapping ({count} model{'s' if count != 1 else ''}):")
+    print("-" * 60)
+
+    if count == 1:
+        print(f"  All Claude tiers (Default, Sonnet, Opus, Haiku)")
+        print(f"    → {models[0]}")
+    elif count == 2:
+        print(f"  Default / Sonnet 4.6 + Opus 4.7 (1M context)")
+        print(f"    → {models[0]}")
+        print(f"  Haiku 4.5 (200k context)")
+        print(f"    → {models[1]}")
+    else:
+        for i, tier_info in enumerate(CLAUDE_TIERS_3):
+            name, ctx = tier_info
+            model = models[i] if i < count else models[-1]
+            print(f"  {name} ({ctx})")
+            print(f"    → {model}")
+
+
 def main():
     """Main entry point."""
     print()
@@ -206,6 +238,7 @@ def main():
     print(f"Host: {config['host']}")
     print(f"Port: {config['port']}")
     print(f"Model: {config['model']}")
+    print_model_mapping(config["model"])
     print(f"API Key: {'(auto-generated)' if config.get('key_was_generated') else '(set)'}")
     print(f"NVIDIA Key: {'(set)' if config['nvidia_nim_api_key'] else '(NOT SET - REQUIRED!)'}")
 

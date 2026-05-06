@@ -84,7 +84,7 @@ def build_request_summary(request_data: Any) -> dict[str, Any]:
         1 for m in messages if getattr(m, "role", None) == "assistant"
     )
 
-    return {
+    summary = {
         "fingerprint": generate_request_fingerprint(messages),
         "model": getattr(request_data, "model", "unknown"),
         "message_count": len(messages),
@@ -97,6 +97,11 @@ def build_request_summary(request_data: Any) -> dict[str, Any]:
         "has_system": bool(system),
         "max_tokens": getattr(request_data, "max_tokens", 0),
     }
+    # Include original Claude model ID if available (before mapping to NIM model)
+    original = getattr(request_data, "original_model", None)
+    if original and original != summary["model"]:
+        summary["claude_model"] = original
+    return summary
 
 
 def log_full_payload(

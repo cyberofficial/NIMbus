@@ -247,6 +247,21 @@ async def root(settings: Settings = Depends(get_settings)):
         "status": "ok",
         "provider": "nvidia_nim",
         "model": settings.model,
+        "model_list": settings.model_list,
+        "model_mapping": {
+            "sonnet_opening": " ".join([
+                "Position 1 (Sonnet 4.6 / Default)",
+                "- maps to model_list[0] if 1+ models configured"
+            ]),
+            "opus_opening": " ".join([
+                "Position 2 (Opus 4.7)",
+                "- maps to model_list[0] if 1 model, model_list[1] if 2+ models"
+            ]),
+            "haiku_opening": " ".join([
+                "Position 3 (Haiku 4.5)",
+                "- maps to model_list[last] based on count"
+            ]),
+        },
     }
 
 
