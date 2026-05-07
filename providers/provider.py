@@ -100,14 +100,15 @@ class NvidiaNimProvider(BaseProvider):
         retry_delay = self._config.retry_delay
         last_error = None
 
-        for attempt in range(max_retries + 1):
+        attempt = 0
+        while max_retries == 0 or attempt < (max_retries + 1):
             try:
                 if attempt > 0:
                     logger.warning(
                         "{}_BUFFERED: Retry attempt {}/{} after {}s delay",
                         tag,
                         attempt,
-                        max_retries,
+                        max_retries if max_retries > 0 else "∞",
                         retry_delay * attempt,
                     )
                     await asyncio.sleep(retry_delay * attempt)
@@ -150,18 +151,24 @@ class NvidiaNimProvider(BaseProvider):
 
             except (APIConnectionError, APITimeoutError) as e:
                 last_error = e
+                exhaustion_msg = (
+                    f"after {attempt + 1} attempts"
+                    if max_retries > 0
+                    else f"after {attempt + 1} attempts (endless retries - still trying)"
+                )
                 logger.error(
-                    "{}_BUFFERED: Connection/timeout error attempt={}/{}: {}",
+                    "{}_BUFFERED: Connection/timeout error {}: {}",
                     tag,
-                    attempt + 1,
-                    max_retries + 1,
+                    exhaustion_msg,
                     e,
                 )
-                if attempt >= max_retries:
+                if max_retries > 0 and attempt >= max_retries:
                     raise StreamTruncatedError(
                         f"NVIDIA backend dropped connection after "
                         f"{max_retries + 1} attempts: {e}"
                     ) from e
+                attempt += 1
+                continue
 
         # This shouldn't be reached, but just in case
         raise StreamTruncatedError(
@@ -300,10 +307,17 @@ class NvidiaNimProvider(BaseProvider):
         input_tokens: int,
         request_id: str | None,
     ) -> AsyncIterator[str]:
-        """Streaming implementation."""
+        """Streaming implementation with retry on transient backend disconnections.
+
+        Unlike buffered_request, streaming sends SSE events progressively.
+        When the backend drops the connection mid-stream, we retry the entire
+        request from scratch rather than forwarding the error to the client
+        immediately.  Only after all retries are exhausted do we emit an
+        error SSE event to Claude.
+        """
         tag = self._provider_name
-        message_id = f"msg_{uuid.uuid4()}"
-        sse = SSEBuilder(message_id, request.model, input_tokens)
+        max_retries = self._config.retry_on_truncation
+        retry_delay = self._config.retry_delay
 
         body = self._build_request_body(request)
         req_tag = f" request_id={request_id}" if request_id else ""
@@ -316,124 +330,205 @@ class NvidiaNimProvider(BaseProvider):
             len(body.get("tools", [])),
         )
 
-        yield sse.message_start()
+        # Per-attempt state - always assigned inside the retry loop below,
+        # so after the loop `sse`, `think_parser`, and `heuristic_parser`
+        # hold the final attempt's state.
+        error_occurred = False
+        error_message = ""
+        finish_reason: str | None = None
+        usage_info: Any = None
+        last_error_tag = ""
 
+        # Dummy initialization to satisfy the static checker; always
+        # overwritten on the first loop iteration before any post-loop read.
+        sse = SSEBuilder("", "", 0)
         think_parser = ThinkTagParser()
         heuristic_parser = HeuristicToolParser()
 
-        finish_reason = None
-        usage_info = None
-        error_occurred = False
-        error_message = ""
+        attempt = 0
+        while max_retries == 0 or attempt < (max_retries + 1):
+            # Rebuild fresh SSE state for each attempt - the previous stream
+            # was truncated so we start a brand-new message.
+            message_id = f"msg_{uuid.uuid4()}"
+            sse = SSEBuilder(message_id, request.model, input_tokens)
+            think_parser = ThinkTagParser()
+            heuristic_parser = HeuristicToolParser()
+            finish_reason = None
+            usage_info = None
+            error_occurred = False
+            error_message = ""
 
-        async with self._global_rate_limiter.concurrency_slot():
-            try:
-                # Set request_id for transport-layer correlation logging
-                req_token = request_id_var.set(request_id)
-                try:
-                    stream = await self._global_rate_limiter.execute_with_retry(
-                        self._client.chat.completions.create, **body, stream=True
-                    )
-                finally:
-                    request_id_var.reset(req_token)
-                async for chunk in stream:
-                    if getattr(chunk, "usage", None):
-                        usage_info = chunk.usage
-
-                    if not chunk.choices:
-                        continue
-
-                    choice = chunk.choices[0]
-                    delta = choice.delta
-                    if delta is None:
-                        continue
-
-                    if choice.finish_reason:
-                        finish_reason = choice.finish_reason
-                        logger.debug("{} finish_reason: {}", tag, finish_reason)
-
-                    # Handle reasoning_content (OpenAI extended format)
-                    reasoning = getattr(delta, "reasoning_content", None)
-                    if reasoning:
-                        for event in sse.ensure_thinking_block():
-                            yield event
-                        yield sse.emit_thinking_delta(reasoning)
-
-                    # Handle text content
-                    if delta.content:
-                        for part in think_parser.feed(delta.content):
-                            if part.type == ContentType.THINKING:
-                                for event in sse.ensure_thinking_block():
-                                    yield event
-                                yield sse.emit_thinking_delta(part.content)
-                            else:
-                                filtered_text, detected_tools = heuristic_parser.feed(
-                                    part.content
-                                )
-
-                                if filtered_text:
-                                    for event in sse.ensure_text_block():
-                                        yield event
-                                    yield sse.emit_text_delta(filtered_text)
-
-                                for tool_use in detected_tools:
-                                    for event in sse.close_content_blocks():
-                                        yield event
-
-                                    block_idx = sse.blocks.allocate_index()
-                                    if tool_use.get("name") == "Task" and isinstance(
-                                        tool_use.get("input"), dict
-                                    ):
-                                        tool_use["input"]["run_in_background"] = False
-                                    yield sse.content_block_start(
-                                        block_idx,
-                                        "tool_use",
-                                        id=tool_use["id"],
-                                        name=tool_use["name"],
-                                    )
-                                    yield sse.content_block_delta(
-                                        block_idx,
-                                        "input_json_delta",
-                                        json.dumps(tool_use["input"]),
-                                    )
-                                    yield sse.content_block_stop(block_idx)
-
-                    # Handle native tool calls
-                    if delta.tool_calls:
-                        for event in sse.close_content_blocks():
-                            yield event
-                        for tc in delta.tool_calls:
-                            tc_info = {
-                                "index": tc.index,
-                                "id": tc.id,
-                                "function": {
-                                    "name": tc.function.name,
-                                    "arguments": tc.function.arguments,
-                                },
-                            }
-                            for event in self._process_tool_call(tc_info, sse):
-                                yield event
-
-            except Exception as e:
-                logger.error("{}_ERROR:{} {}: {}", tag, req_tag, type(e).__name__, e)
-                mapped_e = map_error(e)
-                error_occurred = True
-                error_message = append_request_id(
-                    get_user_facing_error_message(
-                        mapped_e, read_timeout_s=self._config.http_read_timeout
-                    ),
-                    request_id,
-                )
+            if attempt > 0:
+                delay = retry_delay * attempt
                 logger.info(
-                    "{}_STREAM: Emitting SSE error event for {}{}",
+                    "{}_STREAM: Retrying {}/{} after {:.1f}s delay (last: {})",
                     tag,
-                    type(e).__name__,
-                    req_tag,
+                    attempt + 1,
+                    max_retries if max_retries > 0 else "∞",
+                    delay,
+                    last_error_tag,
                 )
-                for event in sse.close_content_blocks():
-                    yield event
-                for event in sse.emit_error(error_message):
-                    yield event
+                await asyncio.sleep(delay)
+
+            # Emit a fresh message_start on every attempt.  If this is a
+            # retry, Claude will see the previous stream end abruptly and
+            # then see a new message_start - this signals a clean restart.
+            yield sse.message_start()
+
+            async with self._global_rate_limiter.concurrency_slot():
+                try:
+                    # Set request_id for transport-layer correlation logging
+                    req_token = request_id_var.set(request_id)
+                    try:
+                        stream = await self._global_rate_limiter.execute_with_retry(
+                            self._client.chat.completions.create, **body, stream=True
+                        )
+                    finally:
+                        request_id_var.reset(req_token)
+                    async for chunk in stream:
+                        if getattr(chunk, "usage", None):
+                            usage_info = chunk.usage
+
+                        if not chunk.choices:
+                            continue
+
+                        choice = chunk.choices[0]
+                        delta = choice.delta
+                        if delta is None:
+                            continue
+
+                        if choice.finish_reason:
+                            finish_reason = choice.finish_reason
+                            logger.debug("{} finish_reason: {}", tag, finish_reason)
+
+                        # Handle reasoning_content (OpenAI extended format)
+                        reasoning = getattr(delta, "reasoning_content", None)
+                        if reasoning:
+                            for event in sse.ensure_thinking_block():
+                                yield event
+                            yield sse.emit_thinking_delta(reasoning)
+
+                        # Handle text content
+                        if delta.content:
+                            for part in think_parser.feed(delta.content):
+                                if part.type == ContentType.THINKING:
+                                    for event in sse.ensure_thinking_block():
+                                        yield event
+                                    yield sse.emit_thinking_delta(part.content)
+                                else:
+                                    filtered_text, detected_tools = heuristic_parser.feed(
+                                        part.content
+                                    )
+
+                                    if filtered_text:
+                                        for event in sse.ensure_text_block():
+                                            yield event
+                                        yield sse.emit_text_delta(filtered_text)
+
+                                    for tool_use in detected_tools:
+                                        for event in sse.close_content_blocks():
+                                            yield event
+
+                                        block_idx = sse.blocks.allocate_index()
+                                        if tool_use.get("name") == "Task" and isinstance(
+                                            tool_use.get("input"), dict
+                                        ):
+                                            tool_use["input"]["run_in_background"] = False
+                                        yield sse.content_block_start(
+                                            block_idx,
+                                            "tool_use",
+                                            id=tool_use["id"],
+                                            name=tool_use["name"],
+                                        )
+                                        yield sse.content_block_delta(
+                                            block_idx,
+                                            "input_json_delta",
+                                            json.dumps(tool_use["input"]),
+                                        )
+                                        yield sse.content_block_stop(block_idx)
+
+                        # Handle native tool calls
+                        if delta.tool_calls:
+                            for event in sse.close_content_blocks():
+                                yield event
+                            for tc in delta.tool_calls:
+                                tc_info = {
+                                    "index": tc.index,
+                                    "id": tc.id,
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments,
+                                    },
+                                }
+                                for event in self._process_tool_call(tc_info, sse):
+                                    yield event
+
+                except (APIConnectionError, APITimeoutError, httpx.ReadError) as e:
+                    last_error_tag = f"{type(e).__name__}"
+                    if max_retries == 0 or attempt < max_retries:
+                        logger.warning(
+                            "{}_STREAM: {} on attempt {}/{} - will retry: {}",
+                            tag,
+                            type(e).__name__,
+                            attempt + 1,
+                            max_retries if max_retries > 0 else "∞",
+                            e,
+                        )
+                        attempt += 1
+                        continue  # jump to next retry iteration
+
+                    # All retries exhausted
+                    logger.error(
+                        "{}_STREAM: {} exhausted after {} attempts: {}",
+                        tag,
+                        type(e).__name__,
+                        max_retries + 1,
+                        e,
+                    )
+                    mapped_e = map_error(e)
+                    error_occurred = True
+                    error_message = append_request_id(
+                        get_user_facing_error_message(
+                            mapped_e, read_timeout_s=self._config.http_read_timeout
+                        ),
+                        request_id,
+                    )
+                    logger.info(
+                        "{}_STREAM: Emitting SSE error event for {}{}",
+                        tag,
+                        type(e).__name__,
+                        req_tag,
+                    )
+                    for event in sse.close_content_blocks():
+                        yield event
+                    for event in sse.emit_error(error_message):
+                        yield event
+
+                except Exception as e:
+                    # Non-retryable errors (auth, rate limit, etc.) - surface immediately
+                    logger.error("{}_ERROR:{} {}: {}", tag, req_tag, type(e).__name__, e)
+                    mapped_e = map_error(e)
+                    error_occurred = True
+                    error_message = append_request_id(
+                        get_user_facing_error_message(
+                            mapped_e, read_timeout_s=self._config.http_read_timeout
+                        ),
+                        request_id,
+                    )
+                    logger.info(
+                        "{}_STREAM: Emitting SSE error event for {}{}",
+                        tag,
+                        type(e).__name__,
+                        req_tag,
+                    )
+                    for event in sse.close_content_blocks():
+                        yield event
+                    for event in sse.emit_error(error_message):
+                        yield event
+
+                # If we got here without error, the stream completed cleanly - exit retry loop
+                if not error_occurred:
+                    break
 
         # Detect truncated streams (backend cut out without proper finish_reason)
         has_any_content = (

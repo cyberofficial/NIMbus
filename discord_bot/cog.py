@@ -237,7 +237,7 @@ class NimbusCog(commands.Cog):
             messages = history + [{"role": "user", "content": question}]
             system_prompt = self.settings.discord_system_prompt
             request_data = MessagesRequest(
-                model=self.settings.model,
+                model=self.settings.model_name,
                 messages=[
                     Message(role=m["role"], content=m["content"])
                     for m in messages
@@ -361,7 +361,7 @@ class NimbusCog(commands.Cog):
 
         # Send to NIM for summary
         summary_request = MessagesRequest(
-            model=self.settings.model,
+            model=self.settings.model_name,
             messages=[Message(role="user", content=summary_prompt)],
             max_tokens=2000,  # Summary should be short
         )
@@ -517,7 +517,7 @@ class NimbusCog(commands.Cog):
 
         # Send to NIM for summary
         summary_request = MessagesRequest(
-            model=self.settings.model,
+            model=self.settings.model_name,
             messages=[Message(role="user", content=summary_prompt)],
             max_tokens=2000,
         )
@@ -602,7 +602,7 @@ class NimbusCog(commands.Cog):
 
         # Send to NIM for summary
         summary_request = MessagesRequest(
-            model=self.settings.model,
+            model=self.settings.model_name,
             messages=[Message(role="user", content=summary_prompt)],
             max_tokens=2000,
         )

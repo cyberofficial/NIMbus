@@ -27,7 +27,7 @@ class NimbusDiscordBot(commands.Bot):
         intents.guilds = True  # Required for channel category access
 
         super().__init__(
-            command_prefix=None,  # Slash commands only
+            command_prefix=commands.when_mentioned,  # Slash commands only
             intents=intents,
         )
 
@@ -89,7 +89,10 @@ class NimbusDiscordBot(commands.Bot):
 
     async def on_ready(self) -> None:
         """Called when bot is ready."""
-        logger.info(f"Discord bot logged in as {self.user} (ID: {self.user.id})")
+        if self.user is not None:
+            logger.info(f"Discord bot logged in as {self.user} (ID: {self.user.id})")
+        else:
+            logger.info(f"Discord bot logged in")
 
         # Sync commands on every startup (Discord sometimes clears them)
         await self._sync_commands_to_all_guilds()
@@ -134,7 +137,8 @@ class NimbusDiscordBot(commands.Bot):
                     continue
 
                 # Clean old bot messages from control channel
-                await self._cleanup_control_channel(channel)
+                if isinstance(channel, discord.TextChannel):
+                    await self._cleanup_control_channel(channel)
 
                 embed = discord.Embed(
                     title="NIMbus Bot Online",
@@ -157,7 +161,8 @@ class NimbusDiscordBot(commands.Bot):
                 from .views import ControlPanelView
                 view = ControlPanelView()
                 self.add_view(view)  # Register persistent view
-                await channel.send(embed=embed, view=view)
+                if isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.Thread)):
+                    await channel.send(embed=embed, view=view)
 
             except Exception as e:
                 logger.error(f"Failed to send control startup to channel {channel_id}: {e}")
@@ -173,7 +178,7 @@ class NimbusDiscordBot(commands.Bot):
         try:
             async for msg in channel.history(limit=limit):
                 # Delete bot's own messages and messages with our control panel embeds
-                is_bot_msg = msg.author.id == self.user.id
+                is_bot_msg = self.user is not None and msg.author.id == self.user.id
                 # Also delete messages that have our control panel embeds
                 has_embed = bool(msg.embeds) and any(
                     e.title == "NIMbus Bot Online" for e in msg.embeds
@@ -311,7 +316,7 @@ class NimbusDiscordBot(commands.Bot):
                     "*Tip: Run `/compact` manually to backup chat history to your DMs first.*"
                 )
                 cog = self.get_cog('NimbusCog')
-                if cog:
+                if isinstance(cog, NimbusCog):
                     await cog._do_compact_for_channel(channel)
 
         # Format message with username for context
@@ -332,7 +337,7 @@ class NimbusDiscordBot(commands.Bot):
         messages = history + [{"role": "user", "content": formatted_content}]
         system_prompt = self.settings.discord_system_prompt
         request_data = MessagesRequest(
-            model=self.settings.model,
+            model=self.settings.model_name,
             messages=[Message(role=m["role"], content=m["content"]) for m in messages],
             max_tokens=self.settings.discord_max_tokens,
             system=system_prompt,
@@ -473,12 +478,13 @@ class NimbusDiscordBot(commands.Bot):
 
         # Get session and queue message
         session = self.conversation_manager.get_session(message.channel.id)
-        await session.processing_queue.put({
-            'channel': message.channel,
-            'user': message.author,
-            'content': message.content,
-            'replied_message': replied_message,
-        })
+        if session is not None:
+            await session.processing_queue.put({
+                'channel': message.channel,
+                'user': message.author,
+                'content': message.content,
+                'replied_message': replied_message,
+            })
 
         # Process queue
         asyncio.create_task(self._process_message_queue(message.channel.id))
