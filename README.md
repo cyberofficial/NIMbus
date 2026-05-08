@@ -124,13 +124,6 @@ ANTHROPIC_AUTH_TOKEN="<replaceme>" ANTHROPIC_BASE_URL="http://localhost:8082" cl
 
 Browse all: [build.nvidia.com/explore/discover](https://build.nvidia.com/explore/discover)
 
-| Model | Use Case | Context |
-| --- | --- | --- |
-| `z-ai/glm5` | Coding and technical tasks | 202K |
-| `deepseek-ai/deepseek-v4-flash` | Fast, reasoning-enabled | 128K |
-| `deepseek-ai/deepseek-v4-pro` | Full power, no thinking | 128K |
-| `qwen/qwen3.5-397b-a17b` | Large general purpose | 32K |
-
 ## Configuration
 
 | Variable | Description | Default |
