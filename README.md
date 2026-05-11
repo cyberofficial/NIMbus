@@ -18,7 +18,7 @@ Claude Code CLI and VSCode extension require an Anthropic API key. NIMbus acts a
 
 1. NVIDIA NIM API key: [build.nvidia.com/settings/api-keys](https://build.nvidia.com/settings/api-keys)
 2. [Claude Code](https://github.com/anthropics/claude-code) installed
-3. Python 3.10+ installed
+3. Python 3.14+ installed
 
 ### Setup
 
@@ -128,14 +128,18 @@ Browse all: [build.nvidia.com/explore/discover](https://build.nvidia.com/explore
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `MODEL` | Model identifier (`owner/model-name`) | `z-ai/glm5` |
+| `MODEL` | Model identifier (`owner/model-name`, comma-separated for multi-model) | `deepseek-ai/deepseek-v4-flash` |
 | `NVIDIA_NIM_API_KEY` | NVIDIA API key | **required** |
+| `SERVER_TYPE` | Server mode: `stream` or `buffer` | `stream` |
 | `NIM_MAX_TOKENS` | Max tokens for responses | `202000` |
 | `NIM_THINKING` | Enable thinking/reasoning content | `true` |
 | `NIM_REASONING_EFFORT` | Reasoning effort: `low`, `medium`, or `high` | `high` |
 | `PROVIDER_RATE_LIMIT` | Requests per window | `40` |
 | `PROVIDER_RATE_WINDOW` | Rate window in seconds | `60` |
 | `PROVIDER_MAX_CONCURRENCY` | Max concurrent streams | `5` |
+| `PROVIDER_RETRY_ON_TRUNCATION` | Buffer mode retry count | `3` |
+| `PROVIDER_RETRY_DELAY` | Buffer mode retry base delay (s) | `1.0` |
+| `PROVIDER_MAX_WAIT_TIME` | Buffer mode max wait (s) | `30` |
 | `HTTP_READ_TIMEOUT` | Read timeout in seconds | `300` |
 | `HTTP_WRITE_TIMEOUT` | Write timeout in seconds | `10` |
 | `HTTP_CONNECT_TIMEOUT` | Connect timeout in seconds | `2` |
