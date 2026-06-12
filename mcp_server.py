@@ -2,43 +2,54 @@
 
 import os
 from mcp.server.fastmcp import FastMCP
-from duckduckgo_search import DDGS
 import httpx
 
+from websearch.duckduckgo_html import search_duckduckgo
+
 # MCP Configuration from environment variables
-WEB_SEARCH_MAX_RESULTS = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5"))
 WEB_SEARCH_FETCH_TIMEOUT = float(os.getenv("WEB_SEARCH_FETCH_TIMEOUT", "10.0"))
-WEB_SEARCH_MAX_CHARS = int(os.getenv("WEB_SEARCH_MAX_CHARS", "10000"))
 
 mcp = FastMCP("nimbus", json_response=True)
 
 
 @mcp.tool()
-def web_search(query: str, max_results: int = WEB_SEARCH_MAX_RESULTS) -> str:
-    """Search the web using DuckDuckGo and return formatted results."""
-    # Auto-quote multi-word queries for exact phrase matching
-    # Only quote if: contains spaces and doesn't already have quotes
-    if " " in query and not (query.startswith('"') and query.endswith('"')):
-        query = f'"{query}"'
-    results = DDGS().text(query, max_results=max_results)
-    return "\n".join(
-        f"{r['title']}: {r['body']} ({r['href']})" for r in results
-    )
+async def web_search(query: str, max_results: int | None = None) -> str:
+    """Search the web using DuckDuckGo HTML and return formatted results.
+
+    Args:
+        query: Search query string
+        max_results: Maximum number of results to return. None = return all found results.
+    """
+    results = await search_duckduckgo(query, max_results)
+    if not results:
+        return "No results found."
+    lines = []
+    for i, r in enumerate(results, 1):
+        lines.append(f"{i}. {r['title']}")
+        lines.append(f"   {r['snippet']}")
+        lines.append(f"   {r['url']}")
+    return "\n".join(lines)
 
 
 @mcp.tool()
-def fetch_page(url: str, max_chars: int = WEB_SEARCH_MAX_CHARS) -> str:
-    """Fetch and extract text content from a webpage."""
-    resp = httpx.get(url, timeout=WEB_SEARCH_FETCH_TIMEOUT)
-    resp.raise_for_status()
-    # Simple extraction - could use BeautifulSoup or playwright later
-    from html import unescape
-    text = unescape(resp.text)
-    # Basic HTML tag removal
-    import re
-    text = re.sub(r'<[^>]+>', ' ', text)
-    text = re.sub(r'\s+', ' ', text)
-    return text[:max_chars]
+async def fetch_page(url: str, max_chars: int = 10000) -> str:
+    """Fetch and extract text content from a webpage.
+
+    Uses the system-configured fetch timeout from WEB_SEARCH_FETCH_TIMEOUT env var.
+    """
+    timeout = float(os.getenv("WEB_SEARCH_FETCH_TIMEOUT", "10.0"))
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.get(url, timeout=timeout)
+        resp.raise_for_status()
+        # Simple extraction - could use BeautifulSoup or playwright later
+        from html import unescape
+        text = unescape(resp.text)
+
+        # Basic HTML tag removal
+        import re
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = re.sub(r'\s+', ' ', text)
+        return text[:10000]
 
 
 if __name__ == "__main__":

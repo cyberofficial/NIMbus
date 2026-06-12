@@ -313,7 +313,7 @@ claude mcp add websearch -- /path/to/NIMbus/.venv/bin/python /path/to/NIMbus/sta
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `web_search` | Search the web using DuckDuckGo | `query` (string), `max_results` (int, default: 5) |
+| `web_search` | Search the web using DuckDuckGo | `query` (string), `max_results` (int, optional) |
 | `fetch_page` | Fetch and extract text from a webpage | `url` (string), `max_chars` (int, default: 10000) |
 
 ### Running MCP Server Manually
@@ -332,13 +332,10 @@ The MCP server inherits settings from `.env`. Configure web search behavior via:
 
 ```dotenv
 # MCP Server settings
-# The server uses the same .env as the proxy mode
 NVIDIA_NIM_API_KEY="nvapi-your-key-here"  # Not required for MCP mode but kept for proxy mode
 
 # Web Search Configuration
-WEB_SEARCH_MAX_RESULTS=5          # Max results per search (default: 5)
 WEB_SEARCH_FETCH_TIMEOUT=10.0     # HTTP timeout for fetch_page in seconds (default: 10.0)
-WEB_SEARCH_MAX_CHARS=10000        # Max characters to return from fetch_page (default: 10000)
 ```
 
 ### Using with Claude Code
