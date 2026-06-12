@@ -1,9 +1,11 @@
 """Interactive setup wizard for NIMbus standalone executable.
 
 Run with: nimbus.exe --init
-Restore settings: nimbus.exe --init restore
+Linux:    nimbus --init linux
+Restore:  nimbus.exe --init restore | nimbus --init linux restore
 """
 
+import contextlib
 import json
 import os
 import random
@@ -44,14 +46,12 @@ _SETTINGS_ENV_KEYS = [
 # Prompt helpers
 # ---------------------------------------------------------------------------
 
+
 def _prompt(msg: str, default: str = "", *, password: bool = False) -> str:
     """Prompt for text input, with optional default and masking."""
     prompt_str = f"{msg} [{default}]: " if default else f"{msg}: "
     while True:
-        if password:
-            value = _masked_input(prompt_str)
-        else:
-            value = input(prompt_str).strip()
+        value = _masked_input(prompt_str) if password else input(prompt_str).strip()
         if value:
             return value
         if default:
@@ -59,31 +59,84 @@ def _prompt(msg: str, default: str = "", *, password: bool = False) -> str:
 
 
 def _masked_input(prompt: str) -> str:
-    """Read a line from stdin, printing * for each character (Windows)."""
-    import msvcrt
+    """Read a line from stdin, printing * for each character.
+    Cross-platform: uses msvcrt on Windows, termios/tty on Unix.
+    """
+    import sys
+
+    try:
+        import msvcrt
+
+        sys.stdout.write(prompt)
+        sys.stdout.flush()
+        chars: list[str] = []
+        while True:
+            ch = msvcrt.getch()
+            if ch in (b"\r", b"\n"):
+                sys.stdout.write("\n")
+                break
+            if ch == b"\x08":  # Backspace
+                if chars:
+                    chars.pop()
+                    sys.stdout.write("\b \b")
+            elif ch == b"\x03":  # Ctrl+C
+                raise KeyboardInterrupt
+            else:
+                try:
+                    decoded = ch.decode("utf-8")
+                    chars.append(decoded)
+                    sys.stdout.write("*")
+                except UnicodeDecodeError:
+                    pass
+            sys.stdout.flush()
+        return "".join(chars)
+    except ImportError:
+        return _unix_masked_input(prompt)
+
+
+def _unix_masked_input(prompt: str) -> str:
+    """Unix masked input using termios/tty (fallback when msvcrt is unavailable).
+
+    Falls back to getpass.getpass() on non-TTY stdin or when termios fails.
+    """
+    import termios
+    import tty
+
+    if not sys.stdin.isatty():
+        import getpass
+
+        return getpass.getpass(prompt)
 
     sys.stdout.write(prompt)
     sys.stdout.flush()
+    fd = sys.stdin.fileno()
+    try:
+        old = termios.tcgetattr(fd)
+    except termios.error:
+        import getpass
+
+        return getpass.getpass(prompt)
     chars: list[str] = []
-    while True:
-        ch = msvcrt.getch()
-        if ch in (b"\r", b"\n"):
-            sys.stdout.write("\n")
-            break
-        if ch == b"\x08":  # Backspace
-            if chars:
-                chars.pop()
-                sys.stdout.write("\b \b")
-        elif ch == b"\x03":  # Ctrl+C
-            raise KeyboardInterrupt
-        else:
-            try:
-                decoded = ch.decode("utf-8")
-                chars.append(decoded)
+    try:
+        tty.setraw(fd)
+        while True:
+            ch = sys.stdin.read(1)
+            if ch in ("\r", "\n"):
+                sys.stdout.write("\n")
+                break
+            if ch == "\x7f":  # DEL (Unix backspace)
+                if chars:
+                    chars.pop()
+                    sys.stdout.write("\b \b")
+            elif ch == "\x03":  # Ctrl+C
+                raise KeyboardInterrupt
+            else:
+                chars.append(ch)
                 sys.stdout.write("*")
-            except UnicodeDecodeError:
-                pass
-        sys.stdout.flush()
+            sys.stdout.flush()
+    finally:
+        with contextlib.suppress(termios.error):
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
     return "".join(chars)
 
 
@@ -124,6 +177,7 @@ def _prompt_choices(msg: str, options: list[str], default: int = 0) -> int:
 # API testing
 # ---------------------------------------------------------------------------
 
+
 def _test_model(api_key: str, model: str) -> tuple[bool, str]:
     """Test a model with a minimal chat completion. Returns (ok, message)."""
     try:
@@ -163,17 +217,32 @@ def _find_working_model(api_key: str) -> tuple[bool, str, str]:
             resp = httpx.get(f"{_NVIDIA_BASE}/models", timeout=30)
             if resp.status_code == 200:
                 data = resp.json()
-                all_models = [m["id"] for m in data.get("data", []) if "/" in m.get("id", "")]
+                all_models = [
+                    m["id"] for m in data.get("data", []) if "/" in m.get("id", "")
+                ]
                 # Filter to chat completion models (skip embeddings, vision-only, safety)
                 _MODELS_CACHE = [
-                    m for m in all_models
-                    if not any(skip in m.lower() for skip in [
-                        "embed", "safety", "guard", "fuyu", "neva", "vila", "deplot",
-                        "kosmos", "nv-embed", "nv-clip", "nemoretriever",
-                    ])
+                    m
+                    for m in all_models
+                    if not any(
+                        skip in m.lower()
+                        for skip in [
+                            "embed",
+                            "safety",
+                            "guard",
+                            "fuyu",
+                            "neva",
+                            "vila",
+                            "deplot",
+                            "kosmos",
+                            "nv-embed",
+                            "nv-clip",
+                            "nemoretriever",
+                        ]
+                    )
                 ]
         models = _MODELS_CACHE[:] if _MODELS_CACHE else []
-    except Exception as e:
+    except Exception:
         models = []
 
     if not models:
@@ -199,17 +268,26 @@ def _find_working_model(api_key: str) -> tuple[bool, str, str]:
         if ok:
             return True, model, msg
 
-    return False, "", f"Tried {tested} random models, none responded - key may be invalid."
+    return (
+        False,
+        "",
+        f"Tried {tested} random models, none responded - key may be invalid.",
+    )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _generate_api_key() -> str:
     """Generate random 32-char key in 16chars.16chars format."""
     chars = string.ascii_letters + string.digits
-    return "".join(random.choices(chars, k=16)) + "." + "".join(random.choices(chars, k=16))
+    return (
+        "".join(random.choices(chars, k=16))
+        + "."
+        + "".join(random.choices(chars, k=16))
+    )
 
 
 def _get_short_name(full: str) -> str:
@@ -234,38 +312,73 @@ def _backup_settings(path: Path) -> Path | None:
     return backup
 
 
-def _restore_settings() -> None:
-    """Restore most recent backup of settings.json."""
-    settings_dir = Path.home() / ".claude"
-    backups = sorted(settings_dir.glob("settings.json.nimbus-backup-*"))
+def _restore_settings(settings_path: Path | None = None) -> None:
+    """Restore most recent backup of settings.json.
+
+    Args:
+        settings_path: If provided, searches for backups in the same directory.
+                       If None, uses Path.home() / ".claude" (Windows default).
+    """
+    if settings_path is not None:
+        search_dir = settings_path.parent
+        target = settings_path
+    else:
+        search_dir = Path.home() / ".claude"
+        target = search_dir / "settings.json"
+    backups = sorted(search_dir.glob("settings.json.nimbus-backup-*"))
     if not backups:
         print("No backup found to restore.")
         return
     latest = backups[-1]
-    target = settings_dir / "settings.json"
     shutil.copy2(str(latest), str(target))
     print(f"Restored settings.json from: {latest.name}")
 
 
-def _write_dotenv(path: Path, params: dict) -> None:
-    """Write .env with all collected values."""
+def _write_dotenv(path: Path, params: dict, is_linux: bool = False) -> None:
+    """Write .env with all collected values.
+
+    Args:
+        path: Path to the .env file.
+        params: Configuration parameters.
+        is_linux: If True, writes actual model names instead of windows:settings.json sentinel.
+    """
+    # Build MODEL line: sentinel on Windows, actual models on Linux
+    if is_linux:
+        full_names = [
+            params.get("model_sonnet_full", ""),
+            params.get("model_opus_full", ""),
+            params.get("model_haiku_full", ""),
+        ]
+        # Deduplicate: keep only unique names in order
+        seen: list[str] = []
+        for name in full_names:
+            if name and name not in seen:
+                seen.append(name)
+        model_line = (
+            f"MODEL={','.join(seen)}" if seen else "MODEL=deepseek-ai/deepseek-v4-flash"
+        )
+    else:
+        model_line = "MODEL=windows:settings.json"
+
     lines = [
         f'NVIDIA_NIM_API_KEY="{params["nvidia_key"]}"',
-        f'PORT={params["port"]}',
-        "MODEL=windows:settings.json",
+        f"PORT={params['port']}",
+        model_line,
         f'PROXY_API_KEY="{params["proxy_key"]}"',
-        f'NIM_THINKING={"true" if params["thinking"] else "false"}',
-        f'SERVER_TYPE={params.get("server_type", "stream")}',
-        f'PROVIDER_MAX_WAIT_TIME={params.get("provider_max_wait", 30)}',
-        f'PROVIDER_RETRY_ON_TRUNCATION={params.get("provider_retry_on_truncation", 3)}',
-        f'PROVIDER_RETRY_DELAY={params.get("provider_retry_delay", 1.0)}',
-        f'ENABLE_RECAP_SKIP={params.get("enable_recap_skip", "true")}',
-        f'ENABLE_NETWORK_PROBE_MOCK={params.get("enable_network_probe_mock", "true")}',
-        f'ENABLE_TITLE_GENERATION_SKIP={params.get("enable_title_generation_skip", "true")}',
-        f'ENABLE_SUGGESTION_MODE_SKIP={params.get("enable_suggestion_mode_skip", "true")}',
-        f'ENABLE_FILEPATH_EXTRACTION_MOCK={params.get("enable_filepath_extraction_mock", "true")}',
+        f"NIM_THINKING={'true' if params['thinking'] else 'false'}",
+        f"SERVER_TYPE={params.get('server_type', 'stream')}",
+        f"PROVIDER_MAX_WAIT_TIME={params.get('provider_max_wait', 30)}",
+        f"PROVIDER_RETRY_ON_TRUNCATION={params.get('provider_retry_on_truncation', 3)}",
+        f"PROVIDER_RETRY_DELAY={params.get('provider_retry_delay', 1.0)}",
+        f"ENABLE_RECAP_SKIP={params.get('enable_recap_skip', 'true')}",
+        f"ENABLE_NETWORK_PROBE_MOCK={params.get('enable_network_probe_mock', 'true')}",
+        f"ENABLE_TITLE_GENERATION_SKIP={params.get('enable_title_generation_skip', 'true')}",
+        f"ENABLE_SUGGESTION_MODE_SKIP={params.get('enable_suggestion_mode_skip', 'true')}",
+        f"ENABLE_FILEPATH_EXTRACTION_MOCK={params.get('enable_filepath_extraction_mock', 'true')}",
     ]
-    content = "# NIMbus configuration -- generated by --init\n" + "\n".join(lines) + "\n"
+    content = (
+        "# NIMbus configuration -- generated by --init\n" + "\n".join(lines) + "\n"
+    )
     path.write_text(content, encoding="utf-8")
     print(f"  .env -> {path}")
 
@@ -276,24 +389,37 @@ def _write_settings_json(path: Path, params: dict) -> None:
     if path.exists():
         try:
             existing = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError, OSError:
             existing = {}
 
     current_env = existing.get("env", {})
-    current_env.update({
-        "ANTHROPIC_BASE_URL": params["base_url"],
-        "ANTHROPIC_AUTH_TOKEN": params["proxy_key"],
-        "ANTHROPIC_MODEL": params["model_full"],
-        "ANTHROPIC_DEFAULT_OPUS_MODEL": params["model_opus"],
-        "ANTHROPIC_DEFAULT_SONNET_MODEL": params["model_sonnet"],
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL": params["model_haiku"],
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-    })
+    current_env.update(
+        {
+            "ANTHROPIC_BASE_URL": params["base_url"],
+            "ANTHROPIC_AUTH_TOKEN": params["proxy_key"],
+            "ANTHROPIC_MODEL": params["model_full"],
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": params["model_opus"],
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": params["model_sonnet"],
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": params["model_haiku"],
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        }
+    )
     existing["env"] = current_env
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(existing, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(existing, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
     print(f"  settings.json -> {path}")
+
+
+def _build_model_list_str(*full_names: str) -> str:
+    """Deduplicate and comma-join full NIM model IDs for the MODEL env var."""
+    seen: list[str] = []
+    for name in full_names:
+        if name and name not in seen:
+            seen.append(name)
+    return ",".join(seen) if seen else "deepseek-ai/deepseek-v4-flash"
 
 
 def _print_summary(params: dict) -> None:
@@ -309,12 +435,12 @@ def _print_summary(params: dict) -> None:
     print(f"  Opus:         {params['model_opus']}")
     print(f"  Haiku:        {params['model_haiku']}")
     print(f"  Port:         {params['port']}")
-    print(f"  Discord Bot:  Disabled")
+    print("  Discord Bot:  Disabled")
     print()
     print("  TO CONNECT CLAUDE CODE:")
     print("  " + "-" * 40)
-    print(f'  set ANTHROPIC_AUTH_TOKEN={params["proxy_key"]}')
-    print(f'  set ANTHROPIC_BASE_URL={params["base_url"]}')
+    print(f"  set ANTHROPIC_AUTH_TOKEN={params['proxy_key']}")
+    print(f"  set ANTHROPIC_BASE_URL={params['base_url']}")
     print("  claude")
     print()
     print("  Press Ctrl+C to stop the server.")
@@ -322,13 +448,18 @@ def _print_summary(params: dict) -> None:
     print()
 
 
-def _pick_and_test_model(api_key: str, tested_models: set[str] | None = None,
-                          extra_models: list[str] | None = None) -> str:
+def _pick_and_test_model(
+    api_key: str,
+    tested_models: set[str] | None = None,
+    extra_models: list[str] | None = None,
+) -> tuple[str, str]:
     """Let user pick a model, test it (unless already-tested), choose context window.
-    Returns the model name with context suffix (e.g. deepseek-v4-flash[1m]).
-    tested_models: set of full NIM names already confirmed working - skip retest.
-    extra_models: growing list of full NIM names from custom entries - shown as options
-                  in subsequent calls. Modified in-place."""
+
+    Returns:
+        Tuple of (short_name_with_suffix, full_nim_id).
+        short_name_with_suffix: e.g. "deepseek-v4-flash[1m]" - for settings.json keys.
+        full_nim_id: e.g. "deepseek-ai/deepseek-v4-flash" - for .env MODEL on Linux.
+    """
     if tested_models is None:
         tested_models = set()
     if extra_models is None:
@@ -360,16 +491,26 @@ def _pick_and_test_model(api_key: str, tested_models: set[str] | None = None,
 
             print(f"  {model_msg}")
             print(f"  {full_model} is not responding right now.")
-            retry_choices = ["Try this model again", "Pick a different model", "Proceed anyway"]
-            choice = _prompt_choices("  What would you like to do?", retry_choices, default=0)
+            retry_choices = [
+                "Try this model again",
+                "Pick a different model",
+                "Proceed anyway",
+            ]
+            choice = _prompt_choices(
+                "  What would you like to do?", retry_choices, default=0
+            )
             if choice == 0:
                 continue
             elif choice == 1:
-                model_idx = _prompt_choices("  Select a model:", model_choices, default=0)
+                model_idx = _prompt_choices(
+                    "  Select a model:", model_choices, default=0
+                )
                 if model_idx == len(model_choices) - 1:
                     full_model = _prompt("Enter model name (org/name format)")
                     while "/" not in full_model:
-                        print("  Must be in 'org/name' format (e.g. deepseek-ai/deepseek-v4-flash)")
+                        print(
+                            "  Must be in 'org/name' format (e.g. deepseek-ai/deepseek-v4-flash)"
+                        )
                         full_model = _prompt("Enter model name")
                 else:
                     full_model = model_choices[model_idx]
@@ -384,7 +525,7 @@ def _pick_and_test_model(api_key: str, tested_models: set[str] | None = None,
     ctx_idx = _prompt_choices("  Context window:", ctx_choices, default=0)
     suffix = "[1m]" if ctx_idx == 1 else ""
     short = _get_short_name(full_model)
-    return f"{short}{suffix}"
+    return (f"{short}{suffix}", full_model)
 
 
 def _add_unique(lst: list[str], item: str) -> None:
@@ -401,7 +542,7 @@ def _load_custom_models(exe_dir: Path) -> list[str]:
     try:
         data = json.loads(models_file.read_text(encoding="utf-8"))
         return data if isinstance(data, list) else []
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError, OSError:
         return []
 
 
@@ -410,6 +551,137 @@ def _save_custom_models(exe_dir: Path, models: list[str]) -> None:
     if models:
         models_file = exe_dir / ".nimbus_models"
         models_file.write_text(json.dumps(models, indent=2), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Settings path discovery (Linux)
+# ---------------------------------------------------------------------------
+
+_LINUX_SETTINGS_PATHS: list[str] = [
+    # $CLAUDE_CONFIG_DIR overrides the base dir entirely
+    # $XDG_CONFIG_HOME/claude/ is used when the env var is set
+    # ~/.config/claude/ is the XDG default
+    # ~/.claude/ is the legacy default (same as Windows)
+    "CLAUDE_CONFIG_DIR",
+    "XDG_CONFIG_HOME",
+    "~/.config/claude",
+    "~/.claude",
+]
+
+
+def _find_claude_settings_path() -> Path | None:
+    """Search common Linux paths for Claude Code's settings.json.
+
+    Search order:
+      1. $CLAUDE_CONFIG_DIR/settings.json
+      2. $XDG_CONFIG_HOME/claude/settings.json
+      3. ~/.config/claude/settings.json
+      4. ~/.claude/settings.json
+
+    Returns the first existing path, or None if none found.
+    """
+    # 1. CLAUDE_CONFIG_DIR env var
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR", "")
+    if config_dir:
+        candidate = Path(config_dir) / "settings.json"
+        if candidate.exists():
+            return candidate
+
+    # 2. XDG_CONFIG_HOME env var
+    xdg_config = os.environ.get("XDG_CONFIG_HOME", "")
+    if xdg_config:
+        candidate = Path(xdg_config) / "claude" / "settings.json"
+        if candidate.exists():
+            return candidate
+
+    # 3. XDG default: ~/.config/claude/settings.json
+    candidate = Path.home() / ".config" / "claude" / "settings.json"
+    if candidate.exists():
+        return candidate
+
+    # 4. Legacy default: ~/.claude/settings.json
+    candidate = Path.home() / ".claude" / "settings.json"
+    if candidate.exists():
+        return candidate
+
+    return None
+
+
+def _load_saved_settings_path(exe_dir: Path) -> Path | None:
+    """Load a previously-saved settings.json path from the exe directory."""
+    path_file = exe_dir / ".nimbus_settings_path"
+    if not path_file.exists():
+        return None
+    try:
+        data = json.loads(path_file.read_text(encoding="utf-8"))
+        if isinstance(data, str):
+            p = Path(data)
+            if p.exists():
+                return p
+    except json.JSONDecodeError, OSError:
+        pass
+    return None
+
+
+def _save_settings_path(exe_dir: Path, path: Path) -> None:
+    """Save a settings.json path so --init linux restore can find it later."""
+    path_file = exe_dir / ".nimbus_settings_path"
+    path_file.write_text(json.dumps(str(path)), encoding="utf-8")
+
+
+def _prompt_for_settings_path() -> Path:
+    """Ask the user to enter the path to their settings.json.
+
+    Prints the list of locations already searched, then prompts.
+    If the entered path doesn't exist, offers to create it.
+    Re-prompts until a valid path is given.
+    """
+    print()
+    print("  Could not find Claude Code settings.json in any of these locations:")
+    for loc in _LINUX_SETTINGS_PATHS:
+        print(f"    - {loc}")
+    print()
+    while True:
+        raw = input("  Enter path to Claude Code settings.json: ").strip()
+        if not raw:
+            print("  Path cannot be empty.")
+            continue
+        path = Path(raw).expanduser().resolve()
+        if path.exists():
+            return path
+        # Offer to create the file (and parent dirs) with an empty JSON object
+        if _prompt_yes_no("  Path does not exist. Create it?", default=True):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}\n", encoding="utf-8")
+            print(f"  Created: {path}")
+            return path
+        print("  Enter a different path.")
+
+
+def _determine_settings_path(exe_dir: Path, is_linux: bool) -> Path:
+    """Resolve the settings.json path for the current platform.
+
+    On Windows: returns Path.home() / ".claude" / "settings.json" (unchanged).
+    On Linux: tries saved path, then search, then prompts the user.
+    """
+    if not is_linux:
+        return Path.home() / ".claude" / "settings.json"
+
+    # 1. Try saved path first
+    saved = _load_saved_settings_path(exe_dir)
+    if saved is not None:
+        return saved
+
+    # 2. Search common locations
+    found = _find_claude_settings_path()
+    if found is not None:
+        _save_settings_path(exe_dir, found)
+        return found
+
+    # 3. Ask the user
+    user_path = _prompt_for_settings_path()
+    _save_settings_path(exe_dir, user_path)
+    return user_path
 
 
 def _print_banner() -> None:
@@ -435,11 +707,29 @@ def _print_banner() -> None:
 # Public entry point
 # ---------------------------------------------------------------------------
 
+
 def run_wizard(exe_dir: Path, argv: list[str]) -> None:
-    """Run the interactive setup wizard (called from packaged_entry.py)."""
-    if "restore" in argv:
-        _restore_settings()
+    """Run the interactive setup wizard (called from packaged_entry.py).
+
+    Platform dispatch:
+      --init                Windows mode (default, unchanged)
+      --init restore        Restore from ~/.claude/ (Windows)
+      --init linux          Linux mode (searches for settings.json)
+      --init linux restore  Restore from saved Linux settings path
+    """
+    is_linux = "linux" in argv
+    is_restore = "restore" in argv
+
+    if is_restore:
+        if is_linux:
+            settings_path = _determine_settings_path(exe_dir, is_linux=True)
+            _restore_settings(settings_path=settings_path)
+        else:
+            _restore_settings()
         return
+
+    # Resolve settings.json path for this platform (used in Steps 7-8)
+    settings_path = _determine_settings_path(exe_dir, is_linux)
 
     try:
         _print_banner()
@@ -466,7 +756,9 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
         print()
         print("Step 2: Proxy API Key")
         print("-" * 40)
-        print("  This key protects your proxy. Claude Code will use it to authenticate.")
+        print(
+            "  This key protects your proxy. Claude Code will use it to authenticate."
+        )
         choices = ["Auto-generate a random key (recommended)", "Enter my own key"]
         idx = _prompt_choices("  Choose an option:", choices, default=0)
         if idx == 0:
@@ -485,24 +777,37 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
         print("-" * 40)
         tested_models: set[str] = set()
         extra_models: list[str] = _load_custom_models(exe_dir)
-        full_model = _pick_and_test_model(nvidia_key, tested_models, extra_models)
+        # Unpack tuple: (short_name_with_suffix, full_nim_id)
+        model_sonnet, model_sonnet_full = _pick_and_test_model(
+            nvidia_key, tested_models, extra_models
+        )
 
         # Ask about per-tier models
         print()
-        if _prompt_yes_no("  Use the same model for all Claude tiers (Sonnet/Opus/Haiku)?", default=True):
-            model_sonnet = full_model
-            model_opus = full_model
-            model_haiku = full_model
+        if _prompt_yes_no(
+            "  Use the same model for all Claude tiers (Sonnet/Opus/Haiku)?",
+            default=True,
+        ):
+            model_opus = model_sonnet
+            model_haiku = model_sonnet
+            model_opus_full = model_sonnet_full
+            model_haiku_full = model_sonnet_full
         else:
             print()
             print("  Model for Sonnet (Default tier, 1M context):")
-            model_sonnet = _pick_and_test_model(nvidia_key, tested_models, extra_models)
+            model_sonnet, model_sonnet_full = _pick_and_test_model(
+                nvidia_key, tested_models, extra_models
+            )
             print()
             print("  Model for Opus tier (1M context):")
-            model_opus = _pick_and_test_model(nvidia_key, tested_models, extra_models)
+            model_opus, model_opus_full = _pick_and_test_model(
+                nvidia_key, tested_models, extra_models
+            )
             print()
             print("  Model for Haiku tier (200k context):")
-            model_haiku = _pick_and_test_model(nvidia_key, tested_models, extra_models)
+            model_haiku, model_haiku_full = _pick_and_test_model(
+                nvidia_key, tested_models, extra_models
+            )
 
         _save_custom_models(exe_dir, extra_models)
 
@@ -532,8 +837,13 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
         print("  buffer  → Waits for the full Nvidia response, retries on failure,")
         print("            then sends the complete result. More reliable but slower.")
         print()
-        server_type_choices = ["stream (live, may fail mid-stream)", "buffer (reliable, slower)"]
-        st_idx = _prompt_choices("  Choose server mode:", server_type_choices, default=0)
+        server_type_choices = [
+            "stream (live, may fail mid-stream)",
+            "buffer (reliable, slower)",
+        ]
+        st_idx = _prompt_choices(
+            "  Choose server mode:", server_type_choices, default=0
+        )
         server_type = "stream" if st_idx == 0 else "buffer"
 
         # Buffer-specific options
@@ -578,11 +888,17 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
         print()
         opts = {}
         opt_defs = [
-            ("enable_recap_skip", "Skip recap requests when you return after stepping away"),
+            (
+                "enable_recap_skip",
+                "Skip recap requests when you return after stepping away",
+            ),
             ("enable_network_probe_mock", "Mock quota/network probe requests"),
             ("enable_title_generation_skip", "Skip conversation title generation"),
             ("enable_suggestion_mode_skip", "Skip suggestion mode requests"),
-            ("enable_filepath_extraction_mock", "Mock filepath extraction (speeds up file searching)"),
+            (
+                "enable_filepath_extraction_mock",
+                "Mock filepath extraction (speeds up file searching)",
+            ),
         ]
         for key, desc in opt_defs:
             yn = _prompt_yes_no(f"  {desc}?", default=True)
@@ -598,15 +914,15 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
         print()
         print("Step 7: Claude Code Configuration")
         print("-" * 40)
-        settings_path = Path.home() / ".claude" / "settings.json"
         print(f"  Target: {settings_path}")
 
         backup_path = None
-        if settings_path.exists():
-            if _prompt_yes_no("  Backup existing settings before modifying?", default=True):
-                backup_path = _backup_settings(settings_path)
-                if backup_path:
-                    print(f"  Backup saved to: {backup_path.name}")
+        if settings_path.exists() and _prompt_yes_no(
+            "  Backup existing settings before modifying?", default=True
+        ):
+            backup_path = _backup_settings(settings_path)
+            if backup_path:
+                print(f"  Backup saved to: {backup_path.name}")
 
         settings_params = {
             "base_url": base_url,
@@ -624,36 +940,59 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
         print("Step 8: Writing .env")
         print("-" * 40)
         env_path = exe_dir / ".env"
-        _write_dotenv(env_path, {
-            "nvidia_key": nvidia_key,
-            "port": port,
-            "proxy_key": proxy_key,
-            "thinking": "deepseek" in full_model.lower(),
-            "server_type": server_type,
-            "provider_max_wait": provider_max_wait,
-            "provider_retry_on_truncation": provider_retry_on_truncation,
-            "provider_retry_delay": provider_retry_delay,
-            "enable_recap_skip": enable_recap_skip,
-            "enable_network_probe_mock": enable_network_probe_mock,
-            "enable_title_generation_skip": enable_title_generation_skip,
-            "enable_suggestion_mode_skip": enable_suggestion_mode_skip,
-            "enable_filepath_extraction_mock": enable_filepath_extraction_mock,
-        })
-        print("  .env written with MODEL=windows:settings.json")
+        _write_dotenv(
+            env_path,
+            {
+                "nvidia_key": nvidia_key,
+                "port": port,
+                "proxy_key": proxy_key,
+                "thinking": "deepseek" in model_sonnet.lower(),
+                "server_type": server_type,
+                "provider_max_wait": provider_max_wait,
+                "provider_retry_on_truncation": provider_retry_on_truncation,
+                "provider_retry_delay": provider_retry_delay,
+                "enable_recap_skip": enable_recap_skip,
+                "enable_network_probe_mock": enable_network_probe_mock,
+                "enable_title_generation_skip": enable_title_generation_skip,
+                "enable_suggestion_mode_skip": enable_suggestion_mode_skip,
+                "enable_filepath_extraction_mock": enable_filepath_extraction_mock,
+                # Full NIM model IDs for Linux .env MODEL line
+                "model_sonnet_full": model_sonnet_full,
+                "model_opus_full": model_opus_full,
+                "model_haiku_full": model_haiku_full,
+            },
+            is_linux=is_linux,
+        )
+
+        model_display = (
+            _build_model_list_str(model_sonnet_full, model_opus_full, model_haiku_full)
+            if is_linux
+            else "windows:settings.json"
+        )
+        print(f"  .env written with MODEL={model_display}")
 
         # ---- Summary ----
-        _print_summary({
-            "base_url": base_url,
-            "proxy_key": proxy_key,
-            "model_sonnet": model_sonnet,
-            "model_opus": model_opus,
-            "model_haiku": model_haiku,
-            "port": port,
-        })
+        _print_summary(
+            {
+                "base_url": base_url,
+                "proxy_key": proxy_key,
+                "model_sonnet": model_sonnet,
+                "model_opus": model_opus,
+                "model_haiku": model_haiku,
+                "port": port,
+            }
+        )
 
     except KeyboardInterrupt:
         print("\n\nSetup cancelled. No files were modified.")
     except Exception as e:
         print(f"\nError during setup: {e}")
         import traceback
+
         traceback.print_exc()
+
+
+if __name__ == "__main__":
+    """Allow running the wizard directly (without packaged_entry.py)."""
+    exe_dir = Path(__file__).parent.resolve()
+    run_wizard(exe_dir, sys.argv)
