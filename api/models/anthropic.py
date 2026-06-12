@@ -58,7 +58,7 @@ class SystemContent(BaseModel):
 
 
 class Message(BaseModel):
-    role: Literal["user", "assistant"]
+    role: Literal["user", "assistant", "system"]  # system role accepted for models that embed system in messages
     content: (
         str
         | list[

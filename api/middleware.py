@@ -71,4 +71,19 @@ async def verify_api_key(request: Request, call_next):
             },
         )
 
+    # Log full raw request for debug routes
+    if request.url.path.startswith("/v1/messages"):
+        try:
+            raw_body = await request.body()
+            body_str = raw_body.decode("utf-8", errors="replace")[:5000]
+            logger.info(
+                "RAW_REQUEST {} {} headers={} body={}",
+                request.method,
+                str(request.url),
+                {k: v for k, v in request.headers.items()},
+                body_str,
+            )
+        except Exception:
+            pass
+
     return await call_next(request)

@@ -84,6 +84,10 @@ class HeaderCapturingTransport(httpx.AsyncHTTPTransport):
         start_time = time.monotonic()
 
         response = await super().handle_async_request(request)
+        # OpenAI SDK's retry logic requires response.request to be set.
+        # httpx may return a response with _request as None, so force it.
+        if getattr(response, "_request", None) is None:
+            response._request = request  # type: ignore[attr-defined]
 
         elapsed = time.monotonic() - start_time
 

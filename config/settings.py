@@ -3,9 +3,12 @@
 This configuration is exclusively for NVIDIA NIM API endpoints.
 """
 
+import json
+import os
 import random
 import string
 from functools import lru_cache
+from pathlib import Path
 
 from dotenv import load_dotenv
 from pydantic import Field, field_validator
@@ -283,10 +286,15 @@ class Settings(BaseSettings):
         MODEL may be a single model or comma-separated list.
         Each entry must be in format: owner/model-name
         (e.g., "meta/llama3-70b-instruct", "qwen/qwen3.5-397b-a17b")
+
+        Special value "windows:settings.json" reads models from
+        Claude Code's settings.json instead.
         """
         if not v or not v.strip():
             raise ValueError("Model name cannot be empty")
         v = v.strip()
+        if v == "windows:settings.json":
+            return v  # special sentinel, skip format check
         for part in v.split(","):
             part = part.strip()
             if not part:
@@ -308,8 +316,13 @@ class Settings(BaseSettings):
         reasoning_effort, include_reasoning, return_tokens_as_token_ids) are not
         universally supported across NIM models (e.g., Qwen rejects them at the API level).
         When running multi-model setups, disable thinking to prevent API errors.
+
+        When MODEL=windows:settings.json, we can't count models from the env var,
+        so thinking is left as-is (preserving the user's NIM_THINKING setting).
         """
         model_raw = info.data.get("model", "")
+        if model_raw == "windows:settings.json":
+            return v  # can't determine count, keep user's thinking setting
         model_count = len([m.strip() for m in model_raw.split(",") if m.strip()])
         if model_count > 1 and v.thinking:
             from loguru import logger
@@ -323,8 +336,47 @@ class Settings(BaseSettings):
 
     @property
     def model_list(self) -> list[str]:
-        """Parse MODEL as comma-separated list of model names."""
+        """Parse MODEL as comma-separated list of model names.
+
+        Special value "windows:settings.json" reads models from
+        Claude Code's settings.json (USERPROFILE/.claude/settings.json)
+        instead, looking up ANTHROPIC_DEFAULT_SONNET_MODEL,
+        ANTHROPIC_DEFAULT_OPUS_MODEL, and ANTHROPIC_DEFAULT_HAIKU_MODEL
+        from the env section.
+        """
+        if self.model == "windows:settings.json":
+            return self._model_list_from_claude_settings()
         return [m.strip() for m in self.model.split(",") if m.strip()]
+
+    def _model_list_from_claude_settings(self) -> list[str]:
+        """Read model list from Claude Code settings.json.
+
+        Reads ANTHROPIC_DEFAULT_SONNET_MODEL, _OPUS_, _HAIKU_
+        from USERPROFILE/.claude/settings.json env section.
+        Strips the [1m] suffix and maps short names to full NIM model IDs.
+        Falls back to deepseek-ai/deepseek-v4-flash if anything fails.
+        """
+        settings_path = Path.home() / ".claude" / "settings.json"
+        if not settings_path.exists():
+            return ["deepseek-ai/deepseek-v4-flash"]
+        try:
+            data = json.loads(settings_path.read_text(encoding="utf-8"))
+            env = data.get("env", {})
+            models: list[str] = []
+            for key in [
+                "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            ]:
+                val = env.get(key, "")
+                if val:
+                    if val.endswith("[1m]"):
+                        val = val[:-4]
+                    # Map short names (Claude Code convention) to full NIM model IDs
+                    models.append(_to_full_nim_model(val))
+            return models if models else ["deepseek-ai/deepseek-v4-flash"]
+        except (json.JSONDecodeError, OSError):
+            return ["deepseek-ai/deepseek-v4-flash"]
 
     # Claude model ID keyword → position in MODEL list
     # Claude API IDs: claude-sonnet-4-6, claude-opus-4-7, claude-haiku-4-5-20251001
@@ -379,3 +431,47 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Get cached settings instance."""
     return Settings()
+
+
+_NVIDIA_MODEL_CACHE: dict[str, str] | None = None
+"""Cache of short_name -> full NIM ID, populated from NVIDIA /v1/models."""
+
+
+def _fetch_nvidia_models() -> dict[str, str]:
+    """Fetch available models from NVIDIA and build short→full mapping."""
+    global _NVIDIA_MODEL_CACHE
+    if _NVIDIA_MODEL_CACHE is not None:
+        return _NVIDIA_MODEL_CACHE
+    try:
+        import httpx
+        resp = httpx.get("https://integrate.api.nvidia.com/v1/models", timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            mapping: dict[str, str] = {}
+            for m in data.get("data", []):
+                full_id = m.get("id", "")
+                if "/" in full_id:
+                    short = full_id.split("/", 1)[1]
+                    mapping[short] = full_id
+            _NVIDIA_MODEL_CACHE = mapping
+            return mapping
+    except Exception:
+        pass
+    _NVIDIA_MODEL_CACHE = {}
+    return {}
+
+
+def _to_full_nim_model(name: str) -> str:
+    """Map a short model name to a full NIM model ID (org/model-name).
+
+    Dynamically queries NVIDIA's /v1/models endpoint (no auth needed)
+    to find the correct org prefix for short names.
+    """
+    if "/" in name:
+        return name
+    # Try dynamic lookup from NVIDIA's model catalog
+    mapping = _fetch_nvidia_models()
+    if name in mapping:
+        return mapping[name]
+    # Last resort: return as-is and let NVIDIA reject it clearly
+    return name

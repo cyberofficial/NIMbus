@@ -185,12 +185,17 @@ def build_base_request_body(
     *,
     default_max_tokens: int | None = None,
     include_reasoning_for_openrouter: bool = False,
+    system_as_user: bool = False,
 ) -> dict[str, Any]:
     """Build the common parts of an OpenAI-format request body.
 
     Handles message conversion, system prompt, max_tokens, temperature,
     top_p, stop sequences, tools, and tool_choice. Provider-specific
     parameters (extra_body, penalties, NIM settings) are added by callers.
+
+    When system_as_user=True, system prompts are placed as user messages
+    with a "[System Instructions]" prefix for models that don't support
+    the system role.
     """
     from providers.utils import set_if_not_none
 
@@ -203,6 +208,11 @@ def build_base_request_body(
     if system:
         system_msg = AnthropicToOpenAIConverter.convert_system_prompt(system)
         if system_msg:
+            if system_as_user:
+                system_msg = {
+                    "role": "user",
+                    "content": f"[System Instructions]\n{system_msg['content']}",
+                }
             messages.insert(0, system_msg)
 
     body: dict[str, Any] = {"model": request_data.model, "messages": messages}

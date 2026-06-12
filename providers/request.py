@@ -21,14 +21,23 @@ def _set_extra(
     extra_body[key] = value
 
 
-def build_request_body(request_data: Any, nim: NimSettings) -> dict:
-    """Build OpenAI-format request body from Anthropic request."""
+def build_request_body(
+    request_data: Any, nim: NimSettings, *, system_as_user: bool = False
+) -> dict:
+    """Build OpenAI-format request body from Anthropic request.
+
+    Args:
+        request_data: The Anthropic-format request.
+        nim: NIM settings for parameters like max_tokens, temperature, etc.
+        system_as_user: When True, system prompts are placed as user messages
+            (for models that don't support the system role).
+    """
     logger.debug(
         "NIM_REQUEST: conversion start model={} msgs={}",
         getattr(request_data, "model", "?"),
         len(getattr(request_data, "messages", [])),
     )
-    body = build_base_request_body(request_data)
+    body = build_base_request_body(request_data, system_as_user=system_as_user)
 
     # NIM-specific max_tokens: cap against nim.max_tokens
     max_tokens = body.get("max_tokens") or getattr(request_data, "max_tokens", None)

@@ -8,13 +8,15 @@ This module contains the NIM provider which handles:
 
 import asyncio
 import json
+import sys
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 from typing import Any
 
 import httpx
 from loguru import logger
-from openai import APIConnectionError, APITimeoutError, AsyncOpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, BadRequestError, UnprocessableEntityError
 
 from config.nim import NimSettings
 from providers.base import BaseProvider, ProviderConfig
@@ -32,6 +34,98 @@ from providers.sse_builder import SSEBuilder, map_stop_reason
 from providers.think_parser import ContentType, ThinkTagParser
 
 NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
+
+
+def _format_error_detail(e: Exception) -> str:
+    """Format an exception with its causal chain for diagnostics."""
+    parts = [repr(e)]
+    cause = e.__cause__
+    while cause is not None:
+        parts.append(f"<- {type(cause).__name__}: {cause}")
+        cause = cause.__cause__
+    return " | ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Role error helpers - handle models that reject "system" role
+# ---------------------------------------------------------------------------
+
+_system_as_user_cache: set[str] = set()
+"""Runtime cache of models known to reject system role. Populated on first
+422 error and used by subsequent retry attempts to avoid rebuilding with
+the original body (which would cause another 422)."""
+
+
+def _model_rejects_system(model: str) -> bool:
+    """Check if model is known to reject system role."""
+    return model in _system_as_user_cache
+
+
+def _is_role_error(e: APIStatusError) -> bool:
+    """Check if a 422 error is about the system role being rejected.
+
+    Matches errors like: "Input should be 'user' or 'assistant'" where
+    the location path contains "role" (e.g., loc=['body','messages',1,'role']).
+    """
+    try:
+        err_body = e.response.json()
+        for detail in err_body.get("detail", []):
+            loc = detail.get("loc", [])
+            msg = detail.get("msg", "")
+            # Check if location path references the "role" field
+            if "role" in loc:
+                return True
+            # Also check if the message is a role validation error
+            if ("user" in msg and "assistant" in msg) or "role" in msg.lower():
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _system_to_user(msg: dict) -> dict:
+    """Convert a system message to a user message with a prefix."""
+    return {"role": "user", "content": f"[System Instructions]\n{msg.get('content', '')}"}
+
+
+def _save_model_override(model_name: str) -> None:
+    """Auto-create overrides.json with this model entry for future runs."""
+    if not model_name:
+        return
+    if getattr(sys, "frozen", False):
+        base = Path(sys.executable).parent
+    else:
+        base = Path(__file__).resolve().parent.parent
+    path = base / "overrides.json"
+
+    overrides: dict = {}
+    if path.exists():
+        try:
+            overrides = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            overrides = {}
+
+    model_overrides = overrides.setdefault("model_overrides", {})
+    if model_name not in model_overrides:
+        model_overrides[model_name] = {"system_as_user": True}
+        try:
+            path.write_text(
+                json.dumps(overrides, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            logger.info("Created overrides.json entry for {}", model_name)
+        except OSError as e:
+            logger.warning("Could not write overrides.json: {}", e)
+
+
+def _rebuild_with_system_as_user(body: dict) -> dict:
+    """Clone request body, replacing system messages with user messages."""
+    new_body = dict(body)
+    new_body["messages"] = [
+        _system_to_user(m) if m.get("role") == "system" else m
+        for m in body.get("messages", [])
+    ]
+    return new_body
 
 
 class NvidiaNimProvider(BaseProvider):
@@ -78,9 +172,17 @@ class NvidiaNimProvider(BaseProvider):
             await client.aclose()
 
     def _build_request_body(self, request: Any) -> dict:
-        """Build request body for NIM API."""
+        """Build request body for NIM API.
+
+        Checks the runtime cache for models known to reject the system role
+        so that retry loops don't accidentally send system→model→422 again.
+        """
         assert self._nim_settings is not None
-        return build_request_body(request, self._nim_settings)
+        body = build_request_body(request, self._nim_settings)
+        model = body.get("model", "")
+        if _model_rejects_system(model):
+            body = _rebuild_with_system_as_user(body)
+        return body
 
     async def buffered_request(
         self,
@@ -134,9 +236,26 @@ class NvidiaNimProvider(BaseProvider):
                 async with self._global_rate_limiter.concurrency_slot():
                     req_token = request_id_var.set(request_id)
                     try:
-                        response = await self._client.chat.completions.create(
-                            **body, stream=False,
-                        )
+                        try:
+                            response = await self._client.chat.completions.create(
+                                **body, stream=False,
+                            )
+                        except (BadRequestError, UnprocessableEntityError) as e:
+                            if e.status_code == 422 and _is_role_error(e):
+                                model = body.get("model", "")
+                                logger.warning(
+                                    "{}_BUFFERED: System role rejected by model ({}) - "
+                                    "retrying with system→user conversion",
+                                    tag, model,
+                                )
+                                _system_as_user_cache.add(model)
+                                _save_model_override(model)
+                                body = _rebuild_with_system_as_user(body)
+                                response = await self._client.chat.completions.create(
+                                    **body, stream=False,
+                                )
+                            else:
+                                raise
                     finally:
                         request_id_var.reset(req_token)
 
@@ -151,16 +270,17 @@ class NvidiaNimProvider(BaseProvider):
 
             except (APIConnectionError, APITimeoutError) as e:
                 last_error = e
+                detail = _format_error_detail(e)
                 exhaustion_msg = (
                     f"after {attempt + 1} attempts"
                     if max_retries > 0
                     else f"after {attempt + 1} attempts (endless retries - still trying)"
                 )
                 logger.error(
-                    "{}_BUFFERED: Connection/timeout error {}: {}",
+                    "{}_BUFFERED: Connection/timeout error {} - {}",
                     tag,
                     exhaustion_msg,
-                    e,
+                    detail,
                 )
                 if max_retries > 0 and attempt >= max_retries:
                     raise StreamTruncatedError(
@@ -383,6 +503,22 @@ class NvidiaNimProvider(BaseProvider):
                         stream = await self._global_rate_limiter.execute_with_retry(
                             self._client.chat.completions.create, **body, stream=True
                         )
+                    except (BadRequestError, UnprocessableEntityError) as e:
+                        if e.status_code == 422 and _is_role_error(e):
+                            model = body.get("model", "")
+                            logger.warning(
+                                "{}_STREAM: System role rejected by model ({}) - "
+                                "retrying with system→user conversion",
+                                tag, model,
+                            )
+                            _system_as_user_cache.add(model)
+                            _save_model_override(model)
+                            body = _rebuild_with_system_as_user(body)
+                            stream = await self._global_rate_limiter.execute_with_retry(
+                                self._client.chat.completions.create, **body, stream=True
+                            )
+                        else:
+                            raise
                     finally:
                         request_id_var.reset(req_token)
                     async for chunk in stream:
@@ -465,14 +601,15 @@ class NvidiaNimProvider(BaseProvider):
 
                 except (APIConnectionError, APITimeoutError, httpx.ReadError) as e:
                     last_error_tag = f"{type(e).__name__}"
+                    detail = _format_error_detail(e)
                     if max_retries == 0 or attempt < max_retries:
                         logger.warning(
-                            "{}_STREAM: {} on attempt {}/{} - will retry: {}",
+                            "{}_STREAM: {} on attempt {}/{} - retrying. {}",
                             tag,
                             type(e).__name__,
                             attempt + 1,
                             max_retries if max_retries > 0 else "∞",
-                            e,
+                            detail,
                         )
                         attempt += 1
                         continue  # jump to next retry iteration
@@ -480,10 +617,7 @@ class NvidiaNimProvider(BaseProvider):
                     # All retries exhausted
                     logger.error(
                         "{}_STREAM: {} exhausted after {} attempts: {}",
-                        tag,
-                        type(e).__name__,
-                        max_retries + 1,
-                        e,
+                        tag, type(e).__name__, attempt + 1, detail,
                     )
                     mapped_e = map_error(e)
                     error_occurred = True

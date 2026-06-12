@@ -115,10 +115,16 @@ def main() -> None:
     exe_dir = _exe_dir()
     os.chdir(str(exe_dir))
 
-    # --- Step 2: Auto-create .env if missing ---
+    # --- Step 2: Check for --init interactive setup wizard ---
+    if "--init" in sys.argv:
+        from setup_wizard import run_wizard
+        run_wizard(exe_dir, sys.argv)
+        sys.exit(0)
+
+    # --- Step 3: Auto-create .env if missing ---
     _ensure_env_file(exe_dir)
 
-    # --- Step 3: Point tiktoken at bundled cache ---
+    # --- Step 4: Point tiktoken at bundled cache ---
     # In --onefile mode, data files are extracted to sys._MEIPASS
     if getattr(sys, "frozen", False):
         meipass = Path(sys._MEIPASS)
