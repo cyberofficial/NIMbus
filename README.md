@@ -313,7 +313,7 @@ claude mcp add websearch -- /path/to/NIMbus/.venv/bin/python /path/to/NIMbus/sta
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `web_search` | Search the web using DuckDuckGo | `query` (string), `max_results` (int, optional) |
+| `web_search` | Search the web using DuckDuckGo | `query` (string) |
 | `fetch_page` | Fetch and extract text from a webpage | `url` (string), `max_chars` (int, default: 10000) |
 
 ### Running MCP Server Manually

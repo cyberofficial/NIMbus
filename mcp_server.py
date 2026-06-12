@@ -13,14 +13,13 @@ mcp = FastMCP("nimbus", json_response=True)
 
 
 @mcp.tool()
-async def web_search(query: str, max_results: int | None = None) -> str:
+async def web_search(query: str) -> str:
     """Search the web using DuckDuckGo HTML and return formatted results.
 
     Args:
         query: Search query string
-        max_results: Maximum number of results to return. None = return all found results.
     """
-    results = await search_duckduckgo(query, max_results)
+    results = await search_duckduckgo(query)
     if not results:
         return "No results found."
     lines = []
