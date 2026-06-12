@@ -14,13 +14,38 @@ Claude Code CLI and VSCode extension require an Anthropic API key. NIMbus acts a
 
 ## Quick Start
 
-### Prerequisites
+### Option 1: Standalone .exe (Windows, recommended)
 
-1. NVIDIA NIM API key: [build.nvidia.com/settings/api-keys](https://build.nvidia.com/settings/api-keys)
-2. [Claude Code](https://github.com/anthropics/claude-code) installed
-3. Python 3.14+ installed
+No Python required. Download `nimbus.exe` from the [latest release](https://github.com/cyberofficial/NIMbus/releases).
 
-### Setup
+```cmd
+# 1. Run the exe - it auto-creates .env on first run
+nimbus.exe --init
+
+# 2. Follow the interactive wizard:
+#    - Enter your NVIDIA API key (tested live)
+#    - Choose your models and context window
+#    - Auto-configures Claude Code settings
+
+# 3. Start the proxy server
+nimbus.exe
+
+# 4. In another terminal, use Claude Code normally
+claude
+```
+
+The `--init` wizard handles everything:
+- Validates your NVIDIA API key against the live API
+- Auto-generates a proxy API key
+- Lets you pick models per Claude tier (Sonnet/Opus/Haiku) with context window selection
+- Backs up and updates `%USERPROFILE%\.claude\settings.json` automatically
+- Writes `.env` with all settings
+
+To restore a backed-up settings.json: `nimbus.exe --init restore`
+
+### Option 2: Python (any OS)
+
+**Prerequisites:** NVIDIA NIM API key, Python 3.14+, [Claude Code](https://github.com/anthropics/claude-code)
 
 ```bash
 git clone https://github.com/cyberofficial/NIMbus.git
@@ -32,52 +57,22 @@ Edit `.env`:
 
 ```dotenv
 NVIDIA_NIM_API_KEY="nvapi-your-key-here"
-MODEL="z-ai/glm5"
+MODEL="deepseek-ai/deepseek-v4-flash"
 ```
 
-The MODEL format is `owner/model-name`.
+### Running the Server
 
-### Virtual Environment
-
-**Option 1: Using uv (Recommended)**
-
-If you have [uv](https://github.com/astral-sh/uv) installed:
-
+**Using uv (recommended):**
 ```bash
-# uv automatically manages the virtual environment
 uv run uvicorn server:app --host 0.0.0.0 --port 8082
 ```
 
-**Option 2: Using Python venv**
-
-If you don't have `uv`, use Python's built-in `venv`:
-
+**Using venv:**
 ```bash
-# Create a virtual environment
 python -m venv venv
-
-# Activate it
-# On Linux/macOS:
-source venv/bin/activate
-# On Windows:
-venv\Scripts\activate
-
-# Install dependencies
+venv\Scripts\activate   # Windows
+source venv/bin/activate  # macOS/Linux
 pip install -r requirements.txt
-
-# Run the server
-uvicorn server:app --host 0.0.0.0 --port 8082
-```
-
-### Run
-
-**Terminal 1 - Start the proxy:**
-
-```bash
-# Using uv (recommended):
-uv run uvicorn server:app --host 0.0.0.0 --port 8082
-
-# Or using venv (after activating):
 uvicorn server:app --host 0.0.0.0 --port 8082
 ```
 
@@ -301,6 +296,26 @@ DISCORD_AUTO_COMPACT=true                  # true = summarize/restart, false = d
   - `DISCORD_AUTO_COMPACT=false`: Silently drops oldest messages to make room for new ones
 - **Message splitting**: Automatically splits long responses for Discord's 2000 char limit
 - **Command toggles**: Disable individual slash commands via `DISCORD_CMD_*` settings
+
+## Changelog
+
+### v2.0.0 (June 2026)
+
+**Standalone .exe:** NIMbus is now a single portable executable on Windows - no Python, no pip, no venv needed.
+- `nimbus.exe --init`: Interactive setup wizard with live API key validation, model selection, Claude Code auto-config
+- `nimbus.exe --init restore`: Restores backed-up settings.json
+- Auto-creates `.env` from embedded template on first run
+- Single `--onefile` PyInstaller build (~25 MB)
+
+**Dynamic model resolution:** `MODEL=windows:settings.json` reads models from Claude Code's settings.json - no duplication. Model names are resolved dynamically against NVIDIA's catalog.
+
+**Error recovery:**
+- Auto-detects models that reject `system` role and retries with system→user conversion
+- Detailed error logging with full causal chain
+- Tiktoken special token handling (`<|endoftext|>`, `<|fim_prefix|>`, etc.)
+- Fixed HTTP transport request attribution (OpenAI SDK retry compatibility)
+
+**Per-tier model config:** Sonnet/Opus/Haiku each get their own model, mapped from Claude Code settings.json
 
 ## License
 
