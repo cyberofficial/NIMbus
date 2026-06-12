@@ -54,13 +54,13 @@ If you don't have `uv`, use Python's built-in `venv`:
 
 ```bash
 # Create a virtual environment
-python -m venv .venv
+python -m venv venv
 
 # Activate it
 # On Linux/macOS:
-source .venv/bin/activate
+source venv/bin/activate
 # On Windows:
-.venv\Scripts\activate
+venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt

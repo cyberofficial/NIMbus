@@ -65,3 +65,6 @@ Thumbs.db
 Python-3.14.3.tgz
 Python-3.14.3/
 .roo/memory.md
+dist_exe/
+build_exe/
+build_resources/

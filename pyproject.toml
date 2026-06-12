@@ -32,6 +32,10 @@ voice_local = [
     "librosa>=0.10.0",
 ]
 
+[tool.uv]
+# Use venv/ instead of default .venv/ for virtual environment
+environment = "venv"
+
 [tool.uv.sources]
 torch = { index = "pytorch-cu130" }
 
