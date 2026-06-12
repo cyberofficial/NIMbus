@@ -16,6 +16,10 @@ mcp = FastMCP("nimbus", json_response=True)
 @mcp.tool()
 def web_search(query: str, max_results: int = WEB_SEARCH_MAX_RESULTS) -> str:
     """Search the web using DuckDuckGo and return formatted results."""
+    # Auto-quote multi-word queries for exact phrase matching
+    # Only quote if: contains spaces and doesn't already have quotes
+    if " " in query and not (query.startswith('"') and query.endswith('"')):
+        query = f'"{query}"'
     results = DDGS().text(query, max_results=max_results)
     return "\n".join(
         f"{r['title']}: {r['body']} ({r['href']})" for r in results
