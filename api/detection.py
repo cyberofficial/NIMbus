@@ -1,7 +1,8 @@
 """Request detection utilities for API optimizations.
 
 Detects quota checks, title generation, prefix detection, suggestion mode,
-and filepath extraction requests to enable fast-path responses.
+filepath extraction, and Claude Code recap requests to enable fast-path
+responses.
 """
 
 from providers.text import extract_text_from_content
@@ -128,3 +129,17 @@ def is_filepath_extraction_request(
         return True, command, output
     except Exception:
         return False, "", ""
+
+
+def is_recap_request(request_data: MessagesRequest) -> bool:
+    """Check if the last user message is a Claude Code recap prompt.
+
+    Claude Code sends recaps when the user returns after stepping away,
+    wasting a full API call on a short summary. Detection looks for the
+    signature phrase in the most recent user message.
+    """
+    if not request_data.messages:
+        return False
+    last_msg = request_data.messages[-1]
+    text = extract_text_from_content(last_msg.content).lower()
+    return "stepped away" in text and "recap" in text

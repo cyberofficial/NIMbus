@@ -15,6 +15,7 @@ from .detection import (
     is_filepath_extraction_request,
     is_prefix_detection_request,
     is_quota_check_request,
+    is_recap_request,
     is_suggestion_mode_request,
     is_title_generation_request,
 )
@@ -126,8 +127,28 @@ def try_filepath_mock(
     )
 
 
+def try_recap_skip(
+    request_data: MessagesRequest, settings: Settings
+) -> MessagesResponse | None:
+    """Skip Claude Code recap requests - user returned after stepping away."""
+    if not settings.enable_recap_skip:
+        return None
+    if not is_recap_request(request_data):
+        return None
+    logger.info("Claude requested a recap, Blocked")
+    return MessagesResponse(
+        id=f"msg_{uuid.uuid4()}",
+        model=request_data.model,
+        role="assistant",
+        content=[{"type": "text", "text": "Recap blocked by NIMbus."}],
+        stop_reason="end_turn",
+        usage=Usage(input_tokens=1, output_tokens=1),
+    )
+
+
 # Cheapest/most common optimizations first for faster short-circuit.
 OPTIMIZATION_HANDLERS = [
+    try_recap_skip,
     try_quota_mock,
     try_prefix_detection,
     try_title_skip,

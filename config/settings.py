@@ -87,6 +87,7 @@ class Settings(BaseSettings):
     enable_title_generation_skip: bool = True
     enable_suggestion_mode_skip: bool = True
     enable_filepath_extraction_mock: bool = True
+    enable_recap_skip: bool = True
 
     # ==================== NIM Settings ====================
     nim: NimSettings = Field(default_factory=NimSettings)  # type: ignore[arg-type]

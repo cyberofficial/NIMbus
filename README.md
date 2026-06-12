@@ -204,6 +204,7 @@ These settings speed up Claude Code by mocking/skipping unnecessary requests:
 | `ENABLE_TITLE_GENERATION_SKIP` | Skip title generation requests | `true` |
 | `ENABLE_SUGGESTION_MODE_SKIP` | Skip suggestion mode requests | `true` |
 | `ENABLE_FILEPATH_EXTRACTION_MOCK` | Mock filepath extraction | `true` |
+| `ENABLE_RECAP_SKIP` | Block recap requests (stepped away/return) | `true` |
 
 See [`.env.example`](.env.example) for all options.
 
