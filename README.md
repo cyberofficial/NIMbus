@@ -313,8 +313,8 @@ claude mcp add websearch -- /path/to/NIMbus/.venv/bin/python /path/to/NIMbus/sta
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `web_search` | Search the web using DuckDuckGo | `query` (string) |
-| `fetch_page` | Fetch and extract text from a webpage | `url` (string), `max_chars` (int, default: 10000) |
+| `web_search` | Search the web using DuckDuckGo HTML | `query` (string) |
+| `fetch_page` | Fetch and extract text from a webpage with chunked reading | `url` (string), `offset` (int, default: 0), `limit` (int, default: 10000), `refresh` (bool, default: false) |
 
 ### Running MCP Server Manually
 
@@ -336,6 +336,10 @@ NVIDIA_NIM_API_KEY="nvapi-your-key-here"  # Not required for MCP mode but kept f
 
 # Web Search Configuration
 WEB_SEARCH_FETCH_TIMEOUT=10.0     # HTTP timeout for fetch_page in seconds (default: 10.0)
+
+# Cache Configuration
+MCP_CACHE_TTL=600                 # Cache TTL in seconds (default: 600 = 10 minutes, max 3600, 0 = disabled)
+                                  # Cache directory is hardcoded to ./NIMBUS_FETCH_CACHE next to mcp_server.py
 ```
 
 ### Using with Claude Code
@@ -347,6 +351,31 @@ Once added via `claude mcp add websearch ...`, Claude will have access to `web_s
 ```
 
 Claude will automatically call the MCP tools and return the results.
+
+#### Chunked Reading Example
+
+For long pages (e.g., documentation), use `offset` and `limit` to read in chunks:
+
+```
+> Fetch page at offset 10000 with limit 10000
+# Returns chunk 10000-20000 with metadata: total_length, cache status, etc.
+
+> Fetch page with refresh=true
+# Forces fresh fetch, bypassing cache
+```
+
+The `fetch_page` tool returns JSON with:
+- `content`: The requested text chunk
+- `total_length`: Full page length in characters
+- `offset`: Starting position of returned chunk
+- `limit`: Requested chunk size
+- `cached`: Whether served from cache
+- `cache_expires_at`: ISO timestamp when cache expires
+
+**Cache Control:**
+- Set `MCP_CACHE_TTL=0` to disable caching entirely (always fresh)
+- Use `refresh=true` parameter to force fresh fetch on demand
+- Default TTL: 10 minutes (600s), maximum: 1 hour (3600s)
 
 ---
 

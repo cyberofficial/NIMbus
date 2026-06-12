@@ -1432,9 +1432,7 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 "model_opus_full": model_opus_full,
                 "model_haiku_full": model_haiku_full,
                 # MCP Server settings
-                "mcp_max_results": mcp_max_results,
                 "mcp_fetch_timeout": mcp_fetch_timeout,
-                "mcp_max_chars": mcp_max_chars,
             },
             is_linux=is_linux,
         )
@@ -1456,9 +1454,7 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 "model_haiku": model_haiku,
                 "port": port,
                 "configure_mcp": configure_mcp,
-                "mcp_max_results": mcp_max_results,
                 "mcp_fetch_timeout": mcp_fetch_timeout,
-                "mcp_max_chars": mcp_max_chars,
                 "is_linux": is_linux,
                 "exe_dir": exe_dir,
             }
