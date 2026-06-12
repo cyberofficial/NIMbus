@@ -109,13 +109,25 @@ def _print_banner(settings) -> None:
     print()
 
 
+def _run_mcp_server() -> None:
+    """Run the MCP server with stdio transport."""
+    from mcp_server import mcp
+    print("Starting NIMbus MCP Server (stdio transport)...", file=sys.stderr)
+    mcp.run(transport="stdio")
+
+
 def main() -> None:
     """Entry point for the packaged executable."""
     # --- Step 1: Change CWD to exe directory BEFORE any project imports ---
     exe_dir = _exe_dir()
     os.chdir(str(exe_dir))
 
-    # --- Step 2: Check for --init interactive setup wizard ---
+    # --- Step 2: Check for --mcp flag ---
+    if "--mcp" in sys.argv:
+        _run_mcp_server()
+        sys.exit(0)
+
+    # --- Step 3: Check for --init interactive setup wizard ---
     if "--init" in sys.argv:
         from setup_wizard import run_wizard
         run_wizard(exe_dir, sys.argv)

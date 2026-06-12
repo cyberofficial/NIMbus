@@ -225,8 +225,20 @@ def print_model_mapping(model_raw: str) -> None:
             print(f"    → {model}")
 
 
+def run_mcp_server():
+    """Run the MCP server with stdio transport."""
+    from mcp_server import mcp
+    print("Starting NIMbus MCP Server (stdio transport)...", file=sys.stderr)
+    mcp.run(transport="stdio")
+
+
 def main():
     """Main entry point."""
+    # Check for --mcp flag first
+    if "--mcp" in sys.argv:
+        run_mcp_server()
+        return
+
     print()
     print("=" * 60)
     print("Claude Code Proxy Server Launcher")

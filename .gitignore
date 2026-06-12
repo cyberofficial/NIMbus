@@ -51,6 +51,7 @@ banned_ips.txt
 # Sensitive scripts (may contain keys)
 *.bat
 *.sh
+!build_linux.sh
 RunClaude*
 StartServer*
 clean_logs*

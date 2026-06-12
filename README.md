@@ -298,6 +298,61 @@ DISCORD_AUTO_COMPACT=true                  # true = summarize/restart, false = d
 - **Message splitting**: Automatically splits long responses for Discord's 2000 char limit
 - **Command toggles**: Disable individual slash commands via `DISCORD_CMD_*` settings
 
+## MCP Server Mode (Web Search Tools)
+
+NIMbus can also run as an MCP (Model Context Protocol) server, exposing web search and page fetch tools directly to Claude Code. This allows Claude to search the web and fetch page content without going through the NVIDIA NIM proxy.
+
+### Quick Start
+
+```bash
+# Add to Claude Code (using venv python)
+claude mcp add websearch -- /path/to/NIMbus/.venv/bin/python /path/to/NIMbus/start_server.py --mcp
+```
+
+### MCP Tools
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `web_search` | Search the web using DuckDuckGo | `query` (string), `max_results` (int, default: 5) |
+| `fetch_page` | Fetch and extract text from a webpage | `url` (string), `max_chars` (int, default: 10000) |
+
+### Running MCP Server Manually
+
+```bash
+# Development mode
+python start_server.py --mcp
+
+# Standalone exe (Windows)
+nimbus.exe --mcp
+```
+
+### MCP Environment Configuration
+
+The MCP server inherits settings from `.env`. Configure web search behavior via:
+
+```dotenv
+# MCP Server settings
+# The server uses the same .env as the proxy mode
+NVIDIA_NIM_API_KEY="nvapi-your-key-here"  # Not required for MCP mode but kept for proxy mode
+
+# Web Search Configuration
+WEB_SEARCH_MAX_RESULTS=5          # Max results per search (default: 5)
+WEB_SEARCH_FETCH_TIMEOUT=10.0     # HTTP timeout for fetch_page in seconds (default: 10.0)
+WEB_SEARCH_MAX_CHARS=10000        # Max characters to return from fetch_page (default: 10000)
+```
+
+### Using with Claude Code
+
+Once added via `claude mcp add websearch ...`, Claude will have access to `web_search` and `fetch_page` tools. Example usage in Claude:
+
+```
+> Can you search for "latest Rust async patterns" and fetch the first result?
+```
+
+Claude will automatically call the MCP tools and return the results.
+
+---
+
 ## Changelog
 
 ### v2.0.0 (June 2026)
