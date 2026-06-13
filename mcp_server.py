@@ -4,7 +4,10 @@ import os
 import json
 import hashlib
 import time
+import re
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 from mcp.server.fastmcp import FastMCP
 import httpx
 
@@ -20,7 +23,10 @@ MCP_CACHE_DIR = str(Path(__file__).parent / "NIMBUS_FETCH_CACHE")
 mcp = FastMCP("nimbus", json_response=True)
 
 
-# Cache utilities
+# ============================================================================
+# Cache Utilities
+# ============================================================================
+
 def _get_cache_dir() -> Path:
     """Get or create cache directory (hardcoded to NIMBUS_FETCH_CACHE next to mcp_server.py)."""
     cache_dir = Path(MCP_CACHE_DIR)
@@ -112,12 +118,234 @@ def _write_cache(cache_key: str, url: str, content: str) -> dict:
 def _extract_text(html: str) -> str:
     """Extract plain text from HTML."""
     from html import unescape
-    import re
     text = unescape(html)
     text = re.sub(r'<[^>]+>', ' ', text)
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
+
+# ============================================================================
+# Search Utilities (New)
+# ============================================================================
+
+@dataclass
+class SearchMatch:
+    """A single search match within a cached file."""
+    cache_key: str
+    url: str
+    line_number: int
+    char_position: int  # Position of the match start in the full file
+    matched_text: str   # The actual matched line/segment
+    before_context: str = ""
+    after_context: str = ""
+
+
+@dataclass
+class SearchResult:
+    """Aggregated search results across cache."""
+    query: str
+    total_matches: int
+    files_searched: int
+    matches: list[SearchMatch]
+
+
+def _list_cache_entries() -> list[tuple[str, dict]]:
+    """List all valid cache entries with metadata.
+
+    Returns list of (cache_key, metadata_dict) tuples.
+    """
+    cache_dir = _get_cache_dir()
+    entries = []
+    for meta_file in cache_dir.glob("*.json"):
+        cache_key = meta_file.stem
+        content_file = cache_dir / f"{cache_key}.txt"
+        if not content_file.exists():
+            continue
+        try:
+            with open(meta_file, "r") as f:
+                meta = json.load(f)
+            if _is_cache_valid(meta_file):
+                entries.append((cache_key, meta))
+        except (json.JSONDecodeError, OSError):
+            continue
+    return entries
+
+
+def _read_full_cache_content(cache_key: str) -> str | None:
+    """Read full cached content for a cache key."""
+    _, content_path = _get_cache_paths(cache_key)
+    if not content_path.exists():
+        return None
+    try:
+        with open(content_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def _build_line_index(content: str) -> list[tuple[int, int]]:
+    """Build index of (line_start_char, line_end_char) for each line.
+
+    Returns list where each element is (start_char_pos, end_char_pos)
+    for that line. end_char_pos is exclusive (position after newline).
+    """
+    line_starts = [0]
+    line_ends = []
+    for i, ch in enumerate(content):
+        if ch == '\n':
+            line_ends.append(i + 1)  # position after newline
+            line_starts.append(i + 1)
+    # Handle last line (no trailing newline)
+    if line_ends and line_ends[-1] > line_starts[-1]:
+        line_ends.append(len(content))
+    elif not line_ends:
+        line_ends.append(len(content))
+    return list(zip(line_starts, line_ends))
+
+
+def _find_line_for_char(line_index: list[tuple[int, int]], char_pos: int) -> int:
+    """Find line number (1-based) containing char_pos."""
+    for i, (start, end) in enumerate(line_index):
+        if start <= char_pos < end:
+            return i + 1
+    return len(line_index)  # last line if beyond
+
+
+def _get_line_content(line_index: list[tuple[int, int]], content: str, line_num: int) -> str:
+    """Get full line content by 1-based line number."""
+    if 1 <= line_num <= len(line_index):
+        start, end = line_index[line_num - 1]
+        return content[start:end]
+    return ""
+
+
+def _expand_to_line_boundaries(line_index: list[tuple[int, int]], content: str,
+                                start: int, end: int) -> tuple[int, int]:
+    """Expand start/end to include complete lines.
+
+    If start/end fall in middle of line, expand to line boundaries.
+    """
+    start_line = _find_line_for_char(line_index, start)
+    end_line = _find_line_for_char(line_index, max(end - 1, 0))
+
+    start = line_index[start_line - 1][0]
+    end = line_index[end_line - 1][1]
+
+    return start, end
+
+
+def _search_in_content(content: str, query: str, case_sensitive: bool = False) -> list[tuple[int, int]]:
+    """Find all matches of query in content.
+
+    Returns list of (start_char, end_char) tuples.
+    """
+    flags = 0 if case_sensitive else re.IGNORECASE
+    matches = []
+    for match in re.finditer(re.escape(query), content, flags):
+        matches.append((match.start(), match.end()))
+    return matches
+
+
+def _extract_match_with_context(content: str, line_index: list[tuple[int, int]],
+                                 match_start: int, match_end: int,
+                                 before_chars: int = 400, after_chars: int = 500) -> dict:
+    """Extract matched line plus surrounding context, expanded to line boundaries.
+
+    Returns dict with:
+    - line_number: 1-based line number of match
+    - char_position: match start position in file
+    - matched_line: the full line containing the match
+    - context_before: text before match (expanded to line start)
+    - context_after: text after match (expanded to line end)
+    - full_snippet: combined context suitable for display
+    """
+    line_num = _find_line_for_char(line_index, match_start)
+    line_start, line_end = line_index[line_num - 1]
+
+    # Calculate context bounds
+    context_start = max(0, match_start - before_chars)
+    context_end = min(len(content), match_end + after_chars)
+
+    # Expand to line boundaries
+    context_start, context_end = _expand_to_line_boundaries(
+        line_index, content, context_start, context_end
+    )
+
+    # Extract pieces
+    matched_line = content[line_start:line_end]
+    context_before = content[context_start:match_start]
+    context_after = content[match_end:context_end]
+    full_snippet = content[context_start:context_end]
+
+    return {
+        "line_number": line_num,
+        "char_position": match_start,
+        "matched_line": matched_line,
+        "context_before": context_before,
+        "context_after": context_after,
+        "full_snippet": full_snippet,
+    }
+
+
+def _search_cache_files(query: str, case_sensitive: bool = False,
+                         before_chars: int = 400, after_chars: int = 500,
+                         max_results: int = 50) -> SearchResult:
+    """Search all cached files for query.
+
+    Args:
+        query: Search term
+        case_sensitive: Whether to match case
+        before_chars: Characters to include before match
+        after_chars: Characters to include after match
+        max_results: Maximum total matches to return
+
+    Returns SearchResult with matches across all cached files.
+    """
+    entries = _list_cache_entries()
+    all_matches = []
+    files_searched = 0
+
+    for cache_key, meta in entries:
+        content = _read_full_cache_content(cache_key)
+        if not content:
+            continue
+        files_searched += 1
+
+        line_index = _build_line_index(content)
+        matches = _search_in_content(content, query, case_sensitive)
+
+        for match_start, match_end in matches:
+            if len(all_matches) >= max_results:
+                break
+
+            context = _extract_match_with_context(
+                content, line_index, match_start, match_end,
+                before_chars, after_chars
+            )
+
+            all_matches.append(SearchMatch(
+                cache_key=cache_key,
+                url=meta.get("url", "unknown"),
+                line_number=context["line_number"],
+                char_position=context["char_position"],
+                matched_text=context["matched_line"],
+                before_context=context["context_before"],
+                after_context=context["context_after"],
+            ))
+        if len(all_matches) >= max_results:
+            break
+
+    return SearchResult(
+        query=query,
+        total_matches=len(all_matches),
+        files_searched=files_searched,
+        matches=all_matches,
+    )
+
+
+# ============================================================================
+# MCP Tools
+# ============================================================================
 
 @mcp.tool()
 async def web_search(query: str) -> str:
@@ -138,12 +366,16 @@ async def web_search(query: str) -> str:
 
 
 @mcp.tool()
-async def fetch_page(url: str, offset: int = 0, limit: int = 10000, refresh: bool = False) -> str:
+async def fetch_page(url: str, offset: int = 0, limit: int = 10000,
+                      refresh: bool = False, search: Optional[str] = None) -> str:
     """Fetch and extract text content from a webpage with chunked reading support.
 
     Uses file-based caching (TTL: MCP_CACHE_TTL seconds, default 600s) to avoid
     re-fetching the same page. Set refresh=True to force a fresh fetch.
     Set MCP_CACHE_TTL=0 to disable caching entirely.
+
+    If `search` is provided, returns matches for that term within the page
+    with line numbers and character positions instead of a chunk.
 
     Returns JSON with content chunk and metadata.
 
@@ -152,65 +384,167 @@ async def fetch_page(url: str, offset: int = 0, limit: int = 10000, refresh: boo
         offset: Character offset to start reading from (default: 0)
         limit: Maximum characters to return (default: 10000)
         refresh: Force fresh fetch, bypassing cache (default: False)
+        search: Optional search term to find within page content
     """
+    import datetime
     timeout = float(os.getenv("WEB_SEARCH_FETCH_TIMEOUT", "10.0"))
     cache_key = _get_cache_key(url)
 
     # Try cache first (unless refresh requested or caching disabled)
+    cached = False
+    full_content = None
+    meta = None
+
     if not refresh and MCP_CACHE_TTL > 0:
-        cached = _read_cache(cache_key)
-        if cached:
-            meta, full_content = cached
-            total_length = meta["total_length"]
-            start = max(0, min(offset, total_length))
-            end = min(start + limit, total_length)
-            chunk = full_content[start:end]
+        cached_data = _read_cache(cache_key)
+        if cached_data:
+            cached = True
+            meta, full_content = cached_data
 
-            import datetime
-            expires_at = datetime.datetime.fromtimestamp(meta["expires_at"], tz=datetime.timezone.utc).isoformat()
+    if full_content is None:
+        # Cache miss or refresh - fetch fresh
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(url, timeout=timeout)
+            resp.raise_for_status()
+            full_content = _extract_text(resp.text)
 
+        # Write to cache (if caching enabled)
+        if MCP_CACHE_TTL > 0:
+            meta = _write_cache(cache_key, url, full_content)
+        else:
+            meta = {
+                "url": url,
+                "normalized_url": _normalize_url(url),
+                "total_length": len(full_content),
+                "cached_at": time.time(),
+                "expires_at": time.time(),
+            }
+
+    total_length = meta["total_length"]
+    expires_at = datetime.datetime.fromtimestamp(meta["expires_at"], tz=datetime.timezone.utc).isoformat()
+
+    # NEW: If search provided, return search results instead of chunk
+    if search is not None:
+        line_index = _build_line_index(full_content)
+        matches = _search_in_content(full_content, search, case_sensitive=False)
+
+        if not matches:
             return json.dumps({
-                "content": chunk,
+                "content": "",
                 "total_length": total_length,
-                "offset": start,
-                "limit": limit,
-                "cached": True,
+                "offset": 0,
+                "limit": 0,
+                "cached": cached,
                 "cache_expires_at": expires_at,
+                "search_query": search,
+                "matches": [],
             })
 
-    # Cache miss or refresh - fetch fresh
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.get(url, timeout=timeout)
-        resp.raise_for_status()
-        full_content = _extract_text(resp.text)
+        match_list = []
+        for match_start, match_end in matches:
+            context = _extract_match_with_context(
+                full_content, line_index, match_start, match_end,
+                before_chars=400, after_chars=500
+            )
+            match_list.append({
+                "line_number": context["line_number"],
+                "char_position": context["char_position"],
+                "matched_line": context["matched_line"],
+                "context_before": context["context_before"],
+                "context_after": context["context_after"],
+                "full_snippet": context["full_snippet"],
+            })
 
-    # Write to cache (if caching enabled)
-    if MCP_CACHE_TTL > 0:
-        meta = _write_cache(cache_key, url, full_content)
-    else:
-        meta = {
-            "url": url,
-            "normalized_url": _normalize_url(url),
-            "total_length": len(full_content),
-            "cached_at": time.time(),
-            "expires_at": time.time(),
-        }
-    total_length = meta["total_length"]
+        return json.dumps({
+            "content": "",
+            "total_length": total_length,
+            "offset": 0,
+            "limit": 0,
+            "cached": cached,
+            "cache_expires_at": expires_at,
+            "search_query": search,
+            "matches": match_list,
+        })
+
+    # Normal chunked reading
     start = max(0, min(offset, total_length))
     end = min(start + limit, total_length)
     chunk = full_content[start:end]
-
-    import datetime
-    expires_at = datetime.datetime.fromtimestamp(meta["expires_at"], tz=datetime.timezone.utc).isoformat()
 
     return json.dumps({
         "content": chunk,
         "total_length": total_length,
         "offset": start,
         "limit": limit,
-        "cached": False,
+        "cached": cached,
         "cache_expires_at": expires_at,
     })
+
+
+@mcp.tool()
+async def search_cache(query: str, case_sensitive: bool = False,
+                        max_results: int = 50) -> str:
+    """Search all cached pages for a keyword/phrase.
+
+    Returns matching lines with line numbers, character positions, and file URLs.
+    Useful for finding specific terms across all previously fetched documentation.
+
+    Args:
+        query: Search term (exact phrase match)
+        case_sensitive: Match case exactly (default: false)
+        max_results: Maximum matches to return (default: 50)
+    """
+    result = _search_cache_files(query, case_sensitive,
+                                  before_chars=0, after_chars=0,
+                                  max_results=max_results)
+
+    if not result.matches:
+        return f"No matches found for '{query}' in {result.files_searched} cached file(s)."
+
+    lines = [f"Found {result.total_matches} match(es) across {result.files_searched} cached file(s):"]
+    for match in result.matches:
+        lines.append(f"\n-----")
+        lines.append(f"<{match.url}> - Line: {match.line_number} - Char Position: {match.char_position:,}")
+        lines.append(f"```")
+        lines.append(match.matched_text.rstrip())
+        lines.append(f"```")
+        lines.append(f"-----")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def search_cache_snippet(query: str, before_chars: int = 400, after_chars: int = 500,
+                                case_sensitive: bool = False, max_results: int = 20) -> str:
+    """Search cached pages and return code snippets with surrounding context.
+
+    Expands matches to include complete lines (smart line boundary detection).
+    Useful for finding code examples or error messages in documentation.
+
+    Args:
+        query: Search term (exact phrase match)
+        before_chars: Characters to show before match (expanded to line start)
+        after_chars: Characters to show after match (expanded to line end)
+        case_sensitive: Match case exactly (default: false)
+        max_results: Maximum snippets to return (default: 20)
+    """
+    result = _search_cache_files(query, case_sensitive,
+                                  before_chars=before_chars, after_chars=after_chars,
+                                  max_results=max_results)
+
+    if not result.matches:
+        return f"No matches found for '{query}' in {result.files_searched} cached file(s)."
+
+    lines = [f"Found {result.total_matches} match(es) across {result.files_searched} cached file(s):"]
+    for match in result.matches:
+        lines.append(f"\n-----")
+        lines.append(f"<{match.url}> - Line: {match.line_number} - Char Position: {match.char_position:,}")
+        lines.append(f"```")
+        lines.append(match.before_context + match.matched_text + match.after_context)
+        lines.append(f"```")
+        lines.append(f"-----")
+
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

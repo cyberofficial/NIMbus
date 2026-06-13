@@ -314,7 +314,9 @@ claude mcp add websearch -- /path/to/NIMbus/.venv/bin/python /path/to/NIMbus/sta
 | Tool | Description | Parameters |
 |------|-------------|------------|
 | `web_search` | Search the web using DuckDuckGo HTML | `query` (string) |
-| `fetch_page` | Fetch and extract text from a webpage with chunked reading | `url` (string), `offset` (int, default: 0), `limit` (int, default: 10000), `refresh` (bool, default: false) |
+| `fetch_page` | Fetch and extract text from a webpage with chunked reading (supports search within page) | `url` (string), `offset` (int, default: 0), `limit` (int, default: 10000), `refresh` (bool, default: false), `search` (string, optional) |
+| `search_cache` | Search all cached pages for a keyword/phrase | `query` (string), `case_sensitive` (bool, default: false), `max_results` (int, default: 50) |
+| `search_cache_snippet` | Search cached pages with surrounding code snippets and smart line boundary detection | `query` (string), `before_chars` (int, default: 400), `after_chars` (int, default: 500), `case_sensitive` (bool, default: false), `max_results` (int, default: 20) |
 
 ### Running MCP Server Manually
 
@@ -344,7 +346,7 @@ MCP_CACHE_TTL=600                 # Cache TTL in seconds (default: 600 = 10 minu
 
 ### Using with Claude Code
 
-Once added via `claude mcp add websearch ...`, Claude will have access to `web_search` and `fetch_page` tools. Example usage in Claude:
+Once added via `claude mcp add websearch ...`, Claude will have access to `web_search`, `fetch_page`, `search_cache`, and `search_cache_snippet` tools. Example usage in Claude:
 
 ```
 > Can you search for "latest Rust async patterns" and fetch the first result?
@@ -376,6 +378,28 @@ The `fetch_page` tool returns JSON with:
 - Set `MCP_CACHE_TTL=0` to disable caching entirely (always fresh)
 - Use `refresh=true` parameter to force fresh fetch on demand
 - Default TTL: 10 minutes (600s), maximum: 1 hour (3600s)
+
+#### Search Within Cache
+
+Search across all cached pages with `search_cache` (returns matching lines) or `search_cache_snippet` (returns surrounding context):
+
+```
+> Search cached docs for "_ENV_TEMPLATE"
+# Returns all matching lines with line numbers and character positions
+
+> Search cached docs for ".env was deleted" with 400 before, 500 after
+# Returns code snippets with smart line boundary detection
+
+> Fetch Python docs and search for "async def"
+# Returns matches within that specific page with context
+```
+
+You can also search within a specific fetched page using the `search` parameter on `fetch_page`:
+
+```
+> Fetch page with search=".env was deleted"
+# Returns matches with line numbers, character positions, and surrounding context
+```
 
 ---
 

@@ -405,11 +405,21 @@ class Settings(BaseSettings):
         if not models:
             return self.model
         claude_lower = claude_id.lower()
+
+        # 1. Try Claude tier keyword matching (e.g. "claude-opus-4-7" → "opus")
         for keyword, position in self._CLAUDE_MODEL_MAP.items():
             if keyword in claude_lower:
                 target = min(position, len(models) - 1)
                 return models[target]
-        # Unknown Claude model → fall back to first NIM model
+
+        # 2. Check if the incoming name is already a model in our list
+        #    (handles windows:settings.json where Claude Code sends NIM names
+        #    like "kimi-k2.6" directly from ANTHROPIC_DEFAULT_OPUS_MODEL)
+        for m in models:
+            if claude_id in m or m in claude_id:
+                return m
+
+        # 3. Unknown model → fall back to first NIM model
         return models[0]
 
     @property
