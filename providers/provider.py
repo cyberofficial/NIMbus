@@ -16,7 +16,15 @@ from typing import Any
 
 import httpx
 from loguru import logger
-from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, BadRequestError, UnprocessableEntityError
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AsyncOpenAI,
+    BadRequestError,
+    InternalServerError,
+    UnprocessableEntityError,
+)
 
 from config.nim import NimSettings
 from providers.base import BaseProvider, ProviderConfig
@@ -25,11 +33,15 @@ from providers.error_mapping import (
     get_user_facing_error_message,
     map_error,
 )
-from providers.header_capture import CapturedHeaders, HeaderCapturingTransport, request_id_var
+from providers.exceptions import StreamTruncatedError
+from providers.header_capture import (
+    CapturedHeaders,
+    HeaderCapturingTransport,
+    request_id_var,
+)
 from providers.heuristic_tool_parser import HeuristicToolParser
 from providers.rate_limit import GlobalRateLimiter
 from providers.request import build_request_body
-from providers.exceptions import StreamTruncatedError
 from providers.sse_builder import SSEBuilder, map_stop_reason
 from providers.think_parser import ContentType, ThinkTagParser
 
@@ -61,26 +73,110 @@ def _model_rejects_system(model: str) -> bool:
     return model in _system_as_user_cache
 
 
-def _is_role_error(e: APIStatusError) -> bool:
-    """Check if a 422 error is about the system role being rejected.
+def _is_role_error(e: Exception) -> bool:
+    """Check if an error is about the system role being rejected.
 
     Matches errors like: "Input should be 'user' or 'assistant'" where
     the location path contains "role" (e.g., loc=['body','messages',1,'role']).
+    Also matches errors like: "System message must be at the beginning" (500 errors).
     """
     try:
-        err_body = e.response.json()
-        for detail in err_body.get("detail", []):
-            loc = detail.get("loc", [])
-            msg = detail.get("msg", "")
-            # Check if location path references the "role" field
-            if "role" in loc:
+        # Try to get response from the exception
+        response = getattr(e, 'response', None)
+        if response is not None:
+            err_body = response.json()
+            # Check for 422 validation errors
+            for detail in err_body.get("detail", []):
+                loc = detail.get("loc", [])
+                msg = detail.get("msg", "")
+                if "role" in loc:
+                    return True
+                if ("user" in msg and "assistant" in msg) or "role" in msg.lower():
+                    return True
+            # Check for 500 errors with system message placement issue
+            error_msg = err_body.get("error", {}).get("message", "")
+            if "System message must be at the beginning" in error_msg:
                 return True
-            # Also check if the message is a role validation error
-            if ("user" in msg and "assistant" in msg) or "role" in msg.lower():
+        # Also check body attribute for different error formats
+        body = getattr(e, 'body', None)
+        if body:
+            msg = str(body)
+            if "System message must be at the beginning" in msg:
                 return True
     except Exception:
         pass
     return False
+
+
+# ---------------------------------------------------------------------------
+# Thinking parameter error helpers - handle models that reject thinking params
+# ---------------------------------------------------------------------------
+
+_thinking_unsupported_cache: set[str] = set()
+"""Runtime cache of models known to reject thinking/reasoning parameters.
+Populated on first 400 error with "Unsupported parameter" and used by
+subsequent retry attempts to avoid sending thinking params again."""
+
+
+def _model_rejects_thinking(model: str) -> bool:
+    """Check if model is known to reject thinking/reasoning parameters."""
+    return model in _thinking_unsupported_cache
+
+
+def mark_thinking_unsupported(model: str) -> None:
+    """Mark a model as not supporting thinking parameters."""
+    if model:
+        _thinking_unsupported_cache.add(model)
+
+
+def _is_thinking_param_error(e: Exception) -> bool:
+    """Check if a 400 error is about unsupported thinking/reasoning parameters.
+
+    Matches errors like: "Validation: Unsupported parameter(s): `thinking`, `reasoning_split`, `include_reasoning`, `return_tokens_as_token_ids`"
+    """
+    try:
+        # Check for standard OpenAI error format (BadRequestError, etc.)
+        response = getattr(e, 'response', None)
+        if response is not None:
+            err_body = response.json()
+            msg = err_body.get("error", {}).get("message", "")
+            if "Unsupported parameter" in msg:
+                # Check if the unsupported params are thinking-related
+                thinking_params = {"thinking", "reasoning_split", "include_reasoning", "return_tokens_as_token_ids", "reasoning_effort"}
+                for param in thinking_params:
+                    if param in msg:
+                        return True
+        # Check for alternative error format
+        body = getattr(e, 'body', None)
+        if body:
+            msg = str(body)
+            if "Unsupported parameter" in msg:
+                thinking_params = {"thinking", "reasoning_split", "include_reasoning", "return_tokens_as_token_ids", "reasoning_effort"}
+                for param in thinking_params:
+                    if param in msg:
+                        return True
+    except Exception:
+        pass
+    return False
+
+
+def _rebuild_without_thinking(body: dict) -> dict:
+    """Clone request body, removing thinking/reasoning parameters from extra_body."""
+    new_body = dict(body)
+    if "extra_body" in new_body:
+        extra_body = dict(new_body["extra_body"])
+        # Remove thinking-related parameters
+        thinking_keys = {
+            "thinking", "reasoning_split", "chat_template_kwargs",
+            "return_tokens_as_token_ids", "reasoning_effort", "include_reasoning"
+        }
+        for key in thinking_keys:
+            extra_body.pop(key, None)
+        if extra_body:
+            new_body["extra_body"] = extra_body
+        else:
+            new_body.pop("extra_body", None)
+    return new_body
 
 
 def _system_to_user(msg: dict) -> dict:
@@ -154,7 +250,7 @@ class NvidiaNimProvider(BaseProvider):
         self._client = AsyncOpenAI(
             api_key=self._api_key,
             base_url=self._base_url,
-            max_retries=3,
+            max_retries=0,  # Disable built-in retries - we handle retries in our own logic
             timeout=httpx.Timeout(
                 config.http_read_timeout,
                 connect=config.http_connect_timeout,
@@ -176,12 +272,15 @@ class NvidiaNimProvider(BaseProvider):
 
         Checks the runtime cache for models known to reject the system role
         so that retry loops don't accidentally send system→model→422 again.
+        Also checks for models known to reject thinking/reasoning parameters.
         """
         assert self._nim_settings is not None
         body = build_request_body(request, self._nim_settings)
         model = body.get("model", "")
         if _model_rejects_system(model):
             body = _rebuild_with_system_as_user(body)
+        if _model_rejects_thinking(model):
+            body = _rebuild_without_thinking(body)
         return body
 
     async def buffered_request(
@@ -240,8 +339,8 @@ class NvidiaNimProvider(BaseProvider):
                             response = await self._client.chat.completions.create(
                                 **body, stream=False,
                             )
-                        except (BadRequestError, UnprocessableEntityError) as e:
-                            if e.status_code == 422 and _is_role_error(e):
+                        except (BadRequestError, UnprocessableEntityError, APIStatusError) as e:
+                            if _is_role_error(e):
                                 model = body.get("model", "")
                                 logger.warning(
                                     "{}_BUFFERED: System role rejected by model ({}) - "
@@ -251,6 +350,18 @@ class NvidiaNimProvider(BaseProvider):
                                 _system_as_user_cache.add(model)
                                 _save_model_override(model)
                                 body = _rebuild_with_system_as_user(body)
+                                response = await self._client.chat.completions.create(
+                                    **body, stream=False,
+                                )
+                            elif _is_thinking_param_error(e):
+                                model = body.get("model", "")
+                                logger.warning(
+                                    "{}_BUFFERED: Thinking parameters rejected by model ({}) - "
+                                    "retrying without thinking parameters",
+                                    tag, model,
+                                )
+                                mark_thinking_unsupported(model)
+                                body = _rebuild_without_thinking(body)
                                 response = await self._client.chat.completions.create(
                                     **body, stream=False,
                                 )
@@ -292,7 +403,7 @@ class NvidiaNimProvider(BaseProvider):
 
         # This shouldn't be reached, but just in case
         raise StreamTruncatedError(
-            f"NVIDIA backend dropped connection after all retries"
+            "NVIDIA backend dropped connection after all retries"
         ) from last_error
 
     def _build_anthropic_response(
@@ -503,8 +614,8 @@ class NvidiaNimProvider(BaseProvider):
                         stream = await self._global_rate_limiter.execute_with_retry(
                             self._client.chat.completions.create, **body, stream=True
                         )
-                    except (BadRequestError, UnprocessableEntityError) as e:
-                        if e.status_code == 422 and _is_role_error(e):
+                    except (BadRequestError, UnprocessableEntityError, APIStatusError) as e:
+                        if _is_role_error(e):
                             model = body.get("model", "")
                             logger.warning(
                                 "{}_STREAM: System role rejected by model ({}) - "
@@ -517,87 +628,118 @@ class NvidiaNimProvider(BaseProvider):
                             stream = await self._global_rate_limiter.execute_with_retry(
                                 self._client.chat.completions.create, **body, stream=True
                             )
+                        elif _is_thinking_param_error(e):
+                            model = body.get("model", "")
+                            logger.warning(
+                                "{}_STREAM: Thinking parameters rejected by model ({}) - "
+                                "retrying without thinking parameters",
+                                tag, model,
+                            )
+                            mark_thinking_unsupported(model)
+                            body = _rebuild_without_thinking(body)
+                            stream = await self._global_rate_limiter.execute_with_retry(
+                                self._client.chat.completions.create, **body, stream=True
+                            )
                         else:
                             raise
                     finally:
                         request_id_var.reset(req_token)
-                    async for chunk in stream:
-                        if getattr(chunk, "usage", None):
-                            usage_info = chunk.usage
+                    try:
+                        async for chunk in stream:
+                            if getattr(chunk, "usage", None):
+                                usage_info = chunk.usage
 
-                        if not chunk.choices:
-                            continue
+                            if not chunk.choices:
+                                continue
 
-                        choice = chunk.choices[0]
-                        delta = choice.delta
-                        if delta is None:
-                            continue
+                            choice = chunk.choices[0]
+                            delta = choice.delta
+                            if delta is None:
+                                continue
 
-                        if choice.finish_reason:
-                            finish_reason = choice.finish_reason
-                            logger.debug("{} finish_reason: {}", tag, finish_reason)
+                            if choice.finish_reason:
+                                finish_reason = choice.finish_reason
+                                logger.debug("{} finish_reason: {}", tag, finish_reason)
 
-                        # Handle reasoning_content (OpenAI extended format)
-                        reasoning = getattr(delta, "reasoning_content", None)
-                        if reasoning:
-                            for event in sse.ensure_thinking_block():
-                                yield event
-                            yield sse.emit_thinking_delta(reasoning)
-
-                        # Handle text content
-                        if delta.content:
-                            for part in think_parser.feed(delta.content):
-                                if part.type == ContentType.THINKING:
-                                    for event in sse.ensure_thinking_block():
-                                        yield event
-                                    yield sse.emit_thinking_delta(part.content)
-                                else:
-                                    filtered_text, detected_tools = heuristic_parser.feed(
-                                        part.content
-                                    )
-
-                                    if filtered_text:
-                                        for event in sse.ensure_text_block():
-                                            yield event
-                                        yield sse.emit_text_delta(filtered_text)
-
-                                    for tool_use in detected_tools:
-                                        for event in sse.close_content_blocks():
-                                            yield event
-
-                                        block_idx = sse.blocks.allocate_index()
-                                        if tool_use.get("name") == "Task" and isinstance(
-                                            tool_use.get("input"), dict
-                                        ):
-                                            tool_use["input"]["run_in_background"] = False
-                                        yield sse.content_block_start(
-                                            block_idx,
-                                            "tool_use",
-                                            id=tool_use["id"],
-                                            name=tool_use["name"],
-                                        )
-                                        yield sse.content_block_delta(
-                                            block_idx,
-                                            "input_json_delta",
-                                            json.dumps(tool_use["input"]),
-                                        )
-                                        yield sse.content_block_stop(block_idx)
-
-                        # Handle native tool calls
-                        if delta.tool_calls:
-                            for event in sse.close_content_blocks():
-                                yield event
-                            for tc in delta.tool_calls:
-                                tc_info = {
-                                    "index": tc.index,
-                                    "id": tc.id,
-                                    "function": {
-                                        "name": tc.function.name,
-                                        "arguments": tc.function.arguments,
-                                    },
-                                }
-                                for event in self._process_tool_call(tc_info, sse):
+                            # Handle reasoning_content (OpenAI extended format)
+                            reasoning = getattr(delta, "reasoning_content", None)
+                            if reasoning:
+                                for event in sse.ensure_thinking_block():
                                     yield event
+                                yield sse.emit_thinking_delta(reasoning)
+
+                            # Handle text content
+                            if delta.content:
+                                for part in think_parser.feed(delta.content):
+                                    if part.type == ContentType.THINKING:
+                                        for event in sse.ensure_thinking_block():
+                                            yield event
+                                        yield sse.emit_thinking_delta(part.content)
+                                    else:
+                                        filtered_text, detected_tools = heuristic_parser.feed(
+                                            part.content
+                                        )
+
+                                        if filtered_text:
+                                            for event in sse.ensure_text_block():
+                                                yield event
+                                            yield sse.emit_text_delta(filtered_text)
+
+                                        for tool_use in detected_tools:
+                                            for event in sse.close_content_blocks():
+                                                yield event
+
+                                            block_idx = sse.blocks.allocate_index()
+                                            if tool_use.get("name") == "Task" and isinstance(
+                                                tool_use.get("input"), dict
+                                            ):
+                                                tool_use["input"]["run_in_background"] = False
+                                            yield sse.content_block_start(
+                                                block_idx,
+                                                "tool_use",
+                                                id=tool_use["id"],
+                                                name=tool_use["name"],
+                                            )
+                                            yield sse.content_block_delta(
+                                                block_idx,
+                                                "input_json_delta",
+                                                json.dumps(tool_use["input"]),
+                                            )
+                                            yield sse.content_block_stop(block_idx)
+
+                            # Handle native tool calls
+                            if delta.tool_calls:
+                                for event in sse.close_content_blocks():
+                                    yield event
+                                for tc in delta.tool_calls:
+                                    tc_info = {
+                                        "index": tc.index,
+                                        "id": tc.id,
+                                        "function": {
+                                            "name": tc.function.name,
+                                            "arguments": tc.function.arguments,
+                                        },
+                                    }
+                                    for event in self._process_tool_call(tc_info, sse):
+                                        yield event
+
+                    except APIStatusError as e:
+                        # Check for system role error during streaming (e.g., "System message must be at the beginning")
+                        if _is_role_error(e):
+                            model = body.get("model", "")
+                            logger.warning(
+                                "{}_STREAM: System role rejected by model ({}) during streaming - "
+                                "retrying with system→user conversion",
+                                tag, model,
+                            )
+                            _system_as_user_cache.add(model)
+                            _save_model_override(model)
+                            body = _rebuild_with_system_as_user(body)
+                            # Increment attempt and retry the whole request
+                            attempt += 1
+                            continue
+                        # Not a system role error, fall through to generic exception handler
+                        raise
 
                 except (APIConnectionError, APITimeoutError, httpx.ReadError) as e:
                     last_error_tag = f"{type(e).__name__}"
@@ -638,7 +780,46 @@ class NvidiaNimProvider(BaseProvider):
                     for event in sse.emit_error(error_message):
                         yield event
 
+                except (InternalServerError, APIStatusError, httpx.HTTPStatusError) as e:
+                    # Check for system role error (e.g., "System message must be at the beginning")
+                    # This can happen during stream iteration when the API returns a 500 error
+                    if _is_role_error(e):
+                        model = body.get("model", "")
+                        logger.warning(
+                            "{}_STREAM: System role rejected by model ({}) - "
+                            "retrying with system→user conversion",
+                            tag, model,
+                        )
+                        _system_as_user_cache.add(model)
+                        _save_model_override(model)
+                        body = _rebuild_with_system_as_user(body)
+                        # Increment attempt and retry the whole request
+                        attempt += 1
+                        continue
+                    # Not a system role error, fall through to generic exception handler
+                    logger.error("{}_ERROR:{} {}: {}", tag, req_tag, type(e).__name__, e)
+                    mapped_e = map_error(e)
+                    error_occurred = True
+                    error_message = append_request_id(
+                        get_user_facing_error_message(
+                            mapped_e, read_timeout_s=self._config.http_read_timeout
+                        ),
+                        request_id,
+                    )
+                    logger.info(
+                        "{}_STREAM: Emitting SSE error event for {}{}",
+                        tag,
+                        type(e).__name__,
+                        req_tag,
+                    )
+                    for event in sse.close_content_blocks():
+                        yield event
+                    for event in sse.emit_error(error_message):
+                        yield event
+
                 except Exception as e:
+                    # Log exception details for debugging
+                    logger.error("{}_EXCEPTION_DIAGNOSTIC: type={} bases={} error={}", tag, type(e).__name__, type(e).__bases__, e)
                     # Non-retryable errors (auth, rate limit, etc.) - surface immediately
                     logger.error("{}_ERROR:{} {}: {}", tag, req_tag, type(e).__name__, e)
                     mapped_e = map_error(e)

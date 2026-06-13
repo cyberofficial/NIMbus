@@ -47,6 +47,12 @@ server.log
 banned_ips.txt
 *.log
 .discord_data/
+overrides.json
+overrides.json.bak
+.nimbus_settings_path
+.server.log.swp
+NIMBUS_FETCH_CACHE/
+.env.backup.test
 
 # Sensitive scripts (may contain keys)
 *.bat
