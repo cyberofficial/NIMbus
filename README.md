@@ -45,7 +45,7 @@ To restore a backed-up settings.json: `nimbus.exe --init restore`
 
 ### Option 2: Python (any OS)
 
-**Prerequisites:** NVIDIA NIM API key, Python 3.14+, [Claude Code](https://github.com/anthropics/claude-code)
+**Prerequisites:** NVIDIA NIM API key, Python 3.14.2+, [Claude Code](https://github.com/anthropics/claude-code)
 
 ```bash
 git clone https://github.com/cyberofficial/NIMbus.git
@@ -212,6 +212,7 @@ See [`.env.example`](.env.example) for all options.
 
 | Endpoint | Description |
 | --- | --- |
+| `GET /` | Root - returns provider info, model, and model list |
 | `POST /v1/messages` | Create a message (streaming) |
 | `POST /v1/messages/buffered` | Create a message (buffered, with retry) |
 | `POST /v1/messages/count_tokens` | Count tokens for a request |
@@ -404,6 +405,19 @@ You can also search within a specific fetched page using the `search` parameter 
 ---
 
 ## Changelog
+
+### v2.0.2 (June 2026)
+
+**MCP Server mode** with web search and cache search tools:
+- Added `search_cache` - search all cached pages for keywords
+- Added `search_cache_snippet` - search with surrounding context snippets
+- Enhanced `fetch_page` with `search` parameter to find keywords within a page
+- Fixed model mapping when `MODEL=windows:settings.json` - NIM model names are now correctly matched
+
+### v2.0.1 (June 2026)
+
+- Added recap skip optimization
+- Interactive setup wizard with section selection
 
 ### v2.0.0 (June 2026)
 
