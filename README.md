@@ -306,7 +306,10 @@ NIMbus can also run as an MCP (Model Context Protocol) server, exposing web sear
 ### Quick Start
 
 ```bash
-# Add to Claude Code (using venv python)
+# Add to Claude Code (using exe)
+claude mcp add websearch -- nimbus.exe --mcp
+
+# Or using Python (venv)
 claude mcp add websearch -- /path/to/NIMbus/.venv/bin/python /path/to/NIMbus/start_server.py --mcp
 ```
 
