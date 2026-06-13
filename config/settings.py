@@ -82,12 +82,13 @@ class Settings(BaseSettings):
 
     # ==================== Optimizations ====================
     # These speed up Claude Code by mocking/skipping unnecessary requests
+    # NOTE: Suggestion mode skip and recap skip are currently disabled pending better detection logic
     fast_prefix_detection: bool = True
     enable_network_probe_mock: bool = True
     enable_title_generation_skip: bool = True
-    enable_suggestion_mode_skip: bool = True
+    enable_suggestion_mode_skip: bool = False  # DISABLED: Too prone to false positives
     enable_filepath_extraction_mock: bool = True
-    enable_recap_skip: bool = True
+    enable_recap_skip: bool = False  # DISABLED: Blocks legitimate recap requests
 
     # ==================== NIM Settings ====================
     nim: NimSettings = Field(default_factory=NimSettings)  # type: ignore[arg-type]

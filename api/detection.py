@@ -66,15 +66,23 @@ def is_prefix_detection_request(request_data: MessagesRequest) -> tuple[bool, st
 def is_suggestion_mode_request(request_data: MessagesRequest) -> bool:
     """Check if this is a suggestion mode request.
 
-    Suggestion mode requests contain "[SUGGESTION MODE:" in the user's message,
-    used for auto-suggesting what the user might type next.
+    Suggestion mode requests are short auto-completion requests from Claude Code.
+    They have a specific format: single user message, no system prompt, no tools,
+    and the text starts with "[SUGGESTION MODE:" followed by the partial input.
     """
-    for msg in request_data.messages:
-        if msg.role == "user":
-            text = extract_text_from_content(msg.content)
-            if "[SUGGESTION MODE:" in text:
-                return True
-    return False
+    if request_data.system or request_data.tools:
+        return False
+
+    if len(request_data.messages) != 1:
+        return False
+
+    msg = request_data.messages[0]
+    if msg.role != "user":
+        return False
+
+    text = extract_text_from_content(msg.content).strip()
+    # Must start with the marker (not just contain it somewhere in a long system prompt)
+    return text.startswith("[SUGGESTION MODE:")
 
 
 def is_filepath_extraction_request(

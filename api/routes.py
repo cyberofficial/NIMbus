@@ -17,7 +17,7 @@ from providers.logging_utils import build_request_summary, log_request_compact
 from .dependencies import get_provider, get_settings
 from .models.anthropic import MessagesRequest, TokenCountRequest
 from .models.responses import TokenCountResponse
-from .optimization_handlers import try_optimizations
+from .optimization_handlers import try_optimizations, optimization_response_to_sse
 from .request_utils import get_token_count
 
 router = APIRouter()
@@ -43,7 +43,26 @@ async def create_message(
 
         optimized = try_optimizations(request_data, settings)
         if optimized is not None:
-            return optimized
+            # Convert optimization response to SSE events for streaming endpoint
+            request_id = f"req_{uuid.uuid4().hex[:12]}"
+            log_request_compact(logger, request_id, request_data)
+            input_tokens = get_token_count(
+                request_data.messages, request_data.system, request_data.tools
+            )
+
+            async def sse_generator():
+                for event in optimization_response_to_sse(optimized, input_tokens):
+                    yield event
+
+            return StreamingResponse(
+                sse_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "X-Accel-Buffering": "no",
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
 
         request_id = f"req_{uuid.uuid4().hex[:12]}"
         log_request_compact(logger, request_id, request_data)
