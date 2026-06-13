@@ -613,16 +613,22 @@ def _run_section(
         print("  NIMbus can skip unnecessary requests from Claude Code")
         print("  to save API calls. Each option is enabled by default.")
         print()
+        print("  NOTE: Suggestion mode skip and recap skip are DISABLED by default")
+        print("  because their detection logic currently produces false positives.")
+        print("  You can enable them here, but they may cause issues.")
+        print()
         opts = {}
         opt_defs = [
-            ("enable_recap_skip", "Skip recap requests when you return after stepping away"),
+            ("enable_recap_skip", "Skip recap requests when you return after stepping away (disabled by default)"),
             ("enable_network_probe_mock", "Mock quota/network probe requests"),
             ("enable_title_generation_skip", "Skip conversation title generation"),
-            ("enable_suggestion_mode_skip", "Skip suggestion mode requests"),
+            ("enable_suggestion_mode_skip", "Skip suggestion mode requests (disabled by default)"),
             ("enable_filepath_extraction_mock", "Mock filepath extraction (speeds up file searching)"),
         ]
         for key, desc in opt_defs:
-            yn = _prompt_yes_no(f"  {desc}?", default=True)
+            # Default to False for the two disabled optimizations
+            default = False if key in ("enable_recap_skip", "enable_suggestion_mode_skip") else True
+            yn = _prompt_yes_no(f"  {desc}?", default=default)
             opts[key] = "true" if yn else "false"
             print()
         updates.update(opts)
@@ -1336,22 +1342,28 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
         print("  NIMbus can skip unnecessary requests from Claude Code")
         print("  to save API calls. Each option is enabled by default.")
         print()
+        print("  NOTE: Suggestion mode skip and recap skip are DISABLED by default")
+        print("  because their detection logic currently produces false positives.")
+        print("  You can enable them here, but they may cause issues.")
+        print()
         opts = {}
         opt_defs = [
             (
                 "enable_recap_skip",
-                "Skip recap requests when you return after stepping away",
+                "Skip recap requests when you return after stepping away (disabled by default)",
             ),
             ("enable_network_probe_mock", "Mock quota/network probe requests"),
             ("enable_title_generation_skip", "Skip conversation title generation"),
-            ("enable_suggestion_mode_skip", "Skip suggestion mode requests"),
+            ("enable_suggestion_mode_skip", "Skip suggestion mode requests (disabled by default)"),
             (
                 "enable_filepath_extraction_mock",
                 "Mock filepath extraction (speeds up file searching)",
             ),
         ]
         for key, desc in opt_defs:
-            yn = _prompt_yes_no(f"  {desc}?", default=True)
+            # Default to False for the two disabled optimizations
+            default = False if key in ("enable_recap_skip", "enable_suggestion_mode_skip") else True
+            yn = _prompt_yes_no(f"  {desc}?", default=default)
             opts[key] = "true" if yn else "false"
             print()
         enable_recap_skip = opts["enable_recap_skip"]

@@ -202,9 +202,11 @@ These settings speed up Claude Code by mocking/skipping unnecessary requests:
 | `FAST_PREFIX_DETECTION` | Fast command prefix detection | `true` |
 | `ENABLE_NETWORK_PROBE_MOCK` | Mock quota probe requests | `true` |
 | `ENABLE_TITLE_GENERATION_SKIP` | Skip title generation requests | `true` |
-| `ENABLE_SUGGESTION_MODE_SKIP` | Skip suggestion mode requests | `true` |
+| `ENABLE_SUGGESTION_MODE_SKIP` | Skip suggestion mode requests | `false` **DISABLED temporarily** |
 | `ENABLE_FILEPATH_EXTRACTION_MOCK` | Mock filepath extraction | `true` |
-| `ENABLE_RECAP_SKIP` | Block recap requests (stepped away/return) | `true` |
+| `ENABLE_RECAP_SKIP` | Block recap requests (stepped away/return) | `false` **DISABLED temporarily** |
+
+> **Note:** `ENABLE_SUGGESTION_MODE_SKIP` and `ENABLE_RECAP_SKIP` are disabled by default because their detection logic currently produces false positives. They are preserved in the codebase (commented out) and can be re-enabled by setting these to `true` once improved detection is implemented.
 
 See [`.env.example`](.env.example) for all options.
 

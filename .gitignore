@@ -75,3 +75,6 @@ Python-3.14.3/
 dist_exe/
 build_exe/
 build_resources/
+dist_linux/
+python-3.14/
+python-build/
