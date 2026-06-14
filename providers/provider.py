@@ -26,6 +26,9 @@ from openai import (
     UnprocessableEntityError,
 )
 
+# HTTP status codes that should trigger a retry (5xx server errors)
+_RETRYABLE_HTTP_STATUS = {500, 502, 503, 504}
+
 from config.nim import NimSettings
 from providers.base import BaseProvider, ProviderConfig
 from providers.error_mapping import (
@@ -157,6 +160,33 @@ def _is_thinking_param_error(e: Exception) -> bool:
                         return True
     except Exception:
         pass
+    return False
+
+
+def _is_retryable_server_error(e: Exception) -> bool:
+    """Check if an error is a 5xx server error that should trigger a retry.
+
+    Matches InternalServerError (500), and APIStatusError/APIError with
+    status codes 502, 503, 504 (bad gateway, unavailable, gateway timeout).
+    Also matches httpx.HTTPStatusError with those status codes.
+    """
+    # InternalServerError is always 500
+    if isinstance(e, InternalServerError):
+        return True
+
+    # Check APIStatusError / APIError for status code
+    response = getattr(e, 'response', None)
+    if response is not None:
+        status_code = getattr(response, 'status_code', None)
+        if status_code in _RETRYABLE_HTTP_STATUS:
+            return True
+
+    # Check httpx.HTTPStatusError
+    if hasattr(e, 'response') and e.response is not None:
+        status_code = getattr(e.response, 'status_code', None)
+        if status_code in _RETRYABLE_HTTP_STATUS:
+            return True
+
     return False
 
 
@@ -379,7 +409,12 @@ class NvidiaNimProvider(BaseProvider):
                 )
                 return result
 
-            except (APIConnectionError, APITimeoutError) as e:
+            except (APIConnectionError, APITimeoutError, InternalServerError, APIStatusError) as e:
+                # Check if it's a retryable 5xx error
+                is_retryable = (
+                    isinstance(e, (APIConnectionError, APITimeoutError))
+                    or _is_retryable_server_error(e)
+                )
                 last_error = e
                 detail = _format_error_detail(e)
                 exhaustion_msg = (
@@ -387,19 +422,39 @@ class NvidiaNimProvider(BaseProvider):
                     if max_retries > 0
                     else f"after {attempt + 1} attempts (endless retries - still trying)"
                 )
-                logger.error(
-                    "{}_BUFFERED: Connection/timeout error {} - {}",
-                    tag,
-                    exhaustion_msg,
-                    detail,
-                )
+                if is_retryable:
+                    logger.warning(
+                        "{}_BUFFERED: Retryable error {} {} - {}",
+                        tag,
+                        type(e).__name__,
+                        exhaustion_msg,
+                        detail,
+                    )
+                else:
+                    logger.error(
+                        "{}_BUFFERED: Non-retryable error {} {} - {}",
+                        tag,
+                        type(e).__name__,
+                        exhaustion_msg,
+                        detail,
+                    )
                 if max_retries > 0 and attempt >= max_retries:
-                    raise StreamTruncatedError(
-                        f"NVIDIA backend dropped connection after "
-                        f"{max_retries + 1} attempts: {e}"
-                    ) from e
-                attempt += 1
-                continue
+                    if is_retryable:
+                        if isinstance(e, (APIConnectionError, APITimeoutError)):
+                            raise StreamTruncatedError(
+                                f"NVIDIA backend dropped connection after "
+                                f"{max_retries + 1} attempts: {e}"
+                            ) from e
+                        raise StreamTruncatedError(
+                            f"NVIDIA backend server error (5xx) after "
+                            f"{max_retries + 1} attempts: {e}"
+                        ) from e
+                    raise
+                if is_retryable:
+                    attempt += 1
+                    continue
+                # Non-retryable error - raise immediately without counting as a retry attempt
+                raise
 
         # This shouldn't be reached, but just in case
         raise StreamTruncatedError(
@@ -741,63 +796,64 @@ class NvidiaNimProvider(BaseProvider):
                         # Not a system role error, fall through to generic exception handler
                         raise
 
-                except (APIConnectionError, APITimeoutError, httpx.ReadError) as e:
+                except (APIConnectionError, APITimeoutError, httpx.ReadError, InternalServerError, APIStatusError, httpx.HTTPStatusError) as e:
+                    # Check if it's a retryable 5xx server error
+                    is_retryable = (
+                        isinstance(e, (APIConnectionError, APITimeoutError, httpx.ReadError))
+                        or _is_retryable_server_error(e)
+                    )
                     last_error_tag = f"{type(e).__name__}"
                     detail = _format_error_detail(e)
-                    if max_retries == 0 or attempt < max_retries:
-                        logger.warning(
-                            "{}_STREAM: {} on attempt {}/{} - retrying. {}",
+                    if is_retryable:
+                        if max_retries == 0 or attempt < max_retries:
+                            logger.warning(
+                                "{}_STREAM: {} on attempt {}/{} - retrying. {}",
+                                tag,
+                                type(e).__name__,
+                                attempt + 1,
+                                max_retries if max_retries > 0 else "∞",
+                                detail,
+                            )
+                            attempt += 1
+                            continue  # jump to next retry iteration
+                        # All retries exhausted for retryable error
+                        logger.error(
+                            "{}_STREAM: {} exhausted after {} attempts: {}",
+                            tag, type(e).__name__, attempt + 1, detail,
+                        )
+                    else:
+                        # Non-retryable error - raise immediately without counting as a retry attempt
+                        logger.error(
+                            "{}_STREAM: Non-retryable {} on attempt {}/{}: {}",
                             tag,
                             type(e).__name__,
                             attempt + 1,
                             max_retries if max_retries > 0 else "∞",
                             detail,
                         )
-                        attempt += 1
-                        continue  # jump to next retry iteration
-
-                    # All retries exhausted
+                        mapped_e = map_error(e)
+                        error_occurred = True
+                        error_message = append_request_id(
+                            get_user_facing_error_message(
+                                mapped_e, read_timeout_s=self._config.http_read_timeout
+                            ),
+                            request_id,
+                        )
+                        logger.info(
+                            "{}_STREAM: Emitting SSE error event for {}{}",
+                            tag,
+                            type(e).__name__,
+                            req_tag,
+                        )
+                        for event in sse.close_content_blocks():
+                            yield event
+                        for event in sse.emit_error(error_message):
+                            yield event
+                        return
                     logger.error(
                         "{}_STREAM: {} exhausted after {} attempts: {}",
                         tag, type(e).__name__, attempt + 1, detail,
                     )
-                    mapped_e = map_error(e)
-                    error_occurred = True
-                    error_message = append_request_id(
-                        get_user_facing_error_message(
-                            mapped_e, read_timeout_s=self._config.http_read_timeout
-                        ),
-                        request_id,
-                    )
-                    logger.info(
-                        "{}_STREAM: Emitting SSE error event for {}{}",
-                        tag,
-                        type(e).__name__,
-                        req_tag,
-                    )
-                    for event in sse.close_content_blocks():
-                        yield event
-                    for event in sse.emit_error(error_message):
-                        yield event
-
-                except (InternalServerError, APIStatusError, httpx.HTTPStatusError) as e:
-                    # Check for system role error (e.g., "System message must be at the beginning")
-                    # This can happen during stream iteration when the API returns a 500 error
-                    if _is_role_error(e):
-                        model = body.get("model", "")
-                        logger.warning(
-                            "{}_STREAM: System role rejected by model ({}) - "
-                            "retrying with system→user conversion",
-                            tag, model,
-                        )
-                        _system_as_user_cache.add(model)
-                        _save_model_override(model)
-                        body = _rebuild_with_system_as_user(body)
-                        # Increment attempt and retry the whole request
-                        attempt += 1
-                        continue
-                    # Not a system role error, fall through to generic exception handler
-                    logger.error("{}_ERROR:{} {}: {}", tag, req_tag, type(e).__name__, e)
                     mapped_e = map_error(e)
                     error_occurred = True
                     error_message = append_request_id(
