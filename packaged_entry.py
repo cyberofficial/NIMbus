@@ -82,7 +82,7 @@ def _print_banner(settings) -> None:
 
     print()
     print("=" * 60)
-    print("  NIMbus Proxy Server v2.0.0  (Standalone)")
+    print("  NIMbus Proxy Server v2.0.4  (Standalone)")
     print("=" * 60)
     print(f"  Host: {host}")
     print(f"  Port: {port}")
@@ -122,21 +122,25 @@ def main() -> None:
     exe_dir = _exe_dir()
     os.chdir(str(exe_dir))
 
-    # --- Step 2: Check for --mcp flag ---
+    # --- Step 2: Check for --swapper flag ---
+    if "--swapper" in sys.argv:
+        os.environ["SWAPPER_ENABLED"] = "true"
+
+    # --- Step 3: Check for --mcp flag ---
     if "--mcp" in sys.argv:
         _run_mcp_server()
         sys.exit(0)
 
-    # --- Step 3: Check for --init interactive setup wizard ---
+    # --- Step 4: Check for --init interactive setup wizard ---
     if "--init" in sys.argv:
         from setup_wizard import run_wizard
         run_wizard(exe_dir, sys.argv)
         sys.exit(0)
 
-    # --- Step 3: Auto-create .env if missing ---
+    # --- Step 5: Auto-create .env if missing ---
     _ensure_env_file(exe_dir)
 
-    # --- Step 4: Point tiktoken at bundled cache ---
+    # --- Step 6: Point tiktoken at bundled cache ---
     # In --onefile mode, data files are extracted to sys._MEIPASS
     if getattr(sys, "frozen", False):
         meipass = Path(sys._MEIPASS)
@@ -144,17 +148,17 @@ def main() -> None:
         if tiktoken_cache.exists():
             os.environ["TIKTOKEN_CACHE_DIR"] = str(tiktoken_cache)
 
-    # --- Step 4: Import project code (now CWD and env vars are correct) ---
+    # --- Step 7: Import project code (now CWD and env vars are correct) ---
     from config.settings import get_settings
     from config.logging_config import configure_logging
 
     settings = get_settings()
     configure_logging(settings.log_file)
 
-    # --- Step 5: Print startup banner ---
+    # --- Step 8: Print startup banner ---
     _print_banner(settings)
 
-    # --- Step 6: Start uvicorn ---
+    # --- Step 9: Start uvicorn ---
     import uvicorn
 
     from api.app import app
