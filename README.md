@@ -411,6 +411,29 @@ You can also search within a specific fetched page using the `search` parameter 
 
 ## Changelog
 
+### v2.0.4 (June 2026)
+
+**Features:**
+- **Dynamic Model Swapping**: Switch between configured models during chat sessions using `<modelswap:model-name>` tag
+- **Model Similarity Suggestions**: When model validation fails, suggests similar models from the same organization
+
+**Improvements:**
+- Retry on 5xx server errors (500, 502, 503, 504)
+- Separate retry logic for connection/timeout vs server errors
+- Non-retryable errors (4xx) raised immediately without exhausting retries
+- `UV_PROJECT_ENVIRONMENT` now set at runtime in `start_server.py`
+
+### v2.0.3 (June 2026)
+
+**Fixes:**
+- **Disabled Suggestion Mode Skip and Recap Skip Optimizations**: Both were causing false positives. Suggestion detection was too broad and recap skip blocked legitimate requests.
+
+**Changes:**
+- Optimization responses now returned as proper SSE events on streaming endpoint
+- `README.md` updated with correct defaults for disabled optimizations
+- `setup_wizard.py` defaults disabled optimizations to `false`
+- `dist_linux/`, `python-3.14/`, `python-build/` added to `.gitignore`
+
 ### v2.0.2 (June 2026)
 
 **MCP Server mode** with web search and cache search tools:
