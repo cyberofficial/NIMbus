@@ -147,7 +147,7 @@ async def _handle_modelswap(
                     return mock_resp, None
                 else:
                     mock_resp = _create_modelswap_response(
-                        False, model_name, f"Failed: {msg_text}"
+                        False, model_name, msg_text
                     )
                     return mock_resp, None
             break

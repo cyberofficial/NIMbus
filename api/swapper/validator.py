@@ -9,6 +9,58 @@ NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
 NVIDIA_MODELS_URL = f"{NVIDIA_NIM_BASE_URL}/models"
 
 
+def _find_similar_models(full_model: str, max_results: int = 5) -> list[str]:
+    """Find models from the same family in the NVIDIA catalog.
+
+    Matches by org prefix and shared model name parts.
+    E.g. 'deepseek-ai/deepseek-v4-flash' finds 'deepseek-ai/deepseek-v4-pro', etc.
+
+    Args:
+        full_model: Full NIM model ID (e.g. 'deepseek-ai/deepseek-v4-flash')
+        max_results: Maximum number of suggestions to return
+
+    Returns:
+        List of similar model IDs (excluding the failed model itself)
+    """
+    from config.settings import _fetch_nvidia_models
+
+    try:
+        catalog = _fetch_nvidia_models()
+    except Exception:
+        return []
+
+    # Find org prefix (e.g. 'deepseek-ai' from 'deepseek-ai/deepseek-v4-flash')
+    if "/" not in full_model:
+        return []
+    org, model_name = full_model.split("/", 1)
+    org = org.lower()
+    model_name_lower = model_name.lower()
+
+    # Score models by similarity: same org gets priority, then shared prefix parts
+    scored: list[tuple[int, str]] = []
+    name_parts = set(model_name_lower.split("-"))
+
+    for short_id, full_id in catalog.items():
+        if full_id == full_model:
+            continue
+        if "/" not in full_id:
+            continue
+        cat_org, cat_name = full_id.split("/", 1)
+
+        score = 0
+        if cat_org.lower() == org:
+            score += 10
+            # Shared word parts (e.g. 'deepseek', 'v4')
+            cat_parts = set(cat_name.lower().split("-"))
+            score += len(name_parts & cat_parts)
+
+        if score >= 10:  # At least same org
+            scored.append((score, full_id))
+
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    return [fid for _, fid in scored[:max_results]]
+
+
 def resolve_model_name(model: str) -> str:
     """
     Resolve a short model name to full NIM model ID.
@@ -110,11 +162,23 @@ async def validate_and_test_model(
     # Step 1: Check model exists in catalog
     exists = await validate_model_exists(model)
     if not exists:
-        return False, f"Model '{model}' not found in NVIDIA model catalog"
+        full_model = resolve_model_name(model)
+        similar = _find_similar_models(full_model)
+        base_msg = f"Model '{model}' isn't available at the time"
+        if similar:
+            suggestions = ", ".join(similar[:5])
+            return False, f"{base_msg}. You could try: {suggestions}"
+        return False, base_msg
 
     # Step 2: Test model with minimal request
     works = await test_model(model, settings, api_key)
     if not works:
-        return False, f"Model '{model}' validation failed (test request error)"
+        full_model = resolve_model_name(model)
+        similar = _find_similar_models(full_model)
+        base_msg = f"Model '{model}' isn't available at the time"
+        if similar:
+            suggestions = ", ".join(similar[:5])
+            return False, f"{base_msg}. You could try: {suggestions}"
+        return False, base_msg
 
     return True, f"Model '{model}' validated and tested successfully"
