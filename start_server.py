@@ -171,6 +171,8 @@ def start_server(config: dict) -> None:
         use_uv = False
 
     if use_uv:
+        # Set UV_PROJECT_ENVIRONMENT to use the existing venv/ folder instead of default .venv
+        os.environ["UV_PROJECT_ENVIRONMENT"] = str(script_dir / "venv")
         cmd = [
             "uv",
             "run",
