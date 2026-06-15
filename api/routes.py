@@ -5,22 +5,167 @@ import traceback
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 
 from config.settings import Settings
 from providers.base import BaseProvider
 from providers.error_mapping import get_user_facing_error_message
-from providers.exceptions import InvalidRequestError, ProviderError, StreamTruncatedError
+from providers.exceptions import (
+    InvalidRequestError,
+    ProviderError,
+    StreamTruncatedError,
+)
 from providers.logging_utils import build_request_summary, log_request_compact
+from providers.text import extract_text_from_content
 
 from .dependencies import get_provider, get_settings
 from .models.anthropic import MessagesRequest, TokenCountRequest
-from .models.responses import TokenCountResponse
-from .optimization_handlers import try_optimizations, optimization_response_to_sse
+from .models.responses import MessagesResponse, TokenCountResponse, Usage
+from .optimization_handlers import optimization_response_to_sse, try_optimizations
 from .request_utils import get_token_count
+from .swapper import (
+    ModelSwapManager,
+    extract_modelswap_tag,
+    is_modelswap_clear_tag,
+    resolve_model_name,
+    validate_and_test_model,
+)
 
 router = APIRouter()
+
+
+# =============================================================================
+# Model Swapper Helpers
+# =============================================================================
+
+
+def _extract_api_key(request: Request, settings: Settings) -> str:
+    """Extract API key from request headers (same logic as middleware)."""
+    # Check x-api-key header
+    api_key = request.headers.get("x-api-key")
+    if api_key:
+        return api_key
+
+    # Check Authorization Bearer token
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+
+    # Check query parameter
+    api_key = request.query_params.get("api_key")
+    if api_key:
+        return api_key
+
+    # Fallback to proxy API key
+    return settings.proxy_api_key
+
+
+def _is_title_request(request_data: MessagesRequest) -> bool:
+    """Check if request is a Claude Code title generation request."""
+    if not request_data.system or request_data.tools:
+        return False
+    system_text = extract_text_from_content(request_data.system).lower()
+    return "title" in system_text and "session content" in system_text
+
+
+def _create_modelswap_response(
+    success: bool, model: str, message: str
+) -> MessagesResponse:
+    """Create Anthropic-format mock response for modelswap result."""
+    return MessagesResponse(
+        id=f"msg_{uuid.uuid4().hex[:24]}",
+        model="model-swapper",
+        role="assistant",
+        content=[{"type": "text", "text": message}],
+        type="message",
+        stop_reason="end_turn",
+        stop_sequence=None,
+        usage=Usage(input_tokens=0, output_tokens=0),
+    )
+
+
+async def _handle_modelswap(
+    request: Request,
+    request_data: MessagesRequest,
+    settings: Settings,
+) -> tuple[dict | None, str | None]:
+    """
+    Handle modelswap logic for a request.
+
+    Returns:
+        Tuple of (mock_response_dict or None, model_override or None)
+        - If mock_response is not None, it's a modelswap command response
+        - If model_override is not None, it should be used for the request
+    """
+    if not settings.swapper_enabled:
+        return None, None
+
+    api_key = _extract_api_key(request, settings)
+
+    # Check last user message for modelswap tag
+    for msg in reversed(request_data.messages):
+        if msg.role == "user":
+            # Extract text content from message (can be string or list of content blocks)
+            text_content = extract_text_from_content(msg.content)
+
+            # Check for modelswap tag
+            model_name = extract_modelswap_tag(text_content)
+            is_clear = is_modelswap_clear_tag(text_content)
+
+            if model_name or is_clear:
+                # Skip modelswap for title generation requests - they embed
+                # <session> content that triggers false detection.
+                if _is_title_request(request_data):
+                    break
+
+                if is_clear:
+                    # Clear the swap
+                    await ModelSwapManager.clear(api_key)
+                    mock_resp = _create_modelswap_response(
+                        True, "", "Model swap cleared - using default model mapping"
+                    )
+                    return mock_resp, None
+
+                # Resolve short name to full NIM ID before validating/storing
+                full_model = resolve_model_name(model_name)
+
+                # Validate and test the model
+                success, msg_text = await validate_and_test_model(
+                    model_name, settings, api_key
+                )
+                if success:
+                    await ModelSwapManager.set(api_key, full_model)
+                    # Build chain: short_name -> resolved_id (if different)
+                    if model_name != full_model:
+                        chain = f"MODEL MAPPING: '{model_name}' -> `{full_model}`"
+                    else:
+                        chain = f"MODEL MAPPING: `{full_model}`"
+                    mock_resp = _create_modelswap_response(
+                        True, full_model, f"Model Updated: {full_model}\n\n{chain}"
+                    )
+                    return mock_resp, None
+                else:
+                    mock_resp = _create_modelswap_response(
+                        False, model_name, f"Failed: {msg_text}"
+                    )
+                    return mock_resp, None
+            break
+
+    # No modelswap command in this request - check if swap is active
+    swapped_model = await ModelSwapManager.get(api_key)
+    if swapped_model:
+        # Log the full model mapping chain for active swaps
+        default_nim = settings.get_model_for_claude(request_data.model)
+        logger.info(
+            "MODEL MAPPING: '{}' -> '{}' -> `{}`",
+            request_data.model,
+            default_nim,
+            swapped_model,
+        )
+        return None, swapped_model
+
+    return None, None
 
 
 # =============================================================================
@@ -40,6 +185,28 @@ async def create_message(
     try:
         if not request_data.messages:
             raise InvalidRequestError("messages cannot be empty")
+
+        # Handle model swapper
+        mock_response, model_override = await _handle_modelswap(
+            raw_request, request_data, settings
+        )
+        if mock_response is not None:
+            request_id = f"req_{uuid.uuid4().hex[:12]}"
+            log_request_compact(logger, request_id, request_data)
+
+            async def sse_generator():
+                for event in optimization_response_to_sse(mock_response, 0):
+                    yield event
+
+            return StreamingResponse(
+                sse_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "X-Accel-Buffering": "no",
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
 
         optimized = try_optimizations(request_data, settings)
         if optimized is not None:
@@ -118,6 +285,7 @@ async def create_message(
                 request_data,
                 input_tokens=input_tokens,
                 request_id=request_id,
+                model_override=model_override,
             ),
             media_type="text/event-stream",
             headers={
@@ -152,6 +320,21 @@ async def create_message_buffered(
     try:
         if not request_data.messages:
             raise InvalidRequestError("messages cannot be empty")
+
+        # Handle model swapper
+        mock_response, model_override = await _handle_modelswap(
+            raw_request, request_data, settings
+        )
+        if mock_response is not None:
+            request_id = f"req_{uuid.uuid4().hex[:12]}"
+            log_request_compact(logger, request_id, request_data)
+            return JSONResponse(
+                content=mock_response,
+                headers={
+                    "X-Buffered": "true",
+                    "X-Request-ID": request_id,
+                },
+            )
 
         optimized = try_optimizations(request_data, settings)
         if optimized is not None:
@@ -205,10 +388,9 @@ async def create_message_buffered(
             request_data,
             input_tokens=input_tokens,
             request_id=request_id,
+            model_override=model_override,
         )
 
-        # Use FastAPI's JSONResponse for proper content negotiation
-        from fastapi.responses import JSONResponse
         return JSONResponse(
             content=response,
             headers={
@@ -268,18 +450,21 @@ async def root(settings: Settings = Depends(get_settings)):
         "model": settings.model,
         "model_list": settings.model_list,
         "model_mapping": {
-            "sonnet_opening": " ".join([
-                "Position 1 (Sonnet 4.6 / Default)",
-                "- maps to model_list[0] if 1+ models configured"
-            ]),
-            "opus_opening": " ".join([
-                "Position 2 (Opus 4.7)",
-                "- maps to model_list[0] if 1 model, model_list[1] if 2+ models"
-            ]),
-            "haiku_opening": " ".join([
-                "Position 3 (Haiku 4.5)",
-                "- maps to model_list[last] based on count"
-            ]),
+            "sonnet_opening": " ".join(
+                [
+                    "Position 1 (Sonnet 4.6 / Default)",
+                    "- maps to model_list[0] if 1+ models configured",
+                ]
+            ),
+            "opus_opening": " ".join(
+                [
+                    "Position 2 (Opus 4.7)",
+                    "- maps to model_list[0] if 1 model, model_list[1] if 2+ models",
+                ]
+            ),
+            "haiku_opening": " ".join(
+                ["Position 3 (Haiku 4.5)", "- maps to model_list[last] based on count"]
+            ),
         },
     }
 

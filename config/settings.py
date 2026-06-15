@@ -4,7 +4,6 @@ This configuration is exclusively for NVIDIA NIM API endpoints.
 """
 
 import json
-import os
 import random
 import string
 from functools import lru_cache
@@ -22,8 +21,8 @@ load_dotenv()
 def generate_session_api_key() -> str:
     """Generate a random 32-char API key in format: 16chars.16chars"""
     chars = string.ascii_letters + string.digits
-    first_half = ''.join(random.choices(chars, k=16))
-    second_half = ''.join(random.choices(chars, k=16))
+    first_half = "".join(random.choices(chars, k=16))
+    second_half = "".join(random.choices(chars, k=16))
     return f"{first_half}.{second_half}"
 
 
@@ -90,6 +89,15 @@ class Settings(BaseSettings):
     enable_filepath_extraction_mock: bool = True
     enable_recap_skip: bool = False  # DISABLED: Blocks legitimate recap requests
 
+    # ==================== Model Swapper ====================
+    swapper_enabled: bool = Field(default=False, validation_alias="SWAPPER_ENABLED")
+    swapper_test_prompt: str = Field(
+        default="Please reply with pong only, nothing else", validation_alias="SWAPPER_TEST_PROMPT"
+    )
+    swapper_test_timeout: float = Field(
+        default=120.0, validation_alias="SWAPPER_TEST_TIMEOUT"
+    )
+
     # ==================== NIM Settings ====================
     nim: NimSettings = Field(default_factory=NimSettings)  # type: ignore[arg-type]
 
@@ -106,18 +114,18 @@ class Settings(BaseSettings):
     @property
     def discord_guild_ids(self) -> set[int]:
         """Parse DISCORD_GUILD_ID as comma-separated list of guild IDs."""
-        raw = getattr(self, '_discord_guild_id_raw', '')
+        raw = getattr(self, "_discord_guild_id_raw", "")
         if not raw:
             return set()
         try:
-            return set(int(gid.strip()) for gid in raw.split(',') if gid.strip())
+            return set(int(gid.strip()) for gid in raw.split(",") if gid.strip())
         except ValueError:
             return set()
 
     @discord_guild_ids.setter
     def discord_guild_ids(self, value: set[int]) -> None:
         """Store guild IDs."""
-        self._discord_guild_id_raw = ','.join(str(gid) for gid in value)
+        self._discord_guild_id_raw = ",".join(str(gid) for gid in value)
 
     # Legacy single guild support (for backward compatibility)
     discord_guild_id: int = Field(default=0, validation_alias="DISCORD_GUILD_ID")
@@ -126,109 +134,147 @@ class Settings(BaseSettings):
     @property
     def discord_control_channel_ids(self) -> set[int]:
         """Parse DISCORD_CONTROL_CHANNEL_ID as comma-separated list."""
-        raw = getattr(self, '_discord_control_channel_id_raw', '')
+        raw = getattr(self, "_discord_control_channel_id_raw", "")
         if not raw:
             return set()
         try:
-            return set(int(cid.strip()) for cid in raw.split(',') if cid.strip())
+            return set(int(cid.strip()) for cid in raw.split(",") if cid.strip())
         except ValueError:
             return set()
 
     @discord_control_channel_ids.setter
     def discord_control_channel_ids(self, value: set[int]) -> None:
         """Store control channel IDs."""
-        self._discord_control_channel_id_raw = ','.join(str(cid) for cid in value)
+        self._discord_control_channel_id_raw = ",".join(str(cid) for cid in value)
 
     # Single control channel ID (legacy)
-    discord_control_channel_id: int = Field(default=0, validation_alias="DISCORD_CONTROL_CHANNEL_ID")
+    discord_control_channel_id: int = Field(
+        default=0, validation_alias="DISCORD_CONTROL_CHANNEL_ID"
+    )
 
     # Multiple conversation channels - specific channels to respond in (comma-separated)
     @property
     def discord_conversation_channel_ids(self) -> set[int]:
         """Parse DISCORD_CONVERSATION_CHANNEL_ID as comma-separated list of channel IDs."""
-        raw = getattr(self, 'discord_conversation_channel_id_raw', '')
+        raw = getattr(self, "discord_conversation_channel_id_raw", "")
         if not raw:
             return set()
         try:
-            return set(int(cid.strip()) for cid in raw.split(',') if cid.strip())
+            return set(int(cid.strip()) for cid in raw.split(",") if cid.strip())
         except ValueError:
             return set()
 
     @discord_conversation_channel_ids.setter
     def discord_conversation_channel_ids(self, value: set[int]) -> None:
         """Store conversation channel IDs."""
-        self.discord_conversation_channel_id_raw = ','.join(str(cid) for cid in value)
+        self.discord_conversation_channel_id_raw = ",".join(str(cid) for cid in value)
 
     # Raw storage for conversation channel IDs (loaded from env)
-    discord_conversation_channel_id_raw: str = Field(default="", validation_alias="DISCORD_CONVERSATION_CHANNEL_ID")
+    discord_conversation_channel_id_raw: str = Field(
+        default="", validation_alias="DISCORD_CONVERSATION_CHANNEL_ID"
+    )
 
     # Multiple conversation categories (comma-separated list)
     @property
     def discord_conversation_category_ids(self) -> set[int]:
         """Parse DISCORD_CONVERSATION_CATEGORY_ID as comma-separated list."""
-        raw = getattr(self, '_discord_conversation_category_id_raw', '')
+        raw = getattr(self, "_discord_conversation_category_id_raw", "")
         if not raw:
             return set()
         try:
-            return set(int(cid.strip()) for cid in raw.split(',') if cid.strip())
+            return set(int(cid.strip()) for cid in raw.split(",") if cid.strip())
         except ValueError:
             return set()
 
     @discord_conversation_category_ids.setter
     def discord_conversation_category_ids(self, value: set[int]) -> None:
         """Store conversation category IDs."""
-        self._discord_conversation_category_id_raw = ','.join(str(cid) for cid in value)
+        self._discord_conversation_category_id_raw = ",".join(str(cid) for cid in value)
 
     # Single conversation category ID (legacy)
-    discord_conversation_category_id: int = Field(default=0, validation_alias="DISCORD_CONVERSATION_CATEGORY_ID")
+    discord_conversation_category_id: int = Field(
+        default=0, validation_alias="DISCORD_CONVERSATION_CATEGORY_ID"
+    )
 
     # Owner configuration for access control
     discord_owner_id: int = Field(default=0, validation_alias="DISCORD_OWNER_ID")
-    discord_owner_only: bool = Field(default=True, validation_alias="DISCORD_OWNER_ONLY")
+    discord_owner_only: bool = Field(
+        default=True, validation_alias="DISCORD_OWNER_ONLY"
+    )
 
     # Token management for compaction
-    discord_max_tokens: int = Field(default=202000, validation_alias="DISCORD_MAX_TOKENS")
-    discord_compact_threshold: float = Field(default=0.8, validation_alias="DISCORD_COMPACT_THRESHOLD")
+    discord_max_tokens: int = Field(
+        default=202000, validation_alias="DISCORD_MAX_TOKENS"
+    )
+    discord_compact_threshold: float = Field(
+        default=0.8, validation_alias="DISCORD_COMPACT_THRESHOLD"
+    )
 
     # Rate limiting
-    discord_user_cooldown: float = Field(default=10.0, validation_alias="DISCORD_USER_COOLDOWN")
-    discord_server_limit: int = Field(default=20, validation_alias="DISCORD_SERVER_LIMIT")
-    discord_server_window: float = Field(default=60.0, validation_alias="DISCORD_SERVER_WINDOW")
+    discord_user_cooldown: float = Field(
+        default=10.0, validation_alias="DISCORD_USER_COOLDOWN"
+    )
+    discord_server_limit: int = Field(
+        default=20, validation_alias="DISCORD_SERVER_LIMIT"
+    )
+    discord_server_window: float = Field(
+        default=60.0, validation_alias="DISCORD_SERVER_WINDOW"
+    )
 
     # System prompt for Discord conversations
     discord_system_prompt: str = Field(
         default="You are a helpful Discord bot. Be friendly, casual, and conversational. "
-               "Talk like a normal person - don't use formal analysis headers, bullet points, "
-               "or structured formatting unless specifically asked. Keep responses natural and direct.",
-        validation_alias="DISCORD_SYSTEM_PROMPT"
+        "Talk like a normal person - don't use formal analysis headers, bullet points, "
+        "or structured formatting unless specifically asked. Keep responses natural and direct.",
+        validation_alias="DISCORD_SYSTEM_PROMPT",
     )
 
     # Skip file attachments (future feature: process files)
-    discord_skip_files: bool = Field(default=True, validation_alias="DISCORD_SKIP_FILES")
+    discord_skip_files: bool = Field(
+        default=True, validation_alias="DISCORD_SKIP_FILES"
+    )
 
     # Message splitting threshold (Discord has 2000 char limit)
-    discord_split_threshold: int = Field(default=1900, validation_alias="DISCORD_SPLIT_THRESHOLD")
+    discord_split_threshold: int = Field(
+        default=1900, validation_alias="DISCORD_SPLIT_THRESHOLD"
+    )
 
     # Auto-compact feature toggle
-    discord_auto_compact: bool = Field(default=True, validation_alias="DISCORD_AUTO_COMPACT")
+    discord_auto_compact: bool = Field(
+        default=True, validation_alias="DISCORD_AUTO_COMPACT"
+    )
 
     # Command toggles (all default to true)
     discord_cmd_ask: bool = Field(default=True, validation_alias="DISCORD_CMD_ASK")
-    discord_cmd_compact: bool = Field(default=True, validation_alias="DISCORD_CMD_COMPACT")
+    discord_cmd_compact: bool = Field(
+        default=True, validation_alias="DISCORD_CMD_COMPACT"
+    )
     discord_cmd_new: bool = Field(default=True, validation_alias="DISCORD_CMD_NEW")
-    discord_cmd_status: bool = Field(default=True, validation_alias="DISCORD_CMD_STATUS")
-    discord_cmd_download: bool = Field(default=True, validation_alias="DISCORD_CMD_DOWNLOAD")
+    discord_cmd_status: bool = Field(
+        default=True, validation_alias="DISCORD_CMD_STATUS"
+    )
+    discord_cmd_download: bool = Field(
+        default=True, validation_alias="DISCORD_CMD_DOWNLOAD"
+    )
     discord_cmd_block: bool = Field(default=True, validation_alias="DISCORD_CMD_BLOCK")
-    discord_cmd_unblock: bool = Field(default=True, validation_alias="DISCORD_CMD_UNBLOCK")
-    discord_cmd_blocked: bool = Field(default=True, validation_alias="DISCORD_CMD_BLOCKED")
-    discord_cmd_newchannel: bool = Field(default=True, validation_alias="DISCORD_CMD_NEWCHANNEL")
+    discord_cmd_unblock: bool = Field(
+        default=True, validation_alias="DISCORD_CMD_UNBLOCK"
+    )
+    discord_cmd_blocked: bool = Field(
+        default=True, validation_alias="DISCORD_CMD_BLOCKED"
+    )
+    discord_cmd_newchannel: bool = Field(
+        default=True, validation_alias="DISCORD_CMD_NEWCHANNEL"
+    )
 
     @property
     def discord_enabled(self) -> bool:
         """Check if Discord bot is configured."""
         return bool(self.discord_bot_token and self.discord_guild_id)
 
-    def is_conversation_channel(self, channel_id: int, category_id: int | None = None) -> bool:
+    def is_conversation_channel(
+        self, channel_id: int, category_id: int | None = None
+    ) -> bool:
         """Check if a channel is a valid conversation channel.
 
         Priority:
@@ -328,6 +374,7 @@ class Settings(BaseSettings):
         model_count = len([m.strip() for m in model_raw.split(",") if m.strip()])
         if model_count > 1 and v.thinking:
             from loguru import logger
+
             logger.info(
                 "NIM config: {} models configured in MODEL - force-disabling thinking "
                 "(unsupported by some models like qwen). Set a single MODEL to re-enable.",
@@ -377,15 +424,15 @@ class Settings(BaseSettings):
                     # Map short names (Claude Code convention) to full NIM model IDs
                     models.append(_to_full_nim_model(val))
             return models if models else ["deepseek-ai/deepseek-v4-flash"]
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError, OSError:
             return ["deepseek-ai/deepseek-v4-flash"]
 
     # Claude model ID keyword → position in MODEL list
     # Claude API IDs: claude-sonnet-4-6, claude-opus-4-7, claude-haiku-4-5-20251001
     _CLAUDE_MODEL_MAP: dict[str, int] = {
         "sonnet": 0,  # Default/Sonnet 4.6
-        "opus": 1,    # Opus 4.7
-        "haiku": 2,   # Haiku 4.5
+        "opus": 1,  # Opus 4.7
+        "haiku": 2,  # Haiku 4.5
     }
 
     def get_model_for_claude(self, claude_id: str) -> str:
@@ -456,6 +503,7 @@ def _fetch_nvidia_models() -> dict[str, str]:
         return _NVIDIA_MODEL_CACHE
     try:
         import httpx
+
         resp = httpx.get("https://integrate.api.nvidia.com/v1/models", timeout=10)
         if resp.status_code == 200:
             data = resp.json()

@@ -45,6 +45,7 @@ class BaseProvider(ABC):
         input_tokens: int = 0,
         *,
         request_id: str | None = None,
+        model_override: str | None = None,
     ) -> AsyncIterator[str]:
         """Stream response in Anthropic SSE format."""
         if False:
@@ -57,6 +58,7 @@ class BaseProvider(ABC):
         input_tokens: int = 0,
         *,
         request_id: str | None = None,
+        model_override: str | None = None,
     ) -> dict:
         """Send a non-streaming request and return complete Anthropic-format JSON response."""
         ...

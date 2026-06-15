@@ -7,20 +7,20 @@ and displays connection instructions for Linux, Windows CMD, and Windows PowerSh
 """
 
 import os
-import sys
-import subprocess
-import platform
 import random
 import string
+import subprocess
+import sys
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 
 def generate_session_api_key() -> str:
     """Generate a random 32-char API key in format: 16chars.16chars"""
     chars = string.ascii_letters + string.digits
-    first_half = ''.join(random.choices(chars, k=16))
-    second_half = ''.join(random.choices(chars, k=16))
+    first_half = "".join(random.choices(chars, k=16))
+    second_half = "".join(random.choices(chars, k=16))
     return f"{first_half}.{second_half}"
 
 
@@ -37,7 +37,7 @@ def load_env_config() -> dict:
     if not env_path.exists():
         print(f"Error: .env file not found at {env_path}")
         print("Please copy .env.example to .env and configure it:")
-        print(f"  cp .env.example .env")
+        print("  cp .env.example .env")
         sys.exit(1)
 
     # Load .env file
@@ -120,25 +120,35 @@ def print_connection_instructions(config: dict) -> None:
     print(f'ANTHROPIC_AUTH_TOKEN="{api_key}" ANTHROPIC_BASE_URL="{base_url}" claude')
     print()
     print("With skip permissions:")
-    print(f'ANTHROPIC_AUTH_TOKEN="{api_key}" ANTHROPIC_BASE_URL="{base_url}" claude --dangerously-skip-permissions')
+    print(
+        f'ANTHROPIC_AUTH_TOKEN="{api_key}" ANTHROPIC_BASE_URL="{base_url}" claude --dangerously-skip-permissions'
+    )
     print()
 
     # Windows CMD
     print("Windows CMD:")
     print("-" * 40)
-    print(f'set ANTHROPIC_AUTH_TOKEN={api_key} && set ANTHROPIC_BASE_URL={base_url} && claude')
+    print(
+        f"set ANTHROPIC_AUTH_TOKEN={api_key} && set ANTHROPIC_BASE_URL={base_url} && claude"
+    )
     print()
     print("With skip permissions:")
-    print(f'set ANTHROPIC_AUTH_TOKEN={api_key} && set ANTHROPIC_BASE_URL={base_url} && claude --dangerously-skip-permissions')
+    print(
+        f"set ANTHROPIC_AUTH_TOKEN={api_key} && set ANTHROPIC_BASE_URL={base_url} && claude --dangerously-skip-permissions"
+    )
     print()
 
     # Windows PowerShell
     print("Windows PowerShell:")
     print("-" * 40)
-    print(f'$env:ANTHROPIC_AUTH_TOKEN="{api_key}"; $env:ANTHROPIC_BASE_URL="{base_url}"; claude')
+    print(
+        f'$env:ANTHROPIC_AUTH_TOKEN="{api_key}"; $env:ANTHROPIC_BASE_URL="{base_url}"; claude'
+    )
     print()
     print("With skip permissions:")
-    print(f'$env:ANTHROPIC_AUTH_TOKEN="{api_key}"; $env:ANTHROPIC_BASE_URL="{base_url}"; claude --dangerously-skip-permissions')
+    print(
+        f'$env:ANTHROPIC_AUTH_TOKEN="{api_key}"; $env:ANTHROPIC_BASE_URL="{base_url}"; claude --dangerously-skip-permissions'
+    )
     print()
 
     print("=" * 60)
@@ -162,10 +172,16 @@ def start_server(config: dict) -> None:
 
     if use_uv:
         cmd = [
-            "uv", "run", "uvicorn", "server:app",
-            "--host", host,
-            "--port", port,
-            "--timeout-graceful-shutdown", "5",
+            "uv",
+            "run",
+            "uvicorn",
+            "server:app",
+            "--host",
+            host,
+            "--port",
+            port,
+            "--timeout-graceful-shutdown",
+            "5",
         ]
         print(f"Starting server with uv: {' '.join(cmd)}")
     else:
@@ -179,10 +195,16 @@ def start_server(config: dict) -> None:
             sys.exit(1)
 
         cmd = [
-            str(venv_python), "-m", "uvicorn", "server:app",
-            "--host", host,
-            "--port", port,
-            "--timeout-graceful-shutdown", "5",
+            str(venv_python),
+            "-m",
+            "uvicorn",
+            "server:app",
+            "--host",
+            host,
+            "--port",
+            port,
+            "--timeout-graceful-shutdown",
+            "5",
         ]
         print(f"Starting server with venv: {' '.join(cmd)}")
 
@@ -209,13 +231,16 @@ def print_model_mapping(model_raw: str) -> None:
     print(f"Claude Model Mapping ({count} model{'s' if count != 1 else ''}):")
     print("-" * 60)
 
-    if count == 1:
-        print(f"  All Claude tiers (Default, Sonnet, Opus, Haiku)")
+    if count == 0:
+        print("  No models configured.")
+        print("  Use --model or set MODEL environment variable.")
+    elif count == 1:
+        print("  All Claude tiers (Default, Sonnet, Opus, Haiku)")
         print(f"    → {models[0]}")
     elif count == 2:
-        print(f"  Default / Sonnet 4.6 + Opus 4.7 (1M context)")
+        print("  Default / Sonnet 4.6 + Opus 4.7 (1M context)")
         print(f"    → {models[0]}")
-        print(f"  Haiku 4.5 (200k context)")
+        print("  Haiku 4.5 (200k context)")
         print(f"    → {models[1]}")
     else:
         for i, tier_info in enumerate(CLAUDE_TIERS_3):
@@ -228,16 +253,30 @@ def print_model_mapping(model_raw: str) -> None:
 def run_mcp_server():
     """Run the MCP server with stdio transport."""
     from mcp_server import mcp
+
     print("Starting NIMbus MCP Server (stdio transport)...", file=sys.stderr)
     mcp.run(transport="stdio")
 
 
+def run_swapper_mode():
+    """Enable model swapper mode by setting env var."""
+    os.environ["SWAPPER_ENABLED"] = "true"
+    print(
+        "Model Swapper enabled - use <modelswap:model-name> in chat to switch models",
+        file=sys.stderr,
+    )
+
+
 def main():
     """Main entry point."""
-    # Check for --mcp flag first
-    if "--mcp" in sys.argv:
+    # Check for --mcp / --mcpwebsearch flag first
+    if "--mcpwebsearch" in sys.argv or "--mcp" in sys.argv:
         run_mcp_server()
         return
+
+    # Check for --swapper flag
+    if "--swapper" in sys.argv:
+        run_swapper_mode()
 
     print()
     print("=" * 60)
@@ -251,10 +290,17 @@ def main():
     print(f"Port: {config['port']}")
     print(f"Model: {config['model']}")
     print_model_mapping(config["model"])
-    print(f"API Key: {'(auto-generated)' if config.get('key_was_generated') else '(set)'}")
-    print(f"NVIDIA Key: {'(set)' if config['nvidia_nim_api_key'] else '(NOT SET - REQUIRED!)'}")
+    print(
+        f"API Key: {'(auto-generated)' if config.get('key_was_generated') else '(set)'}"
+    )
+    print(
+        f"NVIDIA Key: {'(set)' if config['nvidia_nim_api_key'] else '(NOT SET - REQUIRED!)'}"
+    )
 
-    if not config["nvidia_nim_api_key"] or config["nvidia_nim_api_key"] == "<replaceme>":
+    if (
+        not config["nvidia_nim_api_key"]
+        or config["nvidia_nim_api_key"] == "<replaceme>"
+    ):
         print()
         print("Warning: NVIDIA_NIM_API_KEY is not configured!")
         print("Please set it in your .env file.")

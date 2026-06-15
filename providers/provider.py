@@ -85,7 +85,7 @@ def _is_role_error(e: Exception) -> bool:
     """
     try:
         # Try to get response from the exception
-        response = getattr(e, 'response', None)
+        response = getattr(e, "response", None)
         if response is not None:
             err_body = response.json()
             # Check for 422 validation errors
@@ -101,7 +101,7 @@ def _is_role_error(e: Exception) -> bool:
             if "System message must be at the beginning" in error_msg:
                 return True
         # Also check body attribute for different error formats
-        body = getattr(e, 'body', None)
+        body = getattr(e, "body", None)
         if body:
             msg = str(body)
             if "System message must be at the beginning" in msg:
@@ -139,22 +139,34 @@ def _is_thinking_param_error(e: Exception) -> bool:
     """
     try:
         # Check for standard OpenAI error format (BadRequestError, etc.)
-        response = getattr(e, 'response', None)
+        response = getattr(e, "response", None)
         if response is not None:
             err_body = response.json()
             msg = err_body.get("error", {}).get("message", "")
             if "Unsupported parameter" in msg:
                 # Check if the unsupported params are thinking-related
-                thinking_params = {"thinking", "reasoning_split", "include_reasoning", "return_tokens_as_token_ids", "reasoning_effort"}
+                thinking_params = {
+                    "thinking",
+                    "reasoning_split",
+                    "include_reasoning",
+                    "return_tokens_as_token_ids",
+                    "reasoning_effort",
+                }
                 for param in thinking_params:
                     if param in msg:
                         return True
         # Check for alternative error format
-        body = getattr(e, 'body', None)
+        body = getattr(e, "body", None)
         if body:
             msg = str(body)
             if "Unsupported parameter" in msg:
-                thinking_params = {"thinking", "reasoning_split", "include_reasoning", "return_tokens_as_token_ids", "reasoning_effort"}
+                thinking_params = {
+                    "thinking",
+                    "reasoning_split",
+                    "include_reasoning",
+                    "return_tokens_as_token_ids",
+                    "reasoning_effort",
+                }
                 for param in thinking_params:
                     if param in msg:
                         return True
@@ -175,15 +187,15 @@ def _is_retryable_server_error(e: Exception) -> bool:
         return True
 
     # Check APIStatusError / APIError for status code
-    response = getattr(e, 'response', None)
+    response = getattr(e, "response", None)
     if response is not None:
-        status_code = getattr(response, 'status_code', None)
+        status_code = getattr(response, "status_code", None)
         if status_code in _RETRYABLE_HTTP_STATUS:
             return True
 
     # Check httpx.HTTPStatusError
-    if hasattr(e, 'response') and e.response is not None:
-        status_code = getattr(e.response, 'status_code', None)
+    if hasattr(e, "response") and e.response is not None:
+        status_code = getattr(e.response, "status_code", None)
         if status_code in _RETRYABLE_HTTP_STATUS:
             return True
 
@@ -197,8 +209,12 @@ def _rebuild_without_thinking(body: dict) -> dict:
         extra_body = dict(new_body["extra_body"])
         # Remove thinking-related parameters
         thinking_keys = {
-            "thinking", "reasoning_split", "chat_template_kwargs",
-            "return_tokens_as_token_ids", "reasoning_effort", "include_reasoning"
+            "thinking",
+            "reasoning_split",
+            "chat_template_kwargs",
+            "return_tokens_as_token_ids",
+            "reasoning_effort",
+            "include_reasoning",
         }
         for key in thinking_keys:
             extra_body.pop(key, None)
@@ -211,7 +227,10 @@ def _rebuild_without_thinking(body: dict) -> dict:
 
 def _system_to_user(msg: dict) -> dict:
     """Convert a system message to a user message with a prefix."""
-    return {"role": "user", "content": f"[System Instructions]\n{msg.get('content', '')}"}
+    return {
+        "role": "user",
+        "content": f"[System Instructions]\n{msg.get('content', '')}",
+    }
 
 
 def _save_model_override(model_name: str) -> None:
@@ -228,7 +247,7 @@ def _save_model_override(model_name: str) -> None:
     if path.exists():
         try:
             overrides = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError, OSError:
             overrides = {}
 
     model_overrides = overrides.setdefault("model_overrides", {})
@@ -297,15 +316,26 @@ class NvidiaNimProvider(BaseProvider):
         if client is not None:
             await client.aclose()
 
-    def _build_request_body(self, request: Any) -> dict:
+    def _build_request_body(
+        self, request: Any, *, model_override: str | None = None
+    ) -> dict:
         """Build request body for NIM API.
 
         Checks the runtime cache for models known to reject the system role
         so that retry loops don't accidentally send system→model→422 again.
         Also checks for models known to reject thinking/reasoning parameters.
+
+        Args:
+            request: The request object
+            model_override: Optional model name to override the request's model
         """
         assert self._nim_settings is not None
         body = build_request_body(request, self._nim_settings)
+
+        # Apply model override if provided
+        if model_override:
+            body["model"] = model_override
+
         model = body.get("model", "")
         if _model_rejects_system(model):
             body = _rebuild_with_system_as_user(body)
@@ -319,6 +349,7 @@ class NvidiaNimProvider(BaseProvider):
         input_tokens: int = 0,
         *,
         request_id: str | None = None,
+        model_override: str | None = None,
     ) -> dict:
         """Send a non-streaming request and return complete Anthropic-format JSON response.
 
@@ -344,7 +375,7 @@ class NvidiaNimProvider(BaseProvider):
                     )
                     await asyncio.sleep(retry_delay * attempt)
 
-                body = self._build_request_body(request)
+                body = self._build_request_body(request, model_override=model_override)
                 req_tag = f" request_id={request_id}" if request_id else ""
                 logger.info(
                     "{}_BUFFERED: attempt={}{} model={} msgs={} tools={}",
@@ -367,33 +398,42 @@ class NvidiaNimProvider(BaseProvider):
                     try:
                         try:
                             response = await self._client.chat.completions.create(
-                                **body, stream=False,
+                                **body,
+                                stream=False,
                             )
-                        except (BadRequestError, UnprocessableEntityError, APIStatusError) as e:
+                        except (
+                            BadRequestError,
+                            UnprocessableEntityError,
+                            APIStatusError,
+                        ) as e:
                             if _is_role_error(e):
                                 model = body.get("model", "")
                                 logger.warning(
                                     "{}_BUFFERED: System role rejected by model ({}) - "
                                     "retrying with system→user conversion",
-                                    tag, model,
+                                    tag,
+                                    model,
                                 )
                                 _system_as_user_cache.add(model)
                                 _save_model_override(model)
                                 body = _rebuild_with_system_as_user(body)
                                 response = await self._client.chat.completions.create(
-                                    **body, stream=False,
+                                    **body,
+                                    stream=False,
                                 )
                             elif _is_thinking_param_error(e):
                                 model = body.get("model", "")
                                 logger.warning(
                                     "{}_BUFFERED: Thinking parameters rejected by model ({}) - "
                                     "retrying without thinking parameters",
-                                    tag, model,
+                                    tag,
+                                    model,
                                 )
                                 mark_thinking_unsupported(model)
                                 body = _rebuild_without_thinking(body)
                                 response = await self._client.chat.completions.create(
-                                    **body, stream=False,
+                                    **body,
+                                    stream=False,
                                 )
                             else:
                                 raise
@@ -409,12 +449,16 @@ class NvidiaNimProvider(BaseProvider):
                 )
                 return result
 
-            except (APIConnectionError, APITimeoutError, InternalServerError, APIStatusError) as e:
+            except (
+                APIConnectionError,
+                APITimeoutError,
+                InternalServerError,
+                APIStatusError,
+            ) as e:
                 # Check if it's a retryable 5xx error
-                is_retryable = (
-                    isinstance(e, (APIConnectionError, APITimeoutError))
-                    or _is_retryable_server_error(e)
-                )
+                is_retryable = isinstance(
+                    e, (APIConnectionError, APITimeoutError)
+                ) or _is_retryable_server_error(e)
                 last_error = e
                 detail = _format_error_detail(e)
                 exhaustion_msg = (
@@ -477,10 +521,12 @@ class NvidiaNimProvider(BaseProvider):
 
         if content is not None:
             if content.content:
-                content_blocks.append({
-                    "type": "text",
-                    "text": content.content,
-                })
+                content_blocks.append(
+                    {
+                        "type": "text",
+                        "text": content.content,
+                    }
+                )
 
             if content.tool_calls:
                 for tc in content.tool_calls:
@@ -579,11 +625,12 @@ class NvidiaNimProvider(BaseProvider):
         input_tokens: int = 0,
         *,
         request_id: str | None = None,
+        model_override: str | None = None,
     ) -> AsyncIterator[str]:
         """Stream response in Anthropic SSE format."""
         with logger.contextualize(request_id=request_id):
             async for event in self._stream_response_impl(
-                request, input_tokens, request_id
+                request, input_tokens, request_id, model_override
             ):
                 yield event
 
@@ -592,6 +639,7 @@ class NvidiaNimProvider(BaseProvider):
         request: Any,
         input_tokens: int,
         request_id: str | None,
+        model_override: str | None = None,
     ) -> AsyncIterator[str]:
         """Streaming implementation with retry on transient backend disconnections.
 
@@ -605,7 +653,7 @@ class NvidiaNimProvider(BaseProvider):
         max_retries = self._config.retry_on_truncation
         retry_delay = self._config.retry_delay
 
-        body = self._build_request_body(request)
+        body = self._build_request_body(request, model_override=model_override)
         req_tag = f" request_id={request_id}" if request_id else ""
         logger.info(
             "{}_STREAM:{} model={} msgs={} tools={}",
@@ -669,31 +717,41 @@ class NvidiaNimProvider(BaseProvider):
                         stream = await self._global_rate_limiter.execute_with_retry(
                             self._client.chat.completions.create, **body, stream=True
                         )
-                    except (BadRequestError, UnprocessableEntityError, APIStatusError) as e:
+                    except (
+                        BadRequestError,
+                        UnprocessableEntityError,
+                        APIStatusError,
+                    ) as e:
                         if _is_role_error(e):
                             model = body.get("model", "")
                             logger.warning(
                                 "{}_STREAM: System role rejected by model ({}) - "
                                 "retrying with system→user conversion",
-                                tag, model,
+                                tag,
+                                model,
                             )
                             _system_as_user_cache.add(model)
                             _save_model_override(model)
                             body = _rebuild_with_system_as_user(body)
                             stream = await self._global_rate_limiter.execute_with_retry(
-                                self._client.chat.completions.create, **body, stream=True
+                                self._client.chat.completions.create,
+                                **body,
+                                stream=True,
                             )
                         elif _is_thinking_param_error(e):
                             model = body.get("model", "")
                             logger.warning(
                                 "{}_STREAM: Thinking parameters rejected by model ({}) - "
                                 "retrying without thinking parameters",
-                                tag, model,
+                                tag,
+                                model,
                             )
                             mark_thinking_unsupported(model)
                             body = _rebuild_without_thinking(body)
                             stream = await self._global_rate_limiter.execute_with_retry(
-                                self._client.chat.completions.create, **body, stream=True
+                                self._client.chat.completions.create,
+                                **body,
+                                stream=True,
                             )
                         else:
                             raise
@@ -731,8 +789,8 @@ class NvidiaNimProvider(BaseProvider):
                                             yield event
                                         yield sse.emit_thinking_delta(part.content)
                                     else:
-                                        filtered_text, detected_tools = heuristic_parser.feed(
-                                            part.content
+                                        filtered_text, detected_tools = (
+                                            heuristic_parser.feed(part.content)
                                         )
 
                                         if filtered_text:
@@ -745,10 +803,14 @@ class NvidiaNimProvider(BaseProvider):
                                                 yield event
 
                                             block_idx = sse.blocks.allocate_index()
-                                            if tool_use.get("name") == "Task" and isinstance(
+                                            if tool_use.get(
+                                                "name"
+                                            ) == "Task" and isinstance(
                                                 tool_use.get("input"), dict
                                             ):
-                                                tool_use["input"]["run_in_background"] = False
+                                                tool_use["input"][
+                                                    "run_in_background"
+                                                ] = False
                                             yield sse.content_block_start(
                                                 block_idx,
                                                 "tool_use",
@@ -785,7 +847,8 @@ class NvidiaNimProvider(BaseProvider):
                             logger.warning(
                                 "{}_STREAM: System role rejected by model ({}) during streaming - "
                                 "retrying with system→user conversion",
-                                tag, model,
+                                tag,
+                                model,
                             )
                             _system_as_user_cache.add(model)
                             _save_model_override(model)
@@ -796,12 +859,18 @@ class NvidiaNimProvider(BaseProvider):
                         # Not a system role error, fall through to generic exception handler
                         raise
 
-                except (APIConnectionError, APITimeoutError, httpx.ReadError, InternalServerError, APIStatusError, httpx.HTTPStatusError) as e:
+                except (
+                    APIConnectionError,
+                    APITimeoutError,
+                    httpx.ReadError,
+                    InternalServerError,
+                    APIStatusError,
+                    httpx.HTTPStatusError,
+                ) as e:
                     # Check if it's a retryable 5xx server error
-                    is_retryable = (
-                        isinstance(e, (APIConnectionError, APITimeoutError, httpx.ReadError))
-                        or _is_retryable_server_error(e)
-                    )
+                    is_retryable = isinstance(
+                        e, (APIConnectionError, APITimeoutError, httpx.ReadError)
+                    ) or _is_retryable_server_error(e)
                     last_error_tag = f"{type(e).__name__}"
                     detail = _format_error_detail(e)
                     if is_retryable:
@@ -819,7 +888,10 @@ class NvidiaNimProvider(BaseProvider):
                         # All retries exhausted for retryable error
                         logger.error(
                             "{}_STREAM: {} exhausted after {} attempts: {}",
-                            tag, type(e).__name__, attempt + 1, detail,
+                            tag,
+                            type(e).__name__,
+                            attempt + 1,
+                            detail,
                         )
                     else:
                         # Non-retryable error - raise immediately without counting as a retry attempt
@@ -852,7 +924,10 @@ class NvidiaNimProvider(BaseProvider):
                         return
                     logger.error(
                         "{}_STREAM: {} exhausted after {} attempts: {}",
-                        tag, type(e).__name__, attempt + 1, detail,
+                        tag,
+                        type(e).__name__,
+                        attempt + 1,
+                        detail,
                     )
                     mapped_e = map_error(e)
                     error_occurred = True
@@ -875,9 +950,17 @@ class NvidiaNimProvider(BaseProvider):
 
                 except Exception as e:
                     # Log exception details for debugging
-                    logger.error("{}_EXCEPTION_DIAGNOSTIC: type={} bases={} error={}", tag, type(e).__name__, type(e).__bases__, e)
+                    logger.error(
+                        "{}_EXCEPTION_DIAGNOSTIC: type={} bases={} error={}",
+                        tag,
+                        type(e).__name__,
+                        type(e).__bases__,
+                        e,
+                    )
                     # Non-retryable errors (auth, rate limit, etc.) - surface immediately
-                    logger.error("{}_ERROR:{} {}: {}", tag, req_tag, type(e).__name__, e)
+                    logger.error(
+                        "{}_ERROR:{} {}: {}", tag, req_tag, type(e).__name__, e
+                    )
                     mapped_e = map_error(e)
                     error_occurred = True
                     error_message = append_request_id(
@@ -903,18 +986,14 @@ class NvidiaNimProvider(BaseProvider):
 
         # Detect truncated streams (backend cut out without proper finish_reason)
         has_any_content = (
-            sse.accumulated_text
-            or sse.accumulated_reasoning
-            or sse.blocks.tool_states
+            sse.accumulated_text or sse.accumulated_reasoning or sse.blocks.tool_states
         )
         if error_occurred and not has_any_content:
             sse.mark_truncated(
                 "Backend connection lost before any content was produced"
             )
         elif error_occurred:
-            sse.mark_truncated(
-                "Backend connection lost mid-stream (partial response)"
-            )
+            sse.mark_truncated("Backend connection lost mid-stream (partial response)")
 
         # Flush remaining content
         remaining = think_parser.flush()
