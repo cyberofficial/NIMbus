@@ -126,7 +126,7 @@ Browse all: [build.nvidia.com/explore/discover](https://build.nvidia.com/explore
 | `MODEL` | Model identifier (`owner/model-name`, comma-separated for multi-model) | `deepseek-ai/deepseek-v4-flash` |
 | `NVIDIA_NIM_API_KEY` | NVIDIA API key | **required** |
 | `SERVER_TYPE` | Server mode: `stream` or `buffer` | `stream` |
-| `NIM_MAX_TOKENS` | Max tokens for responses | `202000` |
+| `NIM_MAX_TOKENS` | Max output tokens for responses | `202000` |
 | `NIM_THINKING` | Enable thinking/reasoning content | `true` |
 | `NIM_REASONING_EFFORT` | Reasoning effort: `low`, `medium`, or `high` | `high` |
 | `PROVIDER_RATE_LIMIT` | Requests per window | `40` |
@@ -140,6 +140,17 @@ Browse all: [build.nvidia.com/explore/discover](https://build.nvidia.com/explore
 | `HTTP_CONNECT_TIMEOUT` | Connect timeout in seconds | `2` |
 | `PORT` | Server port | `8082` |
 | `PROXY_API_KEY` | Optional proxy authentication (auto-generated if empty) | (random) |
+| `FAST_PREFIX_DETECTION` | Fast command prefix detection | `true` |
+| `ENABLE_NETWORK_PROBE_MOCK` | Mock quota probe requests | `true` |
+| `ENABLE_TITLE_GENERATION_SKIP` | Skip title generation requests | `true` |
+| `ENABLE_SUGGESTION_MODE_SKIP` | Skip suggestion mode requests | `false` |
+| `ENABLE_FILEPATH_EXTRACTION_MOCK` | Mock filepath extraction | `true` |
+| `ENABLE_RECAP_SKIP` | Block recap requests (stepped away/return) | `false` |
+| `SWAPPER_ENABLED` | Enable dynamic `<modelswap:...>` chat tag | `false` |
+| `SWAPPER_TEST_PROMPT` | Prompt used to validate swap-in model | `Please reply with pong...` |
+| `SWAPPER_TEST_TIMEOUT` | Model swapper test timeout (s) | `120.0` |
+| `WEB_SEARCH_FETCH_TIMEOUT` | MCP `fetch_page` HTTP timeout (s) | `10.0` |
+| `MCP_CACHE_TTL` | MCP cache TTL (s), max 3600, 0=disabled | `600` |
 
 ### Stream vs Buffer Modes
 
@@ -206,7 +217,7 @@ These settings speed up Claude Code by mocking/skipping unnecessary requests:
 | `ENABLE_FILEPATH_EXTRACTION_MOCK` | Mock filepath extraction | `true` |
 | `ENABLE_RECAP_SKIP` | Block recap requests (stepped away/return) | `false` **DISABLED temporarily** |
 
-> **Note:** `ENABLE_SUGGESTION_MODE_SKIP` and `ENABLE_RECAP_SKIP` are disabled by default because their detection logic currently produces false positives. They are preserved in the codebase (commented out) and can be re-enabled by setting these to `true` once improved detection is implemented.
+> **Note:** `ENABLE_SUGGESTION_MODE_SKIP` and `ENABLE_RECAP_SKIP` are disabled by default because their detection logic currently produces false positives. The handlers are wired up and can be opted-in by setting these to `true` once improved detection is implemented.
 
 See [`.env.example`](.env.example) for all options.
 
@@ -221,6 +232,19 @@ See [`.env.example`](.env.example) for all options.
 | `GET /health` | Health check |
 | `GET /status` | Server status |
 | `POST /stop` | Stop all CLI sessions and pending tasks |
+
+## Model Swapper
+
+Mid-session model switching via a chat tag, no proxy restart needed.
+
+Set `SWAPPER_ENABLED=true` in `.env`, then in any Claude Code message include one of these tags (the proxy strips it before forwarding to the model):
+
+| Tag | Effect |
+| --- | --- |
+| `<modelswap:model-name>` | Swap the active NIM model for the rest of the session |
+| `<modelswap:clear>` | Revert to the default per-tier model mapping |
+
+A short-name (e.g. `deepseek-v4-pro`) is resolved against NVIDIA's live catalog; the full `org/name` form also works. If the model doesn't exist or fails the test prompt, the proxy responds with a short error message and a list of similar models from the same org.
 
 ## Troubleshooting
 
@@ -410,6 +434,14 @@ You can also search within a specific fetched page using the `search` parameter 
 ---
 
 ## Changelog
+
+### v2.0.5 (June 2026)
+
+**Features:**
+- **Discord Bot Configuration in Setup Wizard**: The interactive setup wizard (`nimbus.exe --init`) now includes Discord bot configuration options, allowing users to easily set up Discord integration without manually editing config files
+  - Prompts for: Bot Token, Guild ID, Control Channel ID, Conversation Category ID, Owner ID, Owner-only mode, Auto-compact setting
+  - Added Discord settings to update mode for partial configuration updates
+  - All Discord env vars now written to `.env` automatically
 
 ### v2.0.4 (June 2026)
 
