@@ -271,9 +271,12 @@ class NimbusCog(commands.Cog):
     )
     async def compact(self, interaction: discord.Interaction):
         """Manually trigger compaction with backup option."""
+        # Defer first to avoid 3-second interaction timeout
+        await interaction.response.defer(ephemeral=True)
+
         # Check owner access
         if not self._check_owner_access(interaction.user.id):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "🔒 This bot is in owner-only mode.", ephemeral=True
             )
             return
@@ -287,7 +290,7 @@ class NimbusCog(commands.Cog):
             interaction.channel_id
         )
         if not messages:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ Nothing to compact yet.", ephemeral=True
             )
             return
@@ -304,14 +307,17 @@ class NimbusCog(commands.Cog):
         embed.set_footer(text="Backup timeout: 60 seconds")
 
         view = CompactConfirmView(self, interaction.channel, interaction.user)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     async def _check_conversation_channel(self, interaction: discord.Interaction) -> bool:
-        """Check if command is used in a valid conversation channel."""
+        """Check if command is used in a valid conversation channel.
+        Note: Caller must have deferred the interaction before calling this.
+        Uses followup.send() instead of response.send_message().
+        """
         # Check if channel is a control channel
         control_channel_ids = self.settings.discord_control_channel_ids or {self.settings.discord_control_channel_id}
         if interaction.channel_id in control_channel_ids:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ Cannot use this command in the control channel.", ephemeral=True
             )
             return False
@@ -319,7 +325,7 @@ class NimbusCog(commands.Cog):
         # Check conversation channel validity
         channel = interaction.channel
         if not channel or not hasattr(channel, 'category_id'):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ This command must be used in a text channel.", ephemeral=True
             )
             return False
@@ -329,7 +335,7 @@ class NimbusCog(commands.Cog):
         # Use the settings helper to check if this is a valid conversation channel
         category_id = getattr(channel, 'category_id', None)
         if not self.settings.is_conversation_channel(interaction.channel_id, category_id):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ This command can only be used in configured conversation channels.", ephemeral=True
             )
             return False
@@ -699,9 +705,12 @@ class NimbusCog(commands.Cog):
     )
     async def new(self, interaction: discord.Interaction):
         """Clear conversation and channel without generating summary."""
+        # Defer first to avoid 3-second interaction timeout
+        await interaction.response.defer(ephemeral=True)
+
         # Check owner access
         if not self._check_owner_access(interaction.user.id):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "🔒 This bot is in owner-only mode.", ephemeral=True
             )
             return
@@ -710,7 +719,7 @@ class NimbusCog(commands.Cog):
         if not await self._check_conversation_channel(interaction):
             return
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "🗑️ Clearing conversation...", ephemeral=True
         )
 
@@ -720,7 +729,7 @@ class NimbusCog(commands.Cog):
         # Clear channel messages
         await self._clear_channel_messages(interaction.channel)
 
-        await interaction.followup.send(
+        await interaction.channel.send(
             "✅ Conversation cleared. New context started."
         )
 
@@ -787,6 +796,9 @@ class NimbusCog(commands.Cog):
     @app_commands.command(name="status", description="Show bot and rate limit status")
     async def status(self, interaction: discord.Interaction):
         """Show current status."""
+        # Defer first to avoid 3-second interaction timeout
+        await interaction.response.defer()
+
         # Get global rate limit status
         global_limiter = GlobalRateLimiter.get_instance()
         rate_status = global_limiter.get_status()
@@ -825,7 +837,7 @@ class NimbusCog(commands.Cog):
                 inline=False,
             )
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="block", description="Block a user from using the bot (owner only)")
     @app_commands.describe(user="The user to block")

@@ -73,7 +73,10 @@ class ConversationManager:
         ]
 
     def get_history_for_nim(self, channel_id: int) -> List[dict]:
-        """Get conversation history with user context for NIM API."""
+        """Get conversation history with user context for NIM API.
+        Only prepend username for user messages so the model doesn't learn
+        to prefix its own responses with 'NIM:' (which compounds over time).
+        """
         from .user_blocking import is_blocked
         session = self.get_session(channel_id)
         if not session:
@@ -81,7 +84,7 @@ class ConversationManager:
         return [
             {
                 "role": m.role,
-                "content": f"{m.username}: {m.content}" if m.username else m.content
+                "content": f"{m.username}: {m.content}" if (m.username and m.role == "user") else m.content
             }
             for m in session.messages
             if m.user_id is None or not is_blocked(m.user_id)
