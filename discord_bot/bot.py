@@ -50,6 +50,7 @@ class NimbusDiscordBot(commands.Bot):
 
         # Guild restriction (primary guild for backward compatibility)
         self._guild_id = settings.discord_guild_id
+        self._typing_locks: dict[int, float] = {}
 
     def _get_command_prefix(self):
         """Return a prefix callable that supports both @mentions and the configured prefix."""
@@ -324,7 +325,6 @@ class NimbusDiscordBot(commands.Bot):
         from api.models.anthropic import MessagesRequest, Message
         from providers.rate_limit import GlobalRateLimiter
         from api.request_utils import get_token_count
-
         # Check owner access for owner-only mode
         if self.settings.discord_owner_only and user.id != self.settings.discord_owner_id:
             return
@@ -402,35 +402,44 @@ class NimbusDiscordBot(commands.Bot):
             flush=True
         )
 
-        # Show typing indicator
-        async with channel.typing():
-            global_limiter = GlobalRateLimiter.get_instance()
-            await global_limiter.wait_if_blocked()
+        # Show typing indicator (with per-channel cooldown to avoid Discord 429s)
+        import time
+        last_typing = self._typing_locks.get(channel.id, 0)
+        if time.monotonic() - last_typing >= 5.0:
+            try:
+                async with channel.typing():
+                    await asyncio.sleep(2.0)
+            except Exception:
+                pass
+            self._typing_locks[channel.id] = time.monotonic()
 
-            full_text = ""
-            async with global_limiter.concurrency_slot():
-                try:
-                    import uuid
-                    request_id = f"discord_live_{uuid.uuid4().hex[:8]}"
-                    stream = self.provider.stream_response(
-                        request_data, input_tokens, request_id=request_id
-                    )
+        global_limiter = GlobalRateLimiter.get_instance()
+        await global_limiter.wait_if_blocked()
 
-                    async for chunk in stream:
-                        if chunk.strip():
-                            try:
-                                event_data = chunk.split("data: ", 1)[-1].strip()
-                                import json
-                                data = json.loads(event_data)
-                                if data.get("type") == "content_block_delta":
-                                    delta = data.get("delta", {})
-                                    if delta.get("type") == "text_delta":
-                                        full_text += delta.get("text", "")
-                            except Exception:
-                                continue
-                except Exception as e:
-                    await channel.send(f"Error: {str(e)[:1900]}")
-                    return
+        full_text = ""
+        async with global_limiter.concurrency_slot():
+            try:
+                import uuid
+                request_id = f"discord_live_{uuid.uuid4().hex[:8]}"
+                stream = self.provider.stream_response(
+                    request_data, input_tokens, request_id=request_id
+                )
+
+                async for chunk in stream:
+                    if chunk.strip():
+                        try:
+                            event_data = chunk.split("data: ", 1)[-1].strip()
+                            import json
+                            data = json.loads(event_data)
+                            if data.get("type") == "content_block_delta":
+                                delta = data.get("delta", {})
+                                if delta.get("type") == "text_delta":
+                                    full_text += delta.get("text", "")
+                        except Exception:
+                            continue
+            except Exception as e:
+                await channel.send(f"Error: {str(e)[:1900]}")
+                return
 
             # Store in conversation
             if full_text:
