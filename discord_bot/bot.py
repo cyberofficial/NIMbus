@@ -270,33 +270,6 @@ class NimbusDiscordBot(commands.Bot):
         # If no configuration at all, deny (safer default)
         return False
 
-    async def _process_message_queue(self, channel_id: int):
-        """Process messages in FIFO order for a channel."""
-        from .conversation import ConversationSession
-        session = self.conversation_manager.get_session(channel_id)
-        if not session or session.is_processing:
-            return
-
-        session.is_processing = True
-        try:
-            while not session.processing_queue.empty():
-                try:
-                    msg_data = await asyncio.wait_for(session.processing_queue.get(), timeout=1.0)
-                    await self._handle_conversation_message(
-                        msg_data['channel'],
-                        msg_data['user'],
-                        msg_data['content'],
-                        msg_data.get('replied_message')
-                    )
-                    session.processing_queue.task_done()
-                except asyncio.TimeoutError:
-                    break
-                except Exception as e:
-                    logger.error(f"Error processing message in channel {channel_id}: {e}")
-                    break
-        finally:
-            session.is_processing = False
-
     async def _handle_prefix_command(self, message: discord.Message, content_after_prefix: str) -> bool:
         """Handle text-prefix commands like !!ask, !!compact, !!new, !!status. Returns True if handled."""
         cog = self.get_cog('NimbusCog')
@@ -393,7 +366,8 @@ class NimbusDiscordBot(commands.Bot):
                     await cog._do_compact_for_channel(channel)
 
         # Format message with username and user ID for context
-        formatted_content = f"{user.display_name} (ID: {user.id}): {content}"
+        safe_content = content.replace("@everyone", "@every\u200bone").replace("@here", "@her\u200be")
+        formatted_content = f"{user.display_name} (ID: {user.id}): {safe_content}"
 
         # Add reply context if this is a reply
         if replied_message:
@@ -460,17 +434,20 @@ class NimbusDiscordBot(commands.Bot):
 
             # Store in conversation
             if full_text:
+                safe_response = full_text.replace("@everyone", "@every\u200bone").replace("@here", "@her\u200be")
                 self.conversation_manager.add_message_with_user(
-                    channel.id, "user", content, user.id, user.display_name,
+                    channel.id, "user", safe_content, user.id, user.display_name,
                     auto_compact=self.settings.discord_auto_compact
                 )
                 self.conversation_manager.add_message_with_user(
-                    channel.id, "assistant", full_text, None, "NIM",
+                    channel.id, "assistant", safe_response, None, "NIM",
                     auto_compact=self.settings.discord_auto_compact
                 )
 
             # Send response (split into chunks if too long for Discord 2000 char limit)
             content_out = full_text.strip() if full_text else "(No response)"
+            # Strip @everyone/@here from bot's own output to prevent accidental mass-pings
+            content_out = content_out.replace("@everyone", "@every\u200bone").replace("@here", "@her\u200be")
             if len(content_out) > 1900:
                 # Split into chunks of ~1900 chars and send multiple messages
                 chunks = [content_out[i:i+1900] for i in range(0, len(content_out), 1900)]
@@ -548,6 +525,9 @@ class NimbusDiscordBot(commands.Bot):
 
         content = message.content
 
+        # Prevent accidental mass-pings to @everyone / @here
+        content = content.replace("@everyone", "@every\u200bone").replace("@here", "@her\u200be")
+
         is_mention = self._is_bot_mentioned(message)
         has_prefix = content.startswith(self.settings.discord_command_prefix)
         should_respond = is_mention or has_prefix or not self.settings.discord_require_mention
@@ -575,29 +555,14 @@ class NimbusDiscordBot(commands.Bot):
             except Exception as e:
                 print(f"[DEBUG] Failed to fetch replied message: {e}", flush=True)
 
-        # Always add to conversation history so the AI has full context
-        self.conversation_manager.add_message_with_user(
-            message.channel.id,
-            "user",
-            content,
-            message.author.id,
-            message.author.display_name,
-            auto_compact=self.settings.discord_auto_compact,
-        )
-
-        # Always add to history, then queue response only if triggered
+        # Respond immediately — each message gets its own async task
         if should_respond:
-            session = self.conversation_manager.get_session(message.channel.id)
-            if session is not None:
-                await session.processing_queue.put({
-                    'channel': message.channel,
-                    'user': message.author,
-                    'content': content,
-                    'replied_message': replied_message,
-                })
-                # Only spawn a processor if one isn't already running for this channel
-                if not session.is_processing:
-                    asyncio.create_task(self._process_message_queue(message.channel.id))
+            asyncio.create_task(self._handle_conversation_message(
+                message.channel,
+                message.author,
+                content,
+                replied_message,
+            ))
 
     async def _send_prefix_help(self, channel):
         """Send a help message listing available prefix commands."""
