@@ -110,6 +110,10 @@ class Settings(BaseSettings):
     # ==================== Discord Bot ====================
     discord_bot_token: str = Field(default="", validation_alias="DISCORD_BOT_TOKEN")
 
+    # Explicit enable/disable override for the Discord bot.
+    # When set to "false" in .env, the bot will NOT start regardless of token/guild configuration.
+    discord_enabled_field: bool = Field(default=True, validation_alias="DISCORD_ENABLED")
+
     # Multiple guilds/servers support (comma-separated list of guild IDs)
     @property
     def discord_guild_ids(self) -> set[int]:
@@ -244,6 +248,16 @@ class Settings(BaseSettings):
         default=True, validation_alias="DISCORD_AUTO_COMPACT"
     )
 
+    # Prefix command support
+    discord_command_prefix: str = Field(
+        default="!!", validation_alias="DISCORD_COMMAND_PREFIX"
+    )
+
+    # Mention requirement for live conversation
+    discord_require_mention: bool = Field(
+        default=True, validation_alias="DISCORD_REQUIRE_MENTION"
+    )
+
     # Command toggles (all default to true)
     discord_cmd_ask: bool = Field(default=True, validation_alias="DISCORD_CMD_ASK")
     discord_cmd_compact: bool = Field(
@@ -267,9 +281,28 @@ class Settings(BaseSettings):
         default=True, validation_alias="DISCORD_CMD_NEWCHANNEL"
     )
 
+    discord_cmd_prefix_ask: bool = Field(
+        default=True, validation_alias="DISCORD_CMD_PREFIX_ASK"
+    )
+    discord_cmd_prefix_compact: bool = Field(
+        default=True, validation_alias="DISCORD_CMD_PREFIX_COMPACT"
+    )
+    discord_cmd_prefix_new: bool = Field(
+        default=True, validation_alias="DISCORD_CMD_PREFIX_NEW"
+    )
+    discord_cmd_prefix_status: bool = Field(
+        default=True, validation_alias="DISCORD_CMD_PREFIX_STATUS"
+    )
+
     @property
     def discord_enabled(self) -> bool:
-        """Check if Discord bot is configured."""
+        """Check if Discord bot is enabled.
+
+        Respects the explicit DISABLED override first; falls back to checking
+        that both a bot token and a guild ID are present.
+        """
+        if not self.discord_enabled_field:
+            return False
         return bool(self.discord_bot_token and self.discord_guild_id)
 
     def is_conversation_channel(

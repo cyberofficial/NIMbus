@@ -26,13 +26,14 @@ class NimbusDiscordBot(commands.Bot):
         intents.message_content = True  # Required for reading message content
         intents.guilds = True  # Required for channel category access
 
-        super().__init__(
-            command_prefix=commands.when_mentioned,  # Slash commands only
-            intents=intents,
-        )
-
+        # MUST be set before super().__init__() so _get_command_prefix() can access them
         self.settings = settings
         self.provider = provider
+
+        super().__init__(
+            command_prefix=self._get_command_prefix(),
+            intents=intents,
+        )
 
         # Initialize rate limiter
         self.rate_limiter = DiscordRateLimiter(
@@ -49,6 +50,29 @@ class NimbusDiscordBot(commands.Bot):
 
         # Guild restriction (primary guild for backward compatibility)
         self._guild_id = settings.discord_guild_id
+
+    def _get_command_prefix(self):
+        """Return a prefix callable that supports both @mentions and the configured prefix."""
+        prefix = self.settings.discord_command_prefix or "!!"
+
+        def _prefix(bot, message):
+            if message.content.startswith(f"<@{bot.user.id}>") or message.content.startswith(f"<@!{bot.user.id}>"):
+                return ""
+            return message.content.startswith(prefix)
+
+        return _prefix
+
+    def _is_bot_mentioned(self, message: discord.Message) -> bool:
+        """Check if the message contains a bot @mention anywhere in the text."""
+        content = message.content
+        bot_user = getattr(self, "user", None)
+        if bot_user is None:
+            return False
+        bot_id = getattr(bot_user, "id", None)
+        if bot_id is None:
+            return False
+        # Support both <@id> and <@!id> formats (regular and nickname mention)
+        return f"<@{bot_id}>" in content or f"<@!{bot_id}>" in content
 
     async def setup_hook(self) -> None:
         """Set up bot - called before login."""
@@ -178,7 +202,7 @@ class NimbusDiscordBot(commands.Bot):
         try:
             async for msg in channel.history(limit=limit):
                 # Delete bot's own messages and messages with our control panel embeds
-                is_bot_msg = self.user is not None and msg.author.id == self.user.id
+                is_bot_msg = self.user is not None and msg.author.id == self.user.id  # type: ignore[attr-defined]
                 # Also delete messages that have our control panel embeds
                 has_embed = bool(msg.embeds) and any(
                     e.title == "NIMbus Bot Online" for e in msg.embeds
@@ -273,6 +297,55 @@ class NimbusDiscordBot(commands.Bot):
         finally:
             session.is_processing = False
 
+    async def _handle_prefix_command(self, message: discord.Message, content_after_prefix: str) -> bool:
+        """Handle text-prefix commands like !!ask, !!compact, !!new, !!status. Returns True if handled."""
+        cog = self.get_cog('NimbusCog')
+        if not cog or not isinstance(cog, NimbusCog):
+            await message.channel.send("❌ Internal error: NimbusCog not loaded.")
+            return True
+
+        parts = content_after_prefix.split()
+        cmd = parts[0].lower() if parts else ""
+        args = content_after_prefix[len(cmd):].strip()
+
+        if cmd == "ask" and self.settings.discord_cmd_prefix_ask:
+            if not args:
+                await message.channel.send("Usage: `!!ask <your question>`")
+                return True
+            channel = message.channel
+            user = message.author
+            if hasattr(channel, "send") and hasattr(user, "display_name"):
+                await cog.prefix_ask(channel, user, args)  # type: ignore[arg-type]
+            return True
+
+        if cmd == "compact" and self.settings.discord_cmd_prefix_compact:
+            channel = message.channel
+            user = message.author
+            if hasattr(channel, "send") and hasattr(user, "display_name"):
+                await cog.prefix_compact(channel, user)  # type: ignore[arg-type]
+            return True
+
+        if cmd == "new" and self.settings.discord_cmd_prefix_new:
+            channel = message.channel
+            user = message.author
+            if hasattr(channel, "send") and hasattr(user, "display_name"):
+                await cog.prefix_new(channel, user)  # type: ignore[arg-type]
+            return True
+
+        if cmd == "status" and self.settings.discord_cmd_prefix_status:
+            channel = message.channel
+            user = message.author
+            if hasattr(channel, "send") and hasattr(user, "display_name"):
+                await cog.prefix_status(channel, user)  # type: ignore[arg-type]
+            return True
+
+        if cmd == "help":
+            await self._send_prefix_help(message.channel)
+            return True
+
+        await self._send_prefix_help(message.channel)
+        return True
+
     async def _handle_conversation_message(self, channel, user, content, replied_message=None):
         """Handle a message in a conversation channel."""
         from api.models.anthropic import MessagesRequest, Message
@@ -319,8 +392,8 @@ class NimbusDiscordBot(commands.Bot):
                 if isinstance(cog, NimbusCog):
                     await cog._do_compact_for_channel(channel)
 
-        # Format message with username for context
-        formatted_content = f"{user.display_name}: {content}"
+        # Format message with username and user ID for context
+        formatted_content = f"{user.display_name} (ID: {user.id}): {content}"
 
         # Add reply context if this is a reply
         if replied_message:
@@ -432,7 +505,13 @@ class NimbusDiscordBot(commands.Bot):
         return chunks
 
     async def on_message(self, message: discord.Message):
-        """Handle messages in conversation channels."""
+        """Handle messages in conversation channels.
+
+        All messages are recorded in history. A response is only sent when:
+          - the bot is @mentioned at start; OR
+          - the message starts with the configured prefix; OR
+          - DISCORD_REQUIRE_MENTION is false
+        """
         # Check if user is blocked
         from .user_blocking import is_blocked
         if is_blocked(message.author.id):
@@ -451,7 +530,7 @@ class NimbusDiscordBot(commands.Bot):
             print("[DEBUG] Skipping DM", flush=True)
             return
         if message.content.startswith('/'):
-            print("[DEBUG] Skipping command message", flush=True)
+            print("[DEBUG] Skipping slash command", flush=True)
             return
 
         # Skip messages with attachments if configured
@@ -467,6 +546,26 @@ class NimbusDiscordBot(commands.Bot):
 
         print(f"[DEBUG] Processing message: {message.content[:50]}", flush=True)
 
+        content = message.content
+
+        is_mention = self._is_bot_mentioned(message)
+        has_prefix = content.startswith(self.settings.discord_command_prefix)
+        should_respond = is_mention or has_prefix or not self.settings.discord_require_mention
+
+        # Leave @mention in content for full conversation context
+        # (the bot tag shows who is being addressed)
+        if is_mention:
+            print(f"[DEBUG] Bot mentioned, content kept with mention: {content[:50]}", flush=True)
+
+        # Handle prefix commands
+        if has_prefix:
+            prefix = self.settings.discord_command_prefix
+            content_after_prefix = content[len(prefix):].strip()
+            print(f"[DEBUG] Prefix detected, content after: {content_after_prefix[:50]}", flush=True)
+            routed = await self._handle_prefix_command(message, content_after_prefix)
+            if routed:
+                return
+
         # Handle message replies for additional context
         replied_message = None
         if message.reference and message.reference.message_id:
@@ -476,18 +575,54 @@ class NimbusDiscordBot(commands.Bot):
             except Exception as e:
                 print(f"[DEBUG] Failed to fetch replied message: {e}", flush=True)
 
-        # Get session and queue message
-        session = self.conversation_manager.get_session(message.channel.id)
-        if session is not None:
-            await session.processing_queue.put({
-                'channel': message.channel,
-                'user': message.author,
-                'content': message.content,
-                'replied_message': replied_message,
-            })
+        # Always add to conversation history so the AI has full context
+        self.conversation_manager.add_message_with_user(
+            message.channel.id,
+            "user",
+            content,
+            message.author.id,
+            message.author.display_name,
+            auto_compact=self.settings.discord_auto_compact,
+        )
 
-        # Process queue
-        asyncio.create_task(self._process_message_queue(message.channel.id))
+        # Always add to history, then queue response only if triggered
+        if should_respond:
+            session = self.conversation_manager.get_session(message.channel.id)
+            if session is not None:
+                await session.processing_queue.put({
+                    'channel': message.channel,
+                    'user': message.author,
+                    'content': content,
+                    'replied_message': replied_message,
+                })
+                # Only spawn a processor if one isn't already running for this channel
+                if not session.is_processing:
+                    asyncio.create_task(self._process_message_queue(message.channel.id))
+
+    async def _send_prefix_help(self, channel):
+        """Send a help message listing available prefix commands."""
+        prefix = self.settings.discord_command_prefix or "!!"
+        lines = [f"**Prefix Commands** (use `{prefix}<cmd>`):", ""]
+        if self.settings.discord_cmd_prefix_ask:
+            lines.append(f"`{prefix}ask <question>` — Ask the AI a question with conversation history")
+        if self.settings.discord_cmd_prefix_compact:
+            lines.append(f"`{prefix}compact` — Summarize the conversation and start fresh")
+        if self.settings.discord_cmd_prefix_new:
+            lines.append(f"`{prefix}new` — Clear conversation without saving a summary")
+        if self.settings.discord_cmd_prefix_status:
+            lines.append(f"`{prefix}status` — Show bot status, rate limits, and stats")
+        lines.append(f"`{prefix}help` — Show this help message")
+        lines.append("")
+        display = getattr(getattr(self, "user", None), "display_name", getattr(getattr(self, "user", None), "name", "bot"))
+        lines.append(f"You can also just **@{display}** me directly to chat.")
+        if not any([
+            self.settings.discord_cmd_prefix_ask,
+            self.settings.discord_cmd_prefix_compact,
+            self.settings.discord_cmd_prefix_new,
+            self.settings.discord_cmd_prefix_status,
+        ]):
+            lines.insert(1, "_(No prefix commands are currently enabled)_")
+        await channel.send("\n".join(lines))
 
     async def close_bot(self) -> None:
         """Close the bot - called from FastAPI shutdown."""

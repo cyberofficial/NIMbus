@@ -186,6 +186,143 @@ class NimbusCog(commands.Cog):
                 start += last_space + 1
         return chunks
 
+    async def prefix_ask(self, channel: discord.TextChannel, user: discord.User, question: str):
+        """Text-prefix version of ask: !!ask <question>."""
+        if is_blocked := __import__("discord_bot.user_blocking", fromlist=["is_blocked"]).is_blocked:
+            if is_blocked(user.id):
+                return
+
+        if not self._check_owner_access(user.id):
+            await channel.send("🔒 This bot is in owner-only mode.")
+            return
+
+        allowed, _ = await self.rate_limiter.check_user_rate(user.id, channel.id)
+        if not allowed:
+            return
+        allowed, _ = await self.rate_limiter.check_server_rate()
+        if not allowed:
+            await channel.send("⏳ Server rate limit hit. Please wait a moment.")
+            return
+
+        print(
+            f"[DISCORD-PREFIX] {user.display_name} ({user.id}) asked: {question[:50]}",
+            flush=True
+        )
+
+        channel_lock = self.rate_limiter.acquire_channel_lock(channel.id)
+        async with channel_lock:
+            if self.settings.discord_auto_compact:
+                if self.conversation_manager.should_compact(channel.id):
+                    await channel.send("🔄 Auto-compacting conversation before proceeding...")
+                    await self._do_compact_for_channel(channel)
+
+            history = self.conversation_manager.get_history_for_nim(channel.id)
+            messages = history + [{"role": "user", "content": f"{user.display_name}: {question}"}]
+            system_prompt = self.settings.discord_system_prompt
+            request_data = MessagesRequest(
+                model=self.settings.model_name,
+                messages=[Message(role=m["role"], content=m["content"]) for m in messages],
+                max_tokens=self.settings.discord_max_tokens,
+                system=system_prompt,
+            )
+            from api.request_utils import get_token_count
+            input_tokens = get_token_count(request_data.messages, system_prompt, request_data.tools)
+
+            async with channel.typing():
+                from providers.rate_limit import GlobalRateLimiter
+                global_limiter = GlobalRateLimiter.get_instance()
+                await global_limiter.wait_if_blocked()
+                full_text = ""
+                async with global_limiter.concurrency_slot():
+                    try:
+                        import uuid
+                        request_id = f"discord_prefix_{uuid.uuid4().hex[:8]}"
+                        stream = self.provider.stream_response(request_data, input_tokens, request_id=request_id)
+                        async for chunk in stream:
+                            if chunk.strip():
+                                try:
+                                    event_data = chunk.split("data: ", 1)[-1].strip()
+                                    import json
+                                    data = json.loads(event_data)
+                                    if data.get("type") == "content_block_delta":
+                                        delta = data.get("delta", {})
+                                        if delta.get("type") == "text_delta":
+                                            full_text += delta.get("text", "")
+                                except Exception:
+                                    continue
+                    except Exception as e:
+                        await channel.send(f"Error: {str(e)[:1900]}")
+                        return
+
+            if full_text:
+                self.conversation_manager.add_message_with_user(
+                    channel.id, "user", question, user.id, user.display_name,
+                    auto_compact=self.settings.discord_auto_compact
+                )
+                self.conversation_manager.add_message_with_user(
+                    channel.id, "assistant", full_text, None, "NIM",
+                    auto_compact=self.settings.discord_auto_compact
+                )
+
+            content_out = full_text.strip() if full_text else "(No response)"
+            if len(content_out) > 1900:
+                chunks = [content_out[i:i+1900] for i in range(0, len(content_out), 1900)]
+                for chunk in chunks:
+                    await channel.send(chunk)
+            else:
+                await channel.send(content_out)
+
+    async def prefix_compact(self, channel: discord.TextChannel, user: discord.User):
+        """Text-prefix version of compact: !!compact."""
+        if not self._check_owner_access(user.id):
+            await channel.send("🔒 This bot is in owner-only mode.")
+            return
+
+        category_id = getattr(channel, "category_id", None)
+        if not self.settings.is_conversation_channel(channel.id, category_id):
+            await channel.send("❌ This command can only be used in configured conversation channels.")
+            return
+
+        messages, token_count = self.conversation_manager.get_compact_context(channel.id)
+        if not messages:
+            await channel.send("❌ Nothing to compact yet.")
+            return
+
+        await channel.send("🔄 Compacting conversation...")
+        await self._compact_channel_direct(channel)
+
+    async def prefix_new(self, channel: discord.TextChannel, user: discord.User):
+        """Text-prefix version of new: !!new."""
+        if not self._check_owner_access(user.id):
+            await channel.send("🔒 This bot is in owner-only mode.")
+            return
+
+        category_id = getattr(channel, "category_id", None)
+        if not self.settings.is_conversation_channel(channel.id, category_id):
+            await channel.send("❌ This command can only be used in configured conversation channels.")
+            return
+
+        await channel.send("🗑️ Clearing conversation...")
+        self.conversation_manager.clear(channel.id)
+        await self._clear_channel_messages(channel)
+        await channel.send("✅ Conversation cleared. New context started.")
+
+    async def prefix_status(self, channel: discord.TextChannel, user: discord.User):
+        """Text-prefix version of status: !!status."""
+        from providers.rate_limit import GlobalRateLimiter
+        global_limiter = GlobalRateLimiter.get_instance()
+        rate_status = global_limiter.get_status()
+        token_count = self.conversation_manager.get_token_count(channel.id)
+        should_compact = self.conversation_manager.should_compact(channel.id)
+
+        embed = discord.Embed(title="NIMbus Status", color=discord.Color.green())
+        embed.add_field(name="Model", value=self.settings.model, inline=True)
+        embed.add_field(name="NIM Rate Limit", value=f"{rate_status['current']}/{rate_status['max']} requests", inline=True)
+        embed.add_field(name="Conversation Tokens", value=f"{token_count:,} / {self.settings.discord_max_tokens:,}", inline=True)
+        if should_compact:
+            embed.add_field(name="⚠️ Compaction", value="Will auto-compact soon", inline=False)
+        await channel.send(embed=embed)
+
     @app_commands.command(name="ask", description="Ask NIM a question")
     @app_commands.describe(question="Your question to ask NIM")
     async def ask(self, interaction: discord.Interaction, question: str):
