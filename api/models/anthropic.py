@@ -80,6 +80,7 @@ class Tool(BaseModel):
 
 class ThinkingConfig(BaseModel):
     enabled: bool = True
+    effort: Literal["low", "medium", "high", "xhigh", "max", "ultracode"] | None = None
 
 
 # =============================================================================

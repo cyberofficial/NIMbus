@@ -8,6 +8,7 @@ This module contains the NIM provider which handles:
 
 import asyncio
 import json
+import random
 import sys
 import uuid
 from collections.abc import AsyncIterator, Iterator
@@ -23,6 +24,7 @@ from openai import (
     AsyncOpenAI,
     BadRequestError,
     InternalServerError,
+    RateLimitError,
     UnprocessableEntityError,
 )
 
@@ -448,6 +450,42 @@ class NvidiaNimProvider(BaseProvider):
                     req_tag,
                 )
                 return result
+
+            except RateLimitError as e:
+                # RateLimitError (429) – trigger adaptive backoff and retry
+                last_error = e
+                self._global_rate_limiter.on_rate_limit_hit()
+                detail = _format_error_detail(e)
+                exhaustion_msg = (
+                    f"after {attempt + 1} attempts"
+                    if max_retries > 0
+                    else f"after {attempt + 1} attempts (endless retries - still trying)"
+                )
+                if max_retries > 0 and attempt >= max_retries:
+                    logger.error(
+                        "{}_BUFFERED: Non-retryable RateLimitError {} - {}",
+                        tag,
+                        exhaustion_msg,
+                        detail,
+                    )
+                    raise
+                # Exponential backoff with jitter
+                base_delay = 2.0
+                max_delay = 60.0
+                delay = min(base_delay * (2**attempt), max_delay)
+                delay += random.uniform(0, 1.0)
+                logger.warning(
+                    "{}_BUFFERED: RateLimited (429) attempt {}/{} - retrying in {:.1f}s. {}",
+                    tag,
+                    attempt + 1,
+                    max_retries if max_retries > 0 else "∞",
+                    delay,
+                    detail,
+                )
+                self._global_rate_limiter.set_blocked(delay)
+                await asyncio.sleep(delay)
+                attempt += 1
+                continue
 
             except (
                 APIConnectionError,

@@ -421,6 +421,7 @@ def _write_dotenv(path: Path, params: dict, is_linux: bool = False) -> None:
         f'DISCORD_SYSTEM_PROMPT="{prompt_escaped}"',
         f"DISCORD_SKIP_FILES={str(params.get('discord_skip_files', True)).lower()}",
         f"DISCORD_SPLIT_THRESHOLD={params.get('discord_split_threshold', 1900)}",
+        f'DISCORD_MODEL="{params.get("discord_model", "")}"',
         f"DISCORD_AUTO_COMPACT={str(params.get('discord_auto_compact', True)).lower()}",
         f"DISCORD_CMD_ASK={str(params.get('discord_cmd_ask', True)).lower()}",
         f"DISCORD_CMD_COMPACT={str(params.get('discord_cmd_compact', True)).lower()}",
@@ -882,6 +883,14 @@ def _run_section(
             except ValueError:
                 discord_split_threshold = 1900
             print()
+            print("  Discord Model (optional, separate from main MODEL):")
+            print("  Use a different model for Discord bot vs the main API proxy.")
+            print("  Leave empty to use the MODEL setting (or windows:settings.json picks Opus > Sonnet > Haiku).")
+            discord_model = _prompt(
+                "  Discord model (owner/model-name, or empty to use MODEL)",
+                default="",
+            )
+            print()
             print("  Command Toggles:")
             print("  You can disable any of the following slash commands.")
             print("  All commands default to enabled (true).")
@@ -934,6 +943,14 @@ def _run_section(
                 default=existing.get("DISCORD_COMMAND_PREFIX", "!!"),
             )
             print()
+            print("  Discord Model (optional, separate from main MODEL):")
+            print("  Use a different model for Discord bot vs the main API proxy.")
+            print("  Leave empty to use the MODEL setting (or windows:settings.json picks Opus > Sonnet > Haiku).")
+            discord_model = _prompt(
+                "  Discord model (owner/model-name, or empty to use MODEL)",
+                default=existing.get("DISCORD_MODEL", ""),
+            )
+            print()
             print("  Prefix Command Toggles:")
             print("  Control which commands are available via the text prefix.")
             print("  Slash commands are controlled separately above.")
@@ -945,6 +962,7 @@ def _run_section(
         updates.update({
             "configure_discord": configure_discord,
             "discord_token": discord_token,
+            "discord_model": discord_model,
             "discord_guild_id": discord_guild_id,
             "discord_control_channel_id": discord_control_channel_id,
             "discord_conversation_category_id": discord_conversation_category_id,
@@ -1453,6 +1471,7 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                     # Discord Bot settings - prefer new-style keys (from updates) over old DISCORD_* keys (from existing)
                     "configure_discord": updates.get("configure_discord", merged.get("DISCORD_ENABLED", "false") == "true"),
                     "discord_token": updates.get("discord_token", merged.get("DISCORD_BOT_TOKEN", "")),
+                    "discord_model": updates.get("discord_model", merged.get("DISCORD_MODEL", "")),
                     "discord_guild_id": updates.get("discord_guild_id", merged.get("DISCORD_GUILD_ID", 0)),
                     "discord_control_channel_id": updates.get("discord_control_channel_id", merged.get("DISCORD_CONTROL_CHANNEL_ID", 0)),
                     "discord_conversation_category_id": updates.get("discord_conversation_category_id", merged.get("DISCORD_CONVERSATION_CATEGORY_ID", 0)),
@@ -1923,6 +1942,14 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
             except ValueError:
                 discord_split_threshold = 1900
             print()
+            print("  Discord Model (optional, separate from main MODEL):")
+            print("  Use a different model for Discord bot vs the main API proxy.")
+            print("  Leave empty to use the MODEL setting (or windows:settings.json picks Opus > Sonnet > Haiku).")
+            discord_model = _prompt(
+                "  Discord model (owner/model-name, or empty to use MODEL)",
+                default="",
+            )
+            print()
             print("  Command Toggles:")
             print("  You can disable any of the following slash commands.")
             print("  All commands default to enabled (true).")
@@ -2009,6 +2036,7 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 # Discord Bot settings
                 "configure_discord": configure_discord,
                 "discord_token": discord_token,
+                "discord_model": discord_model,
                 "discord_guild_id": discord_guild_id,
                 "discord_control_channel_id": discord_control_channel_id,
                 "discord_conversation_category_id": discord_conversation_category_id,

@@ -129,6 +129,7 @@ Browse all: [build.nvidia.com/explore/discover](https://build.nvidia.com/explore
 | `NIM_MAX_TOKENS` | Max output tokens for responses | `202000` |
 | `NIM_THINKING` | Enable thinking/reasoning content | `true` |
 | `NIM_REASONING_EFFORT` | Reasoning effort: `low`, `medium`, or `high` | `high` |
+| `NIM_REASONING_EFFORT_MAPPINGS` | JSON string mapping Claude effort levels to model-specific values | `` (empty) |
 | `PROVIDER_RATE_LIMIT` | Requests per window | `40` |
 | `PROVIDER_RATE_WINDOW` | Rate window in seconds | `60` |
 | `PROVIDER_MAX_CONCURRENCY` | Max concurrent streams | `5` |
@@ -143,14 +144,54 @@ Browse all: [build.nvidia.com/explore/discover](https://build.nvidia.com/explore
 | `FAST_PREFIX_DETECTION` | Fast command prefix detection | `true` |
 | `ENABLE_NETWORK_PROBE_MOCK` | Mock quota probe requests | `true` |
 | `ENABLE_TITLE_GENERATION_SKIP` | Skip title generation requests | `true` |
-| `ENABLE_SUGGESTION_MODE_SKIP` | Skip suggestion mode requests | `false` |
+| `ENABLE_SUGGESTION_MODE_SKIP` | Skip suggestion mode requests | `false` (no-op) |
 | `ENABLE_FILEPATH_EXTRACTION_MOCK` | Mock filepath extraction | `true` |
-| `ENABLE_RECAP_SKIP` | Block recap requests (stepped away/return) | `false` |
+| `ENABLE_RECAP_SKIP` | Block recap requests (stepped away/return) | `false` (no-op) |
 | `SWAPPER_ENABLED` | Enable dynamic `<modelswap:...>` chat tag | `false` |
-| `SWAPPER_TEST_PROMPT` | Prompt used to validate swap-in model | `Please reply with pong...` |
+| `SWAPPER_TEST_PROMPT` | Prompt used to validate swap-in model | `Please reply with pong only, nothing else` |
 | `SWAPPER_TEST_TIMEOUT` | Model swapper test timeout (s) | `120.0` |
 | `WEB_SEARCH_FETCH_TIMEOUT` | MCP `fetch_page` HTTP timeout (s) | `10.0` |
 | `MCP_CACHE_TTL` | MCP cache TTL (s), max 3600, 0=disabled | `600` |
+
+### Discord Bot (Optional)
+
+Both the bot token and a configured guild ID must be present (and `DISCORD_ENABLED` not set to `false`) for the bot to start.
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `DISCORD_ENABLED` | Explicit kill-switch  -  must be `true` for the bot to start even when a token/guild are configured | `true` (Pydantic default; `.env.example` ships `false`) |
+| `DISCORD_BOT_TOKEN` | Discord bot token from https://discord.com/developers/applications | `` (empty) |
+| `DISCORD_GUILD_ID` | Guild (server) IDs the bot is locked to  -  comma-separated for multiple servers; legacy single-ID form also accepted | `0` |
+| `DISCORD_CONTROL_CHANNEL_ID` | Channel IDs that receive the control-panel embed and welcome messages  -  comma-separated | `0` |
+| `DISCORD_CONVERSATION_CATEGORY_ID` | Category IDs under which conversation channels live  -  comma-separated | `0` |
+| `DISCORD_CONVERSATION_CHANNEL_ID` | Specific channel IDs for conversations (alternative to categories)  -  comma-separated; combining with categories means "respond in either" | `` (empty) |
+| `DISCORD_OWNER_ID` | Discord user ID granted owner-only access | `0` |
+| `DISCORD_OWNER_ONLY` | `true` = only owner can use the bot; `false` = anyone in the server | `true` |
+| `DISCORD_MAX_TOKENS` | Token limit per conversation before auto-compaction can trigger | `202000` |
+| `DISCORD_COMPACT_THRESHOLD` | Fraction of `DISCORD_MAX_TOKENS` that triggers compaction (warn fires 5% earlier) | `0.8` |
+| `DISCORD_AUTO_COMPACT` | `true` = summarize+restart at threshold; `false` = silently FIFO-drop oldest messages to make room | `true` |
+| `DISCORD_MODEL` | Override model for Discord bot (use different model than API proxy). Empty = falls back to MODEL; if MODEL=windows:settings.json, uses Opus > Sonnet > Haiku from Claude settings. If nothing resolved, bot won't start. | `` (empty) |
+| `DISCORD_USER_COOLDOWN` | Per-user cooldown (seconds) before another request is accepted | `10` |
+| `DISCORD_SERVER_LIMIT` | Server-wide request cap per `DISCORD_SERVER_WINDOW` | `20` |
+| `DISCORD_SERVER_WINDOW` | Length of the server-wide rate-limit window (seconds) | `60` |
+| `DISCORD_SYSTEM_PROMPT` | System prompt sent with every chat request (live, slash, and prefix) | (casual/conversational default  -  see `config/settings.py`) |
+| `DISCORD_SKIP_FILES` | Ignore messages that carry attachments | `true` |
+| `DISCORD_SPLIT_THRESHOLD` | Max characters per outgoing message before splitting (Discord limit is 2000) | `1900` |
+| `DISCORD_COMMAND_PREFIX` | Prefix that activates text commands (in addition to slash commands) | `!!` |
+| `DISCORD_REQUIRE_MENTION` | `true` = only respond to @mentions / prefix; `false` = respond to every message in conversation channels | `true` |
+| `DISCORD_CMD_ASK` | Enable the `/ask` slash command | `true` |
+| `DISCORD_CMD_COMPACT` | Enable the `/compact` slash command | `true` |
+| `DISCORD_CMD_NEW` | Enable the `/new` slash command | `true` |
+| `DISCORD_CMD_STATUS` | Enable the `/status` slash command | `true` |
+| `DISCORD_CMD_DOWNLOAD` | Enable the `/download` slash command | `true` |
+| `DISCORD_CMD_BLOCK` | Enable the `/block` slash command | `true` |
+| `DISCORD_CMD_UNBLOCK` | Enable the `/unblock` slash command | `true` |
+| `DISCORD_CMD_BLOCKED` | Enable the `/blocked` slash command | `true` |
+| `DISCORD_CMD_NEWCHANNEL` | Enable the `/newchannel` slash command | `true` |
+| `DISCORD_CMD_PREFIX_ASK` | Enable the `!!ask` prefix command | `true` |
+| `DISCORD_CMD_PREFIX_COMPACT` | Enable the `!!compact` prefix command | `true` |
+| `DISCORD_CMD_PREFIX_NEW` | Enable the `!!new` prefix command | `true` |
+| `DISCORD_CMD_PREFIX_STATUS` | Enable the `!!status` prefix command | `true` |
 
 ### Stream vs Buffer Modes
 
@@ -206,18 +247,59 @@ Claude Code ──── JSON response ──── NIMbus ──── (wait + 
 
 ### Optimization Settings
 
-These settings speed up Claude Code by mocking/skipping unnecessary requests:
+These settings speed up Claude Code by mocking/skipping unnecessary requests. The handlers run in this order at every request  -  first non-`None` result wins:
+
+1. Recap skip
+2. Quota probe mock
+3. Prefix detection
+4. Title generation skip
+5. Suggestion mode skip
+6. Filepath extraction mock
 
 | Variable | Description | Default |
 | --- | --- | --- |
 | `FAST_PREFIX_DETECTION` | Fast command prefix detection | `true` |
 | `ENABLE_NETWORK_PROBE_MOCK` | Mock quota probe requests | `true` |
 | `ENABLE_TITLE_GENERATION_SKIP` | Skip title generation requests | `true` |
-| `ENABLE_SUGGESTION_MODE_SKIP` | Skip suggestion mode requests | `false` **DISABLED temporarily** |
+| `ENABLE_SUGGESTION_MODE_SKIP` | Skip suggestion mode requests | `false` **disabled** |
 | `ENABLE_FILEPATH_EXTRACTION_MOCK` | Mock filepath extraction | `true` |
-| `ENABLE_RECAP_SKIP` | Block recap requests (stepped away/return) | `false` **DISABLED temporarily** |
+| `ENABLE_RECAP_SKIP` | Block recap requests (stepped away/return) | `false` **disabled** |
 
-> **Note:** `ENABLE_SUGGESTION_MODE_SKIP` and `ENABLE_RECAP_SKIP` are disabled by default because their detection logic currently produces false positives. The handlers are wired up and can be opted-in by setting these to `true` once improved detection is implemented.
+> **Note:** `ENABLE_SUGGESTION_MODE_SKIP` and `ENABLE_RECAP_SKIP` are currently no-ops. The handlers exist in the optimization chain but return `None` immediately, with their detection logic (and the call to `is_suggestion_mode_request` / `is_recap_request`) kept as commented-out reference code in `api/optimization_handlers.py`. They are disabled because their current detection produces false positives; the helpers can be re-enabled (in code) once better detection is implemented.
+
+### Reasoning Effort Mapping
+
+NIMbus now supports runtime mapping of Claude Code's reasoning effort levels to model-specific reasoning parameters via the `/effort` command. This allows users to control the depth of reasoning at runtime using Claude's native `/effort low|medium|high|xhigh|max|ultracode` command.
+
+**Configuration:**
+Set `NIM_REASONING_EFFORT_MAPPINGS` environment variable with a JSON string that maps Claude effort levels to model-specific values:
+```bash
+NIM_REASONING_EFFORT_MAPPINGS='{"deepseek": {"xhigh": "max", "high": "high"}}'
+```
+
+**Preset Mappings:**
+A comprehensive set of preset mappings is available in `reasoning_effort_presets.json`. To use a preset:
+```bash
+# Use DeepSeek preset
+NIM_REASONING_EFFORT_MAPPINGS=$(cat reasoning_effort_presets.json | jq -r '.models.deepseek.mapping | tojson')
+
+# Use global defaults  
+NIM_REASONING_EFFORT_MAPPINGS=$(cat reasoning_effort_presets.json | jq -r '.global_defaults.mapping | tojson')
+```
+
+**How it works:**
+1. When Claude Code sends an `/effort` command, it includes the effort level in the request's `thinking.effort` field
+2. NIMbus looks up the model-specific mapping for that effort level
+3. The mapped value is sent to the NIM model as the `reasoning_effort` parameter
+4. If no mapping exists for a model, the effort level is used as-is (fallback behavior)
+
+**Example mappings:**
+- DeepSeek models: `xhigh` → `max`, `high` → `high`
+- All levels to high: `{"deepseek": {"low": "high", "medium": "high", "high": "high", "xhigh": "high", "max": "high", "ultracode": "high"}}`
+- Custom mapping: `{"deepseek": {"low": "xhigh", "medium": "high", "high": "high"}}` (low → xhigh, medium/high → high)
+- Any combination: Users can define any mapping they want for any effort level
+
+See [reasoning_effort_presets.json](reasoning_effort_presets.json) for detailed preset mappings and usage instructions.
 
 See [`.env.example`](.env.example) for all options.
 
@@ -245,6 +327,38 @@ Set `SWAPPER_ENABLED=true` in `.env`, then in any Claude Code message include on
 | `<modelswap:clear>` | Revert to the default per-tier model mapping |
 
 A short-name (e.g. `deepseek-v4-pro`) is resolved against NVIDIA's live catalog; the full `org/name` form also works. If the model doesn't exist or fails the test prompt, the proxy responds with a short error message and a list of similar models from the same org.
+
+## NIM Server Swapper
+
+Mid-session switching between `stream` and `buffer` server modes via a chat tag, no proxy restart needed. Works independently of the Model Swapper  -  you can swap both model and server type in the same session.
+
+No configuration variable is needed to enable it (unlike `SWAPPER_ENABLED` for the model swapper).
+
+In any Claude Code message include one of these tags (the proxy strips it before forwarding to the model):
+
+| Tag | Effect |
+| --- | --- |
+| `<nimserver:stream>` | Switch to streaming mode for the rest of the session |
+| `<nimserver:buffer>` | Switch to buffered mode (with retry on failure) for the rest of the session |
+| `<nimserver:clear>` | Revert to the default `SERVER_TYPE` from `.env` |
+
+Once set, **all subsequent requests** from that API key will use the chosen mode until you send `<nimserver:clear>` or restart the proxy.
+
+### How it works behind the scenes
+
+The override is stored per-API-key in the same in-memory pattern as the Model Swapper. When active:
+
+- **On the streaming endpoint** (`/v1/messages`): If `<nimserver:buffer>` is active, the route calls `provider.buffered_request()` internally, collects the complete response, then converts it to SSE events. You get the reliability of buffer mode through the streaming protocol.
+- **On the buffered endpoint** (`/v1/messages/buffered`): If `<nimserver:stream>` is active, the route calls `provider.stream_response()`, collects text deltas from the SSE stream, and returns the result as a JSON response.
+
+### When to swap mid-session
+
+| Situation | Tag |
+|---|---|
+| A generation keeps failing mid-stream | `<nimserver:buffer>`  -  retries automatically |
+| You're waiting too long for buffered results | `<nimserver:stream>`  -  see tokens live |
+| Interactive coding session getting a lot of errors | `<nimserver:buffer>`  -  more reliable |
+| Done with the error-prone task, back to quick questions | `<nimserver:clear>` or `<nimserver:stream>` |
 
 ## Troubleshooting
 
@@ -286,14 +400,51 @@ A Discord bot integration is included for multi-user access through Discord chan
 4. Configure in `.env`:
 
 ```dotenv
-DISCORD_BOT_TOKEN="your-bot-token-here"
-DISCORD_GUILD_ID="123456789"               # Your server ID (comma-separated for multiple)
+# --- Bot enable / connection ---
+DISCORD_ENABLED=true                        # Explicit kill-switch (true = bot can start; default false)
+DISCORD_BOT_TOKEN="your-bot-token-here"    # Get bot token at https://discord.com/developers/applications
+DISCORD_GUILD_ID="123456789"               # Server ID (comma-separated for multiple)
 DISCORD_CONTROL_CHANNEL_ID="123456789"     # Admin channel for status (comma-separated)
 DISCORD_CONVERSATION_CATEGORY_ID="123456789"  # Category for AI channels (comma-separated)
-DISCORD_CONVERSATION_CHANNEL_ID=""         # Specific channel IDs (alternative to categories)
+DISCORD_CONVERSATION_CHANNEL_ID=""         # Specific channel IDs (alternative to categories; comma-separated)
+
+# --- Access control ---
 DISCORD_OWNER_ID="123456789"               # Your Discord user ID
 DISCORD_OWNER_ONLY=true                    # true = owner only, false = anyone in server
+
+# --- Conversation / compaction ---
 DISCORD_AUTO_COMPACT=true                  # true = summarize/restart, false = drop oldest messages
+DISCORD_MAX_TOKENS=202000                  # Token limit per conversation before compact triggers
+DISCORD_COMPACT_THRESHOLD=0.8              # Fraction of MAX_TOKENS that triggers compaction
+DISCORD_SYSTEM_PROMPT="You are a helpful Discord bot. ..."  # System prompt applied to every chat
+
+# --- Live conversation behavior ---
+DISCORD_COMMAND_PREFIX="!!"                # Prefix for text-based commands (default !!)
+DISCORD_REQUIRE_MENTION=true               # true = only @mentions/prefix, false = every message
+DISCORD_SKIP_FILES=true                    # ignore messages with attachments
+DISCORD_SPLIT_THRESHOLD=1900               # max chars before splitting long messages (Discord limit 2000)
+
+# --- Rate limiting ---
+DISCORD_USER_COOLDOWN=10                   # per-user cooldown (seconds)
+DISCORD_SERVER_LIMIT=20                    # server-wide requests per window
+DISCORD_SERVER_WINDOW=60                   # rate-limit window (seconds)
+
+# --- Slash command toggles (default true; set false to disable) ---
+DISCORD_CMD_ASK=true
+DISCORD_CMD_COMPACT=true
+DISCORD_CMD_NEW=true
+DISCORD_CMD_STATUS=true
+DISCORD_CMD_DOWNLOAD=true
+DISCORD_CMD_BLOCK=true
+DISCORD_CMD_UNBLOCK=true
+DISCORD_CMD_BLOCKED=true
+DISCORD_CMD_NEWCHANNEL=true
+
+# --- Prefix command toggles (default true; set false to disable) ---
+DISCORD_CMD_PREFIX_ASK=true
+DISCORD_CMD_PREFIX_COMPACT=true
+DISCORD_CMD_PREFIX_NEW=true
+DISCORD_CMD_PREFIX_STATUS=true
 ```
 
 **Channel Configuration:**
@@ -302,6 +453,8 @@ DISCORD_AUTO_COMPACT=true                  # true = summarize/restart, false = d
 - **Both**: Can combine (bot responds in specified channels OR channels in categories)
 
 ### Bot Commands
+
+Slash commands:
 
 | Command | Description |
 |---------|-------------|
@@ -315,15 +468,26 @@ DISCORD_AUTO_COMPACT=true                  # true = summarize/restart, false = d
 | `/blocked` | List blocked users (owner only) |
 | `/newchannel [name]` | Create a new AI conversation channel |
 
+Prefix commands (default prefix `!!`; configurable via `DISCORD_COMMAND_PREFIX`):
+`!!ask <question>` · `!!compact` · `!!new` · `!!status`
+
+The bot also responds to every message in conversation channels (when `DISCORD_REQUIRE_MENTION=false`) or only to @mentions/prefix invocations (when `true`).
+
 ### Features
 
 - **Multi-server support**: Configure multiple guilds/servers with comma-separated IDs
-- **Rate limiting**: Per-user cooldown and server-wide limits
+- **System prompt**: Set via `DISCORD_SYSTEM_PROMPT`; applied to every chat request (live, slash, and prefix)
+- **Rate limiting**: Per-user cooldown and server-wide limits (`DISCORD_USER_COOLDOWN`, `DISCORD_SERVER_LIMIT`, `DISCORD_SERVER_WINDOW`)
 - **Conversation modes**:
   - `DISCORD_AUTO_COMPACT=true` (default): Summarizes and restarts conversation when token limit reached
   - `DISCORD_AUTO_COMPACT=false`: Silently drops oldest messages to make room for new ones
+- **Mass-ping protection**: `@everyone` / `@here` are sanitized with zero-width spaces on user input, bot output, and stored history
+- **Typing indicator with exponential backoff**: Typing indicator refreshes periodically (starting at 10s intervals) and automatically increases interval by +5s on Discord 429 rate limits (capped at 60s), then resets to 10s on success
+- **Per-channel message queue**: Messages in each channel are processed sequentially (FIFO) to preserve conversation context order when multiple users ping simultaneously
+- **Independent model configuration**: Use `DISCORD_MODEL` to run the Discord bot with a different model than the main API proxy. Falls back to MODEL or (if MODEL=windows:settings.json) Opus > Sonnet > Haiku from Claude settings. If nothing resolved, bot won't start.
 - **Message splitting**: Automatically splits long responses for Discord's 2000 char limit
-- **Command toggles**: Disable individual slash commands via `DISCORD_CMD_*` settings
+- **Command toggles**: Disable individual slash commands via `DISCORD_CMD_*` settings; disable individual prefix commands via `DISCORD_CMD_PREFIX_*` settings
+- **Setup wizard**: `nimbus.exe --init` walks through every Discord setting interactively
 
 ## MCP Server Mode (Web Search Tools)
 
@@ -332,12 +496,24 @@ NIMbus can also run as an MCP (Model Context Protocol) server, exposing web sear
 ### Quick Start
 
 ```bash
-# Add to Claude Code (using exe)
-claude mcp add websearch -- nimbus.exe --mcp
+# Add to Claude Code (using exe)  -  global scope (available in all projects)
+claude mcp add web_search -s user -- nimbus.exe --mcp
 
-# Or using Python (venv)
-claude mcp add websearch -- /path/to/NIMbus/.venv/bin/python /path/to/NIMbus/start_server.py --mcp
+# Or using Python (venv)  -  global scope
+claude mcp add web_search -s user -- /path/to/NIMbus/venv/bin/python /path/to/NIMbus/start_server.py --mcp
+
+# For project-scoped installation (stored in .mcp.json, shareable via git)
+# claude mcp add web_search -s project -- nimbus.exe --mcp
 ```
+
+**Scope summary:**
+| Flag | Scope | Stored in | Available |
+|---|---|---|---|
+| `-s user` | User/global | `~/.claude.json` | All projects |
+| `-s project` | Project | `.mcp.json` in project root | Current project (shareable via git) |
+| *(none)* | Local | `~/.claude.json` (per-path) | Current directory only |
+
+After adding, verify with `claude mcp list` to confirm it shows under user scope.
 
 ### MCP Tools
 
@@ -376,7 +552,7 @@ MCP_CACHE_TTL=600                 # Cache TTL in seconds (default: 600 = 10 minu
 
 ### Using with Claude Code
 
-Once added via `claude mcp add websearch ...`, Claude will have access to `web_search`, `fetch_page`, `search_cache`, and `search_cache_snippet` tools. Example usage in Claude:
+Once added via `claude mcp add web_search ...`, Claude will have access to `web_search`, `fetch_page`, `search_cache`, and `search_cache_snippet` tools. Example usage in Claude:
 
 ```
 > Can you search for "latest Rust async patterns" and fetch the first result?
@@ -435,67 +611,7 @@ You can also search within a specific fetched page using the `search` parameter 
 
 ## Changelog
 
-### v2.0.5 (June 2026)
-
-**Features:**
-- **Discord Bot Configuration in Setup Wizard**: The interactive setup wizard (`nimbus.exe --init`) now includes Discord bot configuration options, allowing users to easily set up Discord integration without manually editing config files
-  - Prompts for: Bot Token, Guild ID, Control Channel ID, Conversation Category ID, Owner ID, Owner-only mode, Auto-compact setting
-  - Added Discord settings to update mode for partial configuration updates
-  - All Discord env vars now written to `.env` automatically
-
-### v2.0.4 (June 2026)
-
-**Features:**
-- **Dynamic Model Swapping**: Switch between configured models during chat sessions using `<modelswap:model-name>` tag
-- **Model Similarity Suggestions**: When model validation fails, suggests similar models from the same organization
-
-**Improvements:**
-- Retry on 5xx server errors (500, 502, 503, 504)
-- Separate retry logic for connection/timeout vs server errors
-- Non-retryable errors (4xx) raised immediately without exhausting retries
-- `UV_PROJECT_ENVIRONMENT` now set at runtime in `start_server.py`
-
-### v2.0.3 (June 2026)
-
-**Fixes:**
-- **Disabled Suggestion Mode Skip and Recap Skip Optimizations**: Both were causing false positives. Suggestion detection was too broad and recap skip blocked legitimate requests.
-
-**Changes:**
-- Optimization responses now returned as proper SSE events on streaming endpoint
-- `README.md` updated with correct defaults for disabled optimizations
-- `setup_wizard.py` defaults disabled optimizations to `false`
-- `dist_linux/`, `python-3.14/`, `python-build/` added to `.gitignore`
-
-### v2.0.2 (June 2026)
-
-**MCP Server mode** with web search and cache search tools:
-- Added `search_cache` - search all cached pages for keywords
-- Added `search_cache_snippet` - search with surrounding context snippets
-- Enhanced `fetch_page` with `search` parameter to find keywords within a page
-- Fixed model mapping when `MODEL=windows:settings.json` - NIM model names are now correctly matched
-
-### v2.0.1 (June 2026)
-
-- Added recap skip optimization
-- Interactive setup wizard with section selection
-
-### v2.0.0 (June 2026)
-
-**Standalone .exe:** NIMbus is now a single portable executable on Windows - no Python, no pip, no venv needed.
-- `nimbus.exe --init`: Interactive setup wizard with live API key validation, model selection, Claude Code auto-config
-- `nimbus.exe --init restore`: Restores backed-up settings.json
-- Auto-creates `.env` from embedded template on first run
-- Single `--onefile` PyInstaller build (~25 MB)
-
-**Dynamic model resolution:** `MODEL=windows:settings.json` reads models from Claude Code's settings.json - no duplication. Model names are resolved dynamically against NVIDIA's catalog.
-
-**Error recovery:**
-- Auto-detects models that reject `system` role and retries with system→user conversion
-- Detailed error logging with full causal chain
-- Tiktoken special token handling (`<|endoftext|>`, `<|fim_prefix|>`, etc.)
-- Fixed HTTP transport request attribution (OpenAI SDK retry compatibility)
-
-**Per-tier model config:** Sonnet/Opus/Haiku each get their own model, mapped from Claude Code settings.json
+See [CHANGELOGS.md](CHANGELOGS.md) for the full version history and release notes.
 
 ## License
 

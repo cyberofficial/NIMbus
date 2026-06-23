@@ -101,7 +101,18 @@ def build_request_body(
     _set_extra(extra_body, "include_stop_str_in_output", nim.include_stop_str_in_output)
     _set_extra(extra_body, "ignore_eos", nim.ignore_eos)
     if nim.thinking:
-        _set_extra(extra_body, "reasoning_effort", nim.reasoning_effort)
+        # Get effort level from request (Claude Code's /effort command) or fallback to config
+        request_effort = getattr(request_data.thinking, 'effort', None) if request_data.thinking else None
+        effective_effort = request_effort or nim.reasoning_effort
+
+        # Get model-specific effort mapping
+        # Use original_model (before mapping) for pattern matching against user-defined mappings
+        original_model = getattr(request_data, "original_model", None) or body.get("model", "")
+        effort_map = nim.get_effort_map_for_model(original_model)
+
+        # Map Claude effort level to model-specific value if mapping exists
+        model_effort = effort_map.get(effective_effort, effective_effort)
+        _set_extra(extra_body, "reasoning_effort", model_effort)
         _set_extra(extra_body, "include_reasoning", nim.include_reasoning)
 
     if extra_body:

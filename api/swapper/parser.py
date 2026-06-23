@@ -1,4 +1,4 @@
-"""Model swapper message parser utilities."""
+"""Model swapper and NIM server type parser utilities."""
 
 import re
 
@@ -6,6 +6,22 @@ from providers.text import extract_text_from_content
 
 MODELSWAP_PATTERN = re.compile(r"<modelswap:\s*([^>]+)>", re.IGNORECASE)
 MODELSWAP_CLEAR_PATTERN = re.compile(r"<modelswap:\s*clear\s*>", re.IGNORECASE)
+
+NIMSERVER_PATTERN = re.compile(
+    r"<nimserver:\s*(stream|buffer)\s*>", re.IGNORECASE
+)
+NIMSERVER_CLEAR_PATTERN = re.compile(r"<nimserver:\s*clear\s*>", re.IGNORECASE)
+
+NIMRPM_RESET_PATTERN = re.compile(r"<nimrpm:\s*reset\s*>", re.IGNORECASE)
+
+
+def is_nimrpm_reset_tag(text: str) -> bool:
+    """Check if message contains <nimrpm:reset> tag.
+
+    This resets the adaptive rate limiting backoff state,
+    restoring original RPM and clearing any hold delay.
+    """
+    return bool(NIMRPM_RESET_PATTERN.search(text))
 
 
 def extract_modelswap_tag(text: str) -> str | None:
@@ -62,3 +78,64 @@ def get_modelswap_model(message: dict) -> str | None:
         return "CLEAR"
 
     return extract_modelswap_tag(text)
+
+
+# =============================================================================
+# NIM Server Type (stream/buffer)
+# =============================================================================
+
+
+def extract_nimserver_tag(text: str) -> str | None:
+    """
+    Extract server type from <nimserver:stream> or <nimserver:buffer> tag.
+
+    Args:
+        text: Message content to search
+
+    Returns:
+        'stream' or 'buffer' if found, None otherwise
+    """
+    match = NIMSERVER_PATTERN.search(text)
+    if match:
+        return match.group(1).strip().lower()
+    return None
+
+
+def is_nimserver_clear_tag(text: str) -> bool:
+    """Check if message contains <nimserver:clear> tag."""
+    return bool(NIMSERVER_CLEAR_PATTERN.search(text))
+
+
+def is_nimserver_message(message: dict) -> bool:
+    """
+    Check if a message is a nimserver command.
+
+    Args:
+        message: Anthropic-format message dict with 'role' and 'content'
+
+    Returns:
+        True if user message contains nimserver tag
+    """
+    if message.get("role") != "user":
+        return False
+
+    content = message.get("content", "")
+    text = extract_text_from_content(content)
+    return extract_nimserver_tag(text) is not None or is_nimserver_clear_tag(text)
+
+
+def get_nimserver_type(message: dict) -> str | None:
+    """
+    Get server type from nimserver message, or None if not a nimserver message.
+    Returns special string 'CLEAR' for clear command.
+    """
+    if message.get("role") != "user":
+        return None
+
+    content = message.get("content", "")
+    text = extract_text_from_content(content)
+
+    if is_nimserver_clear_tag(text):
+        return "CLEAR"
+
+    return extract_nimserver_tag(text)

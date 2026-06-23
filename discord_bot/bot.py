@@ -51,6 +51,13 @@ class NimbusDiscordBot(commands.Bot):
         # Guild restriction (primary guild for backward compatibility)
         self._guild_id = settings.discord_guild_id
         self._typing_locks: dict[int, float] = {}
+        self._typing_retry_delays: dict[int, float] = {}  # channel_id -> current retry delay
+
+        # Resolve Discord model
+        self._discord_model = settings.discord_model
+        if self._discord_model is None:
+            logger.warning("No Discord model configured (DISCORD_MODEL empty, MODEL not set, "
+                           "or no valid model found in Claude settings). Discord bot will not start.")
 
     def _get_command_prefix(self):
         """Return a prefix callable that supports both @mentions and the configured prefix."""
@@ -237,6 +244,9 @@ class NimbusDiscordBot(commands.Bot):
 
     async def start_bot(self) -> None:
         """Start the bot - called from FastAPI lifespan."""
+        if self._discord_model is None:
+            logger.warning("Discord bot startup skipped: no model configured.")
+            return
         logger.info("Starting Discord bot...")
         await self.start(self.settings.discord_bot_token)
 
@@ -384,7 +394,7 @@ class NimbusDiscordBot(commands.Bot):
         messages = history + [{"role": "user", "content": formatted_content}]
         system_prompt = self.settings.discord_system_prompt
         request_data = MessagesRequest(
-            model=self.settings.model_name,
+            model=self._discord_model,
             messages=[Message(role=m["role"], content=m["content"]) for m in messages],
             max_tokens=self.settings.discord_max_tokens,
             system=system_prompt,
@@ -402,68 +412,105 @@ class NimbusDiscordBot(commands.Bot):
             flush=True
         )
 
-        # Show typing indicator (with per-channel cooldown to avoid Discord 429s)
+        # Show typing indicator with periodic refresh and exponential backoff on rate limits
         import time
-        last_typing = self._typing_locks.get(channel.id, 0)
-        if time.monotonic() - last_typing >= 5.0:
-            try:
-                async with channel.typing():
-                    await asyncio.sleep(2.0)
-            except Exception:
-                pass
-            self._typing_locks[channel.id] = time.monotonic()
+
+        # Get or initialize retry delay for this channel (starts at 10 seconds)
+        base_interval = self._typing_retry_delays.get(channel.id, 10.0)
+
+        # Start typing indicator - this will be refreshed periodically
+        typing_task = None
+        typing_active = True
+
+        async def refresh_typing():
+            """Periodically refresh typing indicator with exponential backoff on rate limits."""
+            nonlocal typing_active, base_interval
+            while typing_active:
+                try:
+                    async with channel.typing():
+                        await asyncio.sleep(2.0)  # Brief sleep to ensure typing is registered
+                except discord.HTTPException as e:
+                    if e.status == 429:
+                        # Rate limited - increase delay exponentially
+                        base_interval = min(base_interval + 5.0, 60.0)  # Cap at 60s
+                        self._typing_retry_delays[channel.id] = base_interval
+                        logger.warning(f"Typing rate limited in channel {channel.id}, increased interval to {base_interval}s")
+                    else:
+                        logger.debug(f"Typing error in channel {channel.id}: {e}")
+                except Exception:
+                    pass
+
+                if not typing_active:
+                    break
+                await asyncio.sleep(base_interval)
+
+        # Start the typing refresh task
+        typing_task = asyncio.create_task(refresh_typing())
 
         global_limiter = GlobalRateLimiter.get_instance()
         await global_limiter.wait_if_blocked()
 
         full_text = ""
-        async with global_limiter.concurrency_slot():
-            try:
-                import uuid
-                request_id = f"discord_live_{uuid.uuid4().hex[:8]}"
-                stream = self.provider.stream_response(
-                    request_data, input_tokens, request_id=request_id
-                )
+        try:
+            async with global_limiter.concurrency_slot():
+                try:
+                    import uuid
+                    request_id = f"discord_live_{uuid.uuid4().hex[:8]}"
+                    stream = self.provider.stream_response(
+                        request_data, input_tokens, request_id=request_id
+                    )
 
-                async for chunk in stream:
-                    if chunk.strip():
-                        try:
-                            event_data = chunk.split("data: ", 1)[-1].strip()
-                            import json
-                            data = json.loads(event_data)
-                            if data.get("type") == "content_block_delta":
-                                delta = data.get("delta", {})
-                                if delta.get("type") == "text_delta":
-                                    full_text += delta.get("text", "")
-                        except Exception:
-                            continue
-            except Exception as e:
-                await channel.send(f"Error: {str(e)[:1900]}")
-                return
+                    async for chunk in stream:
+                        if chunk.strip():
+                            try:
+                                event_data = chunk.split("data: ", 1)[-1].strip()
+                                import json
+                                data = json.loads(event_data)
+                                if data.get("type") == "content_block_delta":
+                                    delta = data.get("delta", {})
+                                    if delta.get("type") == "text_delta":
+                                        full_text += delta.get("text", "")
+                            except Exception:
+                                continue
+                except Exception as e:
+                    await channel.send(f"Error: {str(e)[:1900]}")
+                    return
+        finally:
+            # Stop typing indicator
+            typing_active = False
+            if typing_task:
+                typing_task.cancel()
+                try:
+                    await typing_task
+                except asyncio.CancelledError:
+                    pass
+        # Record successful typing completion (reset delay on success)
+        self._typing_retry_delays[channel.id] = 10.0
+        self._typing_locks[channel.id] = time.monotonic()
 
-            # Store in conversation
-            if full_text:
-                safe_response = full_text.replace("@everyone", "@every\u200bone").replace("@here", "@her\u200be")
-                self.conversation_manager.add_message_with_user(
-                    channel.id, "user", safe_content, user.id, user.display_name,
-                    auto_compact=self.settings.discord_auto_compact
-                )
-                self.conversation_manager.add_message_with_user(
-                    channel.id, "assistant", safe_response, None, "NIM",
-                    auto_compact=self.settings.discord_auto_compact
-                )
+        # Store in conversation
+        if full_text:
+            safe_response = full_text.replace("@everyone", "@every\u200bone").replace("@here", "@her\u200be")
+            self.conversation_manager.add_message_with_user(
+                channel.id, "user", safe_content, user.id, user.display_name,
+                auto_compact=self.settings.discord_auto_compact
+            )
+            self.conversation_manager.add_message_with_user(
+                channel.id, "assistant", safe_response, None, "NIM",
+                auto_compact=self.settings.discord_auto_compact
+            )
 
-            # Send response (split into chunks if too long for Discord 2000 char limit)
-            content_out = full_text.strip() if full_text else "(No response)"
-            # Strip @everyone/@here from bot's own output to prevent accidental mass-pings
-            content_out = content_out.replace("@everyone", "@every\u200bone").replace("@here", "@her\u200be")
-            if len(content_out) > 1900:
-                # Split into chunks of ~1900 chars and send multiple messages
-                chunks = [content_out[i:i+1900] for i in range(0, len(content_out), 1900)]
-                for chunk in chunks:
-                    await channel.send(chunk)
-            else:
-                await channel.send(content_out)
+        # Send response (split into chunks if too long for Discord 2000 char limit)
+        content_out = full_text.strip() if full_text else "(No response)"
+        # Strip @everyone/@here from bot's own output to prevent accidental mass-pings
+        content_out = content_out.replace("@everyone", "@every\u200bone").replace("@here", "@her\u200be")
+        if len(content_out) > 1900:
+            # Split into chunks of ~1900 chars and send multiple messages
+            chunks = [content_out[i:i+1900] for i in range(0, len(content_out), 1900)]
+            for chunk in chunks:
+                await channel.send(chunk)
+        else:
+            await channel.send(content_out)
 
     def _split_at_word_boundary(self, text: str, threshold: int) -> list[str]:
         """Split text at word boundaries, not mid-word."""
@@ -564,14 +611,64 @@ class NimbusDiscordBot(commands.Bot):
             except Exception as e:
                 print(f"[DEBUG] Failed to fetch replied message: {e}", flush=True)
 
-        # Respond immediately — each message gets its own async task
+        # Queue message for sequential processing per channel
         if should_respond:
-            asyncio.create_task(self._handle_conversation_message(
+            await self._queue_message(
+                message.channel.id,
                 message.channel,
                 message.author,
                 content,
                 replied_message,
-            ))
+            )
+
+    async def _queue_message(self, channel_id: int, channel, user, content, replied_message=None):
+        """Queue a message for sequential processing in the channel."""
+        session = self.conversation_manager.get_session(channel_id)
+        if session is None:
+            session = self.conversation_manager.get_session(channel_id)
+            if session is None:
+                # Shouldn't happen, but create if needed
+                from .conversation import ConversationSession
+                session = ConversationSession(channel_id=channel_id)
+                self.conversation_manager._sessions[channel_id] = session
+
+        # Add message to queue
+        await session.processing_queue.put({
+            'channel': channel,
+            'user': user,
+            'content': content,
+            'replied_message': replied_message,
+        })
+
+        # Start processor if not already running
+        if not session.is_processing:
+            asyncio.create_task(self._process_message_queue(channel_id))
+
+    async def _process_message_queue(self, channel_id: int):
+        """Process messages in FIFO order for a channel."""
+        session = self.conversation_manager.get_session(channel_id)
+        if not session or session.is_processing:
+            return
+
+        session.is_processing = True
+        try:
+            while not session.processing_queue.empty():
+                try:
+                    msg_data = await asyncio.wait_for(session.processing_queue.get(), timeout=1.0)
+                    await self._handle_conversation_message(
+                        msg_data['channel'],
+                        msg_data['user'],
+                        msg_data['content'],
+                        msg_data.get('replied_message')
+                    )
+                    session.processing_queue.task_done()
+                except asyncio.TimeoutError:
+                    break
+                except Exception as e:
+                    logger.error(f"Error processing message in channel {channel_id}: {e}")
+                    break
+        finally:
+            session.is_processing = False
 
     async def _send_prefix_help(self, channel):
         """Send a help message listing available prefix commands."""

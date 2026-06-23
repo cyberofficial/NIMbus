@@ -1,9 +1,26 @@
 """NVIDIA NIM settings."""
 
+import json
 import os
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+def _load_reasoning_effort() -> str:
+    """Load reasoning effort from environment variable."""
+    return os.environ.get("NIM_REASONING_EFFORT", "high").lower()
+
+
+def _load_reasoning_effort_mappings() -> dict[str, dict[str, str]] | None:
+    """Load reasoning effort mappings from environment variable as JSON."""
+    raw = os.environ.get("NIM_REASONING_EFFORT_MAPPINGS", "")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
 
 
 class NimSettings(BaseModel):
@@ -36,12 +53,27 @@ class NimSettings(BaseModel):
     chat_template: str | None = None
     request_id: str | None = None
 
-    reasoning_effort: Literal["low", "medium", "high"] = "high"
+    reasoning_effort: Literal["low", "medium", "high"] = Field(
+        default_factory=_load_reasoning_effort
+    )
     include_reasoning: bool = True
     thinking: bool = Field(
         default_factory=lambda: os.environ.get("NIM_THINKING", "true").lower()
         not in ("false", "0", "no", "off")
     )
+    reasoning_effort_mappings: dict[str, dict[str, str]] | None = Field(
+        default_factory=_load_reasoning_effort_mappings
+    )
+
+    def get_effort_map_for_model(self, model: str) -> dict[str, str]:
+        """Get effort level mapping for a specific model."""
+        model_lower = model.lower()
+        if self.reasoning_effort_mappings:
+            for pattern, mapping in self.reasoning_effort_mappings.items():
+                if pattern in model_lower or model_lower.startswith(pattern):
+                    return mapping
+        # Return empty dict if no mapping found - will fall back to defaults
+        return {}
 
     model_config = ConfigDict(extra="forbid")
 

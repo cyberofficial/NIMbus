@@ -26,8 +26,12 @@ from .optimization_handlers import optimization_response_to_sse, try_optimizatio
 from .request_utils import get_token_count
 from .swapper import (
     ModelSwapManager,
+    NimServerManager,
     extract_modelswap_tag,
+    extract_nimserver_tag,
     is_modelswap_clear_tag,
+    is_nimserver_clear_tag,
+    is_nimrpm_reset_tag,
     resolve_model_name,
     validate_and_test_model,
 )
@@ -169,6 +173,127 @@ async def _handle_modelswap(
 
 
 # =============================================================================
+# Adaptive Rate Limit Reset Helper (<nimrpm:reset>)
+# =============================================================================
+
+
+async def _handle_nimrpm_reset(
+    request_data: MessagesRequest,
+) -> MessagesResponse | None:
+    """
+    Check for <nimrpm:reset> tag in the last user message.
+    If found, reset the adaptive rate limiter backoff state.
+
+    Returns:
+        A mock response if reset was triggered, None otherwise.
+    """
+    for msg in reversed(request_data.messages):
+        if msg.role == "user":
+            text_content = extract_text_from_content(msg.content)
+            if is_nimrpm_reset_tag(text_content):
+                # Skip for title generation requests (false positives)
+                if _is_title_request(request_data):
+                    return None
+
+                from providers.rate_limit import GlobalRateLimiter
+
+                limiter = GlobalRateLimiter.get_instance()
+                limiter.reset_adaptive_backoff()
+
+                return _create_nimserver_response(
+                    True,
+                    "rpm-reset",
+                    "🔄 Adaptive rate limit backoff has been reset.\n\n"
+                    "RPM restored to initial value, hold delays cleared.",
+                )
+            break
+    return None
+
+
+# =============================================================================
+# NIM Server Type Swapper Helpers (stream/buffer)
+# =============================================================================
+
+
+def _create_nimserver_response(
+    success: bool, server_type: str, message: str
+) -> MessagesResponse:
+    """Create Anthropic-format mock response for nimserver result."""
+    return MessagesResponse(
+        id=f"msg_{uuid.uuid4().hex[:24]}",
+        model="nim-server-swapper",
+        role="assistant",
+        content=[{"type": "text", "text": message}],
+        type="message",
+        stop_reason="end_turn",
+        stop_sequence=None,
+        usage=Usage(input_tokens=0, output_tokens=0),
+    )
+
+
+async def _handle_nimserver(
+    request: Request,
+    request_data: MessagesRequest,
+    settings: Settings,
+) -> tuple[dict | None, str | None]:
+    """
+    Handle nimserver logic for a request.
+
+    Returns:
+        Tuple of (mock_response_dict or None, server_type_override or None)
+        - If mock_response is not None, it's a nimserver command response
+        - If server_type_override is not None, it should be used for the request
+    """
+    api_key = _extract_api_key(request, settings)
+
+    # Check last user message for nimserver tag
+    for msg in reversed(request_data.messages):
+        if msg.role == "user":
+            text_content = extract_text_from_content(msg.content)
+
+            server_type = extract_nimserver_tag(text_content)
+            is_clear = is_nimserver_clear_tag(text_content)
+
+            if server_type or is_clear:
+                # Skip nimserver for title generation requests (false positives)
+                if _is_title_request(request_data):
+                    break
+
+                if is_clear:
+                    await NimServerManager.clear(api_key)
+                    mock_resp = _create_nimserver_response(
+                        True,
+                        "",
+                        "NIM server type cleared - using default SERVER_TYPE from .env",
+                    )
+                    return mock_resp, None
+
+                # Store the override
+                await NimServerManager.set(api_key, server_type)
+                mock_resp = _create_nimserver_response(
+                    True,
+                    server_type,
+                    f"NIM Server Mode: {server_type}\n\n"
+                    f"All subsequent requests from this session will use "
+                    f"'{server_type}' mode until changed.",
+                )
+                return mock_resp, None
+            break
+
+    # No nimserver command - check if override is active
+    server_override = await NimServerManager.get(api_key)
+    if server_override:
+        logger.info(
+            "NIM SERVER OVERRIDE: api_key={} -> '{}'",
+            api_key[:8] + "...",
+            server_override,
+        )
+        return None, server_override
+
+    return None, None
+
+
+# =============================================================================
 # Routes
 # =============================================================================
 
@@ -196,6 +321,48 @@ async def create_message(
 
             async def sse_generator():
                 for event in optimization_response_to_sse(mock_response, 0):
+                    yield event
+
+            return StreamingResponse(
+                sse_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "X-Accel-Buffering": "no",
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
+
+        # Handle NIM server type swapper
+        nimserver_mock, server_type_override = await _handle_nimserver(
+            raw_request, request_data, settings
+        )
+        if nimserver_mock is not None:
+            request_id = f"req_{uuid.uuid4().hex[:12]}"
+            log_request_compact(logger, request_id, request_data)
+
+            async def sse_generator():
+                for event in optimization_response_to_sse(nimserver_mock, 0):
+                    yield event
+
+            return StreamingResponse(
+                sse_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "X-Accel-Buffering": "no",
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
+
+        # Handle adaptive rate limit reset (<nimrpm:reset>)
+        rpmreset_mock = await _handle_nimrpm_reset(request_data)
+        if rpmreset_mock is not None:
+            request_id = f"req_{uuid.uuid4().hex[:12]}"
+            log_request_compact(logger, request_id, request_data)
+
+            async def sse_generator():
+                for event in optimization_response_to_sse(rpmreset_mock, 0):
                     yield event
 
             return StreamingResponse(
@@ -280,6 +447,33 @@ async def create_message(
                     flush=True,
                 )
 
+        # If nimserver override is active and it's 'buffer', dispatch to buffered_request
+        # and convert the response to SSE for the streaming endpoint.
+        if server_type_override == "buffer":
+            logger.info("NIMSERVER: streaming endpoint -> using buffered mode (override)")
+
+            response = await provider.buffered_request(
+                request_data,
+                input_tokens=input_tokens,
+                request_id=request_id,
+                model_override=model_override,
+            )
+
+            async def sse_generator():
+                for event in optimization_response_to_sse(response, input_tokens):
+                    yield event
+
+            return StreamingResponse(
+                sse_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "X-Accel-Buffering": "no",
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
+
+        # Normal streaming path
         return StreamingResponse(
             provider.stream_response(
                 request_data,
@@ -336,6 +530,21 @@ async def create_message_buffered(
                 },
             )
 
+        # Handle NIM server type swapper
+        nimserver_mock, server_type_override = await _handle_nimserver(
+            raw_request, request_data, settings
+        )
+        if nimserver_mock is not None:
+            request_id = f"req_{uuid.uuid4().hex[:12]}"
+            log_request_compact(logger, request_id, request_data)
+            return JSONResponse(
+                content=nimserver_mock,
+                headers={
+                    "X-Buffered": "true",
+                    "X-Request-ID": request_id,
+                },
+            )
+
         optimized = try_optimizations(request_data, settings)
         if optimized is not None:
             return optimized
@@ -384,6 +593,55 @@ async def create_message_buffered(
                     flush=True,
                 )
 
+        # If nimserver override is active and it's 'stream', dispatch to stream_response
+        # and collect the result into a JSON response for the buffered endpoint.
+        if server_type_override == "stream":
+            logger.info("NIMSERVER: buffered endpoint -> using streaming mode (override)")
+
+            full_response_text = ""
+            async for chunk in provider.stream_response(
+                request_data,
+                input_tokens=input_tokens,
+                request_id=request_id,
+                model_override=model_override,
+            ):
+                if chunk.strip():
+                    try:
+                        event_data = chunk.split("data: ", 1)[-1].strip()
+                        data = json.loads(event_data)
+                        if data.get("type") == "content_block_delta":
+                            delta = data.get("delta", {})
+                            if delta.get("type") == "text_delta":
+                                full_response_text += delta.get("text", "")
+                    except Exception:
+                        continue
+
+            # Build an Anthropic-format response from the collected text
+            import uuid as _uuid
+
+            response = {
+                "id": f"msg_{_uuid.uuid4().hex[:24]}",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": full_response_text.strip()}],
+                "model": request_data.model,
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": 0,
+                },
+            }
+
+            return JSONResponse(
+                content=response,
+                headers={
+                    "X-Buffered": "true",
+                    "X-Request-ID": request_id,
+                },
+            )
+
+        # Normal buffered path
         response = await provider.buffered_request(
             request_data,
             input_tokens=input_tokens,

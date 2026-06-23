@@ -1,0 +1,77 @@
+{
+  "description": "Default reasoning effort level mappings for NVIDIA NIM models. Maps Claude Code effort levels (/effort low|medium|high|xhigh|max|ultracode) to model-specific reasoning parameters.",
+  "models": {
+    "deepseek": {
+      "description": "DeepSeek V2/V3/V4 series models",
+      "mapping": {
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "max",
+        "max": "max",
+        "ultracode": "max"
+      },
+      "notes": "DeepSeek models accept reasoning_effort parameter with values: low, medium, high, max"
+    },
+    "deepseek-ai/deepseek-v2": {
+      "description": "DeepSeek V2 models",
+      "mapping": {
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "max",
+        "max": "max",
+        "ultracode": "max"
+      }
+    },
+    "deepseek-ai/deepseek-v3": {
+      "description": "DeepSeek V3 models",
+      "mapping": {
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "max",
+        "max": "max",
+        "ultracode": "max"
+      }
+    },
+    "deepseek-ai/deepseek-v4": {
+      "description": "DeepSeek V4 models",
+      "mapping": {
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "max",
+        "max": "max",
+        "ultracode": "max"
+      }
+    },
+    "deepseek-ai/deepseek-r1": {
+      "description": "DeepSeek R1 reasoning models",
+      "mapping": {
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "max",
+        "max": "max",
+        "ultracode": "max"
+      }
+    }
+  },
+  "global_defaults": {
+    "description": "Fallback mappings used when no model-specific mapping is found",
+    "mapping": {
+      "low": "low",
+      "medium": "medium",
+      "high": "high",
+      "xhigh": "high",
+      "max": "high",
+      "ultracode": "high"
+    },
+    "notes": "Default behavior maps all levels to 'high' except low/medium which stay as-is. This is a conservative approach to avoid excessive token usage."
+  },
+  "usage_examples": {
+    "environment_variable": "NIM_REASONING_EFFORT_MAPPINGS='{\\\"deepseek\\\": {\\\"xhigh\\\": \\\"max\\\", \\\"high\\\": \\\"high\\\"}}'",
+    "notes": "To override defaults, set NIM_REASONING_EFFORT_MAPPINGS environment variable with your custom JSON mapping"
+  }
+}

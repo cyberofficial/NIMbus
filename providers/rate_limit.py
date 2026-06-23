@@ -1,4 +1,9 @@
-"""Global rate limiter for API requests."""
+"""Global rate limiter for API requests with adaptive backoff.
+
+When a 429 is encountered, this limiter progressively reduces the effective
+RPM rate limit and, once a floor is reached, starts introducing per-request
+hold delays.  The adaptive state can be reset via <nimrpm:reset>.
+"""
 
 import asyncio
 import random
@@ -19,6 +24,15 @@ class GlobalRateLimiter:
     Global singleton rate limiter that blocks all requests
     when a rate limit error is encountered (reactive) and
     throttles requests (proactive) using a strict rolling window.
+
+    **Adaptive backoff** – on every 429 the limiter will:
+      1. Drop the effective RPM by ``rpm_drop`` (default 10) until
+         ``rpm_min`` is reached.
+      2. Once at the floor, introduce a per-request hold delay that
+         progresses from 0 → ``hold_initial`` → ``hold_max``.
+
+    Call ``reset_adaptive_backoff()`` to restore initial values
+    (e.g. via ``<nimrpm:reset>``).
 
     Optionally enforces a max_concurrency cap: at most N provider streams
     may be open simultaneously, independent of the sliding window.
@@ -41,8 +55,12 @@ class GlobalRateLimiter:
         rate_limit: int = 40,
         rate_window: float = 60.0,
         max_concurrency: int = 5,
+        # Adaptive backoff parameters
+        rpm_drop: int = 10,
+        rpm_min: int = 20,
+        hold_initial: float = 5.0,
+        hold_max: float = 10.0,
     ):
-        # Prevent re-initialization on singleton reuse
         if hasattr(self, "_initialized"):
             return
 
@@ -53,9 +71,20 @@ class GlobalRateLimiter:
         if max_concurrency <= 0:
             raise ValueError("max_concurrency must be > 0")
 
-        self._rate_limit = rate_limit
+        # ---- Static config ----
         self._rate_window = float(rate_window)
-        # Monotonic timestamps of the last granted slots.
+        self._initial_rpm = rate_limit
+        self._rpm_drop = rpm_drop
+        self._rpm_min = rpm_min
+        self._hold_initial = hold_initial
+        self._hold_max = hold_max
+
+        # ---- Adaptive state ----
+        self._effective_rpm = rate_limit
+        self._drop_count = 0
+        self._hold_delay = 0.0  # seconds to wait before each request
+
+        # ---- Sliding-window state ----
         self._request_times: deque[float] = deque()
         self._blocked_until: float = 0
         self._lock = asyncio.Lock()
@@ -63,8 +92,16 @@ class GlobalRateLimiter:
         self._initialized = True
 
         logger.info(
-            f"GlobalRateLimiter (Provider) initialized ({rate_limit} req / {rate_window}s, max_concurrency={max_concurrency})"
+            f"GlobalRateLimiter initialized "
+            f"(initial={rate_limit} rpm, window={rate_window}s, "
+            f"drop={rpm_drop}, min={rpm_min}, "
+            f"hold_initial={hold_initial}s, hold_max={hold_max}s, "
+            f"max_concurrency={max_concurrency})"
         )
+
+    # ------------------------------------------------------------------
+    # Singleton
+    # ------------------------------------------------------------------
 
     @classmethod
     def get_instance(
@@ -72,19 +109,31 @@ class GlobalRateLimiter:
         rate_limit: int | None = None,
         rate_window: float | None = None,
         max_concurrency: int = 5,
+        rpm_drop: int | None = None,
+        rpm_min: int | None = None,
+        hold_initial: float | None = None,
+        hold_max: float | None = None,
     ) -> GlobalRateLimiter:
         """Get or create the singleton instance.
 
         Args:
             rate_limit: Requests per window (only used on first creation)
             rate_window: Window in seconds (only used on first creation)
-            max_concurrency: Max simultaneous open streams (only used on first creation)
+            max_concurrency: Max simultaneous open streams
+            rpm_drop: RPM reduction per 429 hit
+            rpm_min: Floor RPM before hold delays activate
+            hold_initial: First hold delay in seconds
+            hold_max: Maximum hold delay in seconds
         """
         if cls._instance is None:
             cls._instance = cls(
                 rate_limit=rate_limit or 40,
                 rate_window=rate_window or 60.0,
                 max_concurrency=max_concurrency,
+                rpm_drop=rpm_drop or 10,
+                rpm_min=rpm_min or 20,
+                hold_initial=hold_initial or 5.0,
+                hold_max=hold_max or 10.0,
             )
         return cls._instance
 
@@ -93,13 +142,84 @@ class GlobalRateLimiter:
         """Reset singleton (for testing)."""
         cls._instance = None
 
+    # ------------------------------------------------------------------
+    # Adaptive backoff
+    # ------------------------------------------------------------------
+
+    def on_rate_limit_hit(self) -> None:
+        """Called when a 429 is received.
+
+        Drops the effective RPM or increases the hold delay.
+        """
+        if self._effective_rpm > self._rpm_min:
+            old = self._effective_rpm
+            self._effective_rpm = max(self._rpm_min, old - self._rpm_drop)
+            self._drop_count += 1
+            logger.warning(
+                "⚠️ Adaptive rate limit: dropped RPM {} → {} "
+                "(drop #{}, min={})",
+                old,
+                self._effective_rpm,
+                self._drop_count,
+                self._rpm_min,
+            )
+        else:
+            # At floor – increase hold delay
+            if self._hold_delay < self._hold_initial:
+                self._hold_delay = self._hold_initial
+            elif self._hold_delay < self._hold_max:
+                self._hold_delay = min(self._hold_max, self._hold_delay + self._hold_initial)
+            logger.warning(
+                "⚠️ Adaptive rate limit: at floor RPM ({}), "
+                "increased hold delay to {:.1f}s (max={:.1f}s)",
+                self._effective_rpm,
+                self._hold_delay,
+                self._hold_max,
+            )
+
+    @property
+    def effective_rpm(self) -> int:
+        return self._effective_rpm
+
+    @property
+    def hold_delay(self) -> float:
+        return self._hold_delay
+
+    def reset_adaptive_backoff(self) -> None:
+        """Restore initial RPM and clear hold delay."""
+        old_rpm = self._effective_rpm
+        old_hold = self._hold_delay
+        self._effective_rpm = self._initial_rpm
+        self._drop_count = 0
+        self._hold_delay = 0.0
+        logger.info(
+            "↺ Adaptive backoff reset: RPM {} → {}, hold {:.1f}s → 0",
+            old_rpm,
+            self._effective_rpm,
+            old_hold,
+        )
+
+    # ------------------------------------------------------------------
+    # Wait logic (used by provider)
+    # ------------------------------------------------------------------
+
     async def wait_if_blocked(self) -> bool:
         """
         Wait if currently rate limited or throttle to meet quota.
 
+        Also applies adaptive hold delay when one is active.
+
         Returns:
             True if was reactively blocked and waited, False otherwise.
         """
+        # 0. Adaptive hold delay – small pause before each request
+        if self._hold_delay > 0:
+            logger.info(
+                "⏳ Adaptive hold delay active: waiting {:.1f}s before request",
+                self._hold_delay,
+            )
+            await asyncio.sleep(self._hold_delay)
+
         # 1. Reactive check: Wait if someone hit a 429
         waited_reactively = False
         now = time.monotonic()
@@ -111,16 +231,14 @@ class GlobalRateLimiter:
             await asyncio.sleep(wait_time)
             waited_reactively = True
 
-        # 2. Proactive check: strict rolling window (no bursts beyond N in last W seconds)
+        # 2. Proactive check: strict rolling window (uses effective_rpm)
         await self._acquire_proactive_slot()
         return waited_reactively
 
     async def _acquire_proactive_slot(self) -> None:
         """
-        Acquire a proactive slot enforcing a strict rolling window.
-
-        Guarantees: at most `self._rate_limit` acquisitions in any interval of length
-        `self._rate_window` (seconds).
+        Acquire a proactive slot enforcing a strict rolling window
+        using the *effective* (adaptively reduced) RPM.
         """
         while True:
             wait_time = 0.0
@@ -131,16 +249,14 @@ class GlobalRateLimiter:
                 while self._request_times and self._request_times[0] <= cutoff:
                     self._request_times.popleft()
 
-                if len(self._request_times) < self._rate_limit:
+                if len(self._request_times) < self._effective_rpm:
                     self._request_times.append(now)
-                    # Log current rate limit status
                     self._log_rate_limit_status()
                     return
 
                 oldest = self._request_times[0]
                 wait_time = max(0.0, (oldest + self._rate_window) - now)
 
-            # Sleep outside the lock so other tasks can continue to queue.
             if wait_time > 0:
                 await asyncio.sleep(wait_time)
             else:
@@ -149,8 +265,8 @@ class GlobalRateLimiter:
     def _log_rate_limit_status(self) -> None:
         """Log current rate limit usage to console."""
         current = len(self._request_times)
-        remaining = self._rate_limit - current
-        percentage = (current / self._rate_limit) * 100
+        remaining = self._effective_rpm - current
+        percentage = (current / self._effective_rpm) * 100 if self._effective_rpm > 0 else 100
 
         # Calculate time until oldest request expires
         reset_in = 0.0
@@ -161,7 +277,7 @@ class GlobalRateLimiter:
 
         # Create visual bar
         bar_width = 30
-        filled = int((current / self._rate_limit) * bar_width)
+        filled = int((current / self._effective_rpm) * bar_width) if self._effective_rpm > 0 else bar_width
         empty = bar_width - filled
 
         # Color code based on usage
@@ -176,12 +292,12 @@ class GlobalRateLimiter:
 
         if reset_in > 0:
             logger.info(
-                f"{emoji} [Rate Limit] [{bar}] {current}/{self._rate_limit} ({percentage:.0f}%) | "
+                f"{emoji} [Rate Limit] [{bar}] {current}/{self._effective_rpm} ({percentage:.0f}%) | "
                 f"{remaining} left | Resets in {reset_in:.1f}s"
             )
         else:
             logger.info(
-                f"{emoji} [Rate Limit] [{bar}] {current}/{self._rate_limit} ({percentage:.0f}%) | "
+                f"{emoji} [Rate Limit] [{bar}] {current}/{self._effective_rpm} ({percentage:.0f}%) | "
                 f"{remaining} left"
             )
 
@@ -207,7 +323,8 @@ class GlobalRateLimiter:
         """Get current rate limit status.
 
         Returns:
-            Dict with keys: current, max, remaining, reset_in_seconds, is_blocked
+            Dict with keys: current, max, remaining, reset_in_seconds,
+            is_blocked, effective_rpm, hold_delay, drop_count
         """
         now = time.monotonic()
         cutoff = now - self._rate_window
@@ -217,7 +334,7 @@ class GlobalRateLimiter:
             self._request_times.popleft()
 
         current = len(self._request_times)
-        remaining = self._rate_limit - current
+        remaining = self._effective_rpm - current
 
         # Calculate time until oldest request expires
         reset_in = 0.0
@@ -227,11 +344,15 @@ class GlobalRateLimiter:
 
         return {
             "current": current,
-            "max": self._rate_limit,
+            "max": self._effective_rpm,
+            "initial_max": self._initial_rpm,
             "remaining": remaining,
             "reset_in_seconds": reset_in,
             "is_blocked": self.is_blocked(),
             "blocked_seconds_remaining": self.remaining_wait(),
+            "effective_rpm": self._effective_rpm,
+            "hold_delay": self._hold_delay,
+            "drop_count": self._drop_count,
         }
 
     def update_limits(
@@ -244,30 +365,36 @@ class GlobalRateLimiter:
             rate_window: New window duration in seconds (ignored if None or <= 0)
         """
         if rate_limit is not None and rate_limit > 0:
-            self._rate_limit = rate_limit
+            self._effective_rpm = rate_limit
+            self._initial_rpm = rate_limit
             logger.info(f"Rate limit updated to {rate_limit} requests per window")
         if rate_window is not None and rate_window > 0:
             self._rate_window = float(rate_window)
             logger.info(f"Rate window updated to {rate_window}s")
 
-    def parse_rate_limit_headers(self, headers: dict[str, str]) -> None:
-        """Parse x-ratelimit-* headers and update state.
+    def parse_rate_limit_headers(self, headers: dict[str, str]) -> float | None:
+        """Parse rate limit response headers and return retry-after seconds.
 
-        Parses the following headers:
-        - x-ratelimit-limit: Maximum requests per window
-        - x-ratelimit-remaining: Remaining requests (logged for visibility)
-        - x-ratelimit-reset: Reset timestamp (logged for visibility)
-        - retry-after: Seconds to wait before retrying
+        Checks:
+        - ``x-ratelimit-limit`` (updates adaptive RPM if present)
+        - ``x-ratelimit-remaining`` (logged for visibility)
+        - ``x-ratelimit-reset`` (logged for visibility)
+        - ``retry-after`` (returned as float seconds if present)
 
         Args:
             headers: Dictionary of HTTP response headers
+
+        Returns:
+            Retry-After value in seconds, or None if not present.
         """
+        retry_after: float | None = None
+
         # Parse x-ratelimit-limit
         limit = headers.get("x-ratelimit-limit")
         if limit:
             try:
                 self.update_limits(rate_limit=int(limit))
-            except ValueError, TypeError:
+            except (ValueError, TypeError):
                 logger.debug(f"Could not parse x-ratelimit-limit: {limit}")
 
         # Parse remaining for visibility
@@ -280,12 +407,26 @@ class GlobalRateLimiter:
         if reset:
             logger.debug(f"Rate limit resets at: {reset}")
 
+        # Parse Retry-After header
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+        if raw:
+            try:
+                retry_after = float(raw)
+                logger.info(
+                    "📤 Parsed Retry-After header: {:.0f}s", retry_after
+                )
+            except (ValueError, TypeError):
+                logger.debug(f"Could not parse Retry-After: {raw}")
+
+        return retry_after
+
+    # ------------------------------------------------------------------
+    # Concurrency & retry
+    # ------------------------------------------------------------------
+
     @asynccontextmanager
     async def concurrency_slot(self) -> AsyncIterator[None]:
-        """Async context manager that holds one concurrency slot for a stream.
-
-        Blocks until a slot is available (controlled by max_concurrency).
-        """
+        """Async context manager that holds one concurrency slot for a stream."""
         await self._concurrency_sem.acquire()
         try:
             yield
@@ -306,6 +447,7 @@ class GlobalRateLimiter:
 
         Waits for the proactive limiter before each attempt. On 429, applies
         exponential backoff with jitter before retrying.
+        Also calls ``on_rate_limit_hit()`` to trigger adaptive backoff.
 
         Args:
             fn: Async callable to execute.
@@ -329,6 +471,9 @@ class GlobalRateLimiter:
                 return await fn(*args, **kwargs)
             except openai.RateLimitError as e:
                 last_exc = e
+                # Fire adaptive backoff
+                self.on_rate_limit_hit()
+
                 if attempt >= max_retries:
                     logger.warning(
                         f"Rate limit retry exhausted after {max_retries} retries"

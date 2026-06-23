@@ -248,6 +248,10 @@ class Settings(BaseSettings):
         default=True, validation_alias="DISCORD_AUTO_COMPACT"
     )
 
+    # Discord model (optional, separate from main MODEL)
+    # Allows using a different model for Discord bot vs API proxy
+    discord_model_raw: str = Field(default="", validation_alias="DISCORD_MODEL")
+
     # Prefix command support
     discord_command_prefix: str = Field(
         default="!!", validation_alias="DISCORD_COMMAND_PREFIX"
@@ -304,6 +308,44 @@ class Settings(BaseSettings):
         if not self.discord_enabled_field:
             return False
         return bool(self.discord_bot_token and self.discord_guild_id)
+
+    @property
+    def discord_model(self) -> str | None:
+        """Get the resolved Discord model.
+
+        Resolution order:
+        1. If DISCORD_MODEL explicitly set in env, use it
+        2. Else if MODEL set and not windows:settings.json, use first model from MODEL
+        3. Else if MODEL=windows:settings.json, use first available from:
+           - ANTHROPIC_DEFAULT_OPUS_MODEL
+           - ANTHROPIC_DEFAULT_SONNET_MODEL
+           - ANTHROPIC_DEFAULT_HAIKU_MODEL
+           (stripping [1m] suffix if present)
+        4. Returns None if no model can be resolved (bot will not start)
+        """
+        # 1. Explicit DISCORD_MODEL
+        if self.discord_model_raw:
+            return _to_full_nim_model(self.discord_model_raw.strip())
+
+        # 2. MODEL set and not windows:settings.json
+        if self.model and self.model != "windows:settings.json":
+            parts = [m.strip() for m in self.model.split(",") if m.strip()]
+            if parts:
+                return _to_full_nim_model(parts[0])
+
+        # 3. MODEL=windows:settings.json - read from Claude settings in Opus->Sonnet->Haiku order
+        if self.model == "windows:settings.json":
+            # Reuse existing logic to read models from Claude settings
+            # _model_list_from_claude_settings returns list: [sonnet, opus, haiku]
+            # We want Opus (index 1), then Sonnet (index 0), then Haiku (index 2)
+            models = self._model_list_from_claude_settings()
+            for idx in (1, 0, 2):  # Opus, Sonnet, Haiku
+                if idx < len(models) and models[idx]:
+                    # Strip [1m] if present (handled in _model_list_from_claude_settings already)
+                    return _to_full_nim_model(models[idx].strip())
+
+        # No model available
+        return None
 
     def is_conversation_channel(
         self, channel_id: int, category_id: int | None = None
