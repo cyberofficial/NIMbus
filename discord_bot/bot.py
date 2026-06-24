@@ -655,17 +655,45 @@ class NimbusDiscordBot(commands.Bot):
             while not session.processing_queue.empty():
                 try:
                     msg_data = await asyncio.wait_for(session.processing_queue.get(), timeout=1.0)
-                    await self._handle_conversation_message(
-                        msg_data['channel'],
-                        msg_data['user'],
-                        msg_data['content'],
-                        msg_data.get('replied_message')
-                    )
+                    # Retry up to 3 times on failure
+                    max_retries = 3
+                    last_error = None
+                    for attempt in range(max_retries):
+                        try:
+                            await self._handle_conversation_message(
+                                msg_data['channel'],
+                                msg_data['user'],
+                                msg_data['content'],
+                                msg_data.get('replied_message')
+                            )
+                            last_error = None
+                            break  # Success, exit retry loop
+                        except Exception as e:
+                            last_error = e
+                            if attempt < max_retries - 1:
+                                logger.warning(
+                                    f"Error processing message in channel {channel_id} "
+                                    f"(attempt {attempt + 1}/{max_retries}): {e}"
+                                )
+                                await asyncio.sleep(1.0)  # Brief delay before retry
+                            else:
+                                logger.error(
+                                    f"Error processing message in channel {channel_id} "
+                                    f"after {max_retries} attempts: {e}"
+                                )
+                                # Send error notification to the channel
+                                try:
+                                    await msg_data['channel'].send(
+                                        "⚠️ An error occurred while processing your message. "
+                                        "Please try again."
+                                    )
+                                except Exception:
+                                    pass  # Can't even send error message, give up
                     session.processing_queue.task_done()
                 except asyncio.TimeoutError:
                     break
                 except Exception as e:
-                    logger.error(f"Error processing message in channel {channel_id}: {e}")
+                    logger.error(f"Unexpected error in queue processing for channel {channel_id}: {e}")
                     break
         finally:
             session.is_processing = False
