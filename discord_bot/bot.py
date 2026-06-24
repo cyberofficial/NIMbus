@@ -488,13 +488,10 @@ class NimbusDiscordBot(commands.Bot):
         self._typing_retry_delays[channel.id] = 10.0
         self._typing_locks[channel.id] = time.monotonic()
 
-        # Store in conversation
+        # Store the assistant response in conversation
+        # (user message was already saved unconditionally in on_message)
         if full_text:
             safe_response = full_text.replace("@everyone", "@every\u200bone").replace("@here", "@her\u200be")
-            self.conversation_manager.add_message_with_user(
-                channel.id, "user", safe_content, user.id, user.display_name,
-                auto_compact=self.settings.discord_auto_compact
-            )
             self.conversation_manager.add_message_with_user(
                 channel.id, "assistant", safe_response, None, "NIM",
                 auto_compact=self.settings.discord_auto_compact
@@ -583,6 +580,14 @@ class NimbusDiscordBot(commands.Bot):
 
         # Prevent accidental mass-pings to @everyone / @here
         content = content.replace("@everyone", "@every\u200bone").replace("@here", "@her\u200be")
+
+        # Unconditionally save every message in a conversation channel to history,
+        # regardless of whether the bot will respond. This ensures all channel
+        # conversations are persisted to .discord_data/conversations.json.
+        self.conversation_manager.add_message_with_user(
+            message.channel.id, "user", content, message.author.id, message.author.display_name,
+            auto_compact=self.settings.discord_auto_compact
+        )
 
         is_mention = self._is_bot_mentioned(message)
         has_prefix = content.startswith(self.settings.discord_command_prefix)

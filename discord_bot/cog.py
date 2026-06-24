@@ -256,10 +256,6 @@ class NimbusCog(commands.Cog):
 
             if full_text:
                 self.conversation_manager.add_message_with_user(
-                    channel.id, "user", question, user.id, user.display_name,
-                    auto_compact=self.settings.discord_auto_compact
-                )
-                self.conversation_manager.add_message_with_user(
                     channel.id, "assistant", full_text, None, "NIM",
                     auto_compact=self.settings.discord_auto_compact
                 )
