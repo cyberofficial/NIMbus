@@ -1,7 +1,9 @@
 """Discord bot client integration with NIMbus."""
 
 import asyncio
+import json
 import os
+import uuid
 
 import discord
 from discord import app_commands
@@ -14,6 +16,7 @@ from providers.provider import NvidiaNimProvider
 from .cog import NimbusCog
 from .conversation import ConversationManager
 from .rate_limit import DiscordRateLimiter
+from .tools import WEB_SEARCH_TOOLS, execute_fetch_page, execute_web_search
 
 
 class NimbusDiscordBot(commands.Bot):
@@ -390,7 +393,13 @@ class NimbusDiscordBot(commands.Bot):
         # Get history
         history = self.conversation_manager.get_history_for_nim(channel.id)
 
-        # Build request with system prompt
+        # Check if web search is enabled
+        web_search_enabled = (
+            getattr(self.settings, 'discord_enable_web_search', True)
+            and self._discord_model is not None
+        )
+
+        # Build initial request with system prompt and optional web search tools
         messages = history + [{"role": "user", "content": formatted_content}]
         system_prompt = self.settings.discord_system_prompt
         request_data = MessagesRequest(
@@ -398,6 +407,7 @@ class NimbusDiscordBot(commands.Bot):
             messages=[Message(role=m["role"], content=m["content"]) for m in messages],
             max_tokens=self.settings.discord_max_tokens,
             system=system_prompt,
+            tools=WEB_SEARCH_TOOLS if web_search_enabled else None,
         )
 
         # Count tokens including system prompt
@@ -450,31 +460,150 @@ class NimbusDiscordBot(commands.Bot):
         global_limiter = GlobalRateLimiter.get_instance()
         await global_limiter.wait_if_blocked()
 
-        full_text = ""
-        try:
-            async with global_limiter.concurrency_slot():
-                try:
-                    import uuid
-                    request_id = f"discord_live_{uuid.uuid4().hex[:8]}"
-                    stream = self.provider.stream_response(
-                        request_data, input_tokens, request_id=request_id
-                    )
+        # Tool handling state
+        tools_used = set()
+        max_iterations = getattr(self.settings, 'discord_web_search_max_iterations', 10)
+        max_results = getattr(self.settings, 'discord_web_search_max_results', 5)
+        iteration = 0
 
-                    async for chunk in stream:
-                        if chunk.strip():
+        # Current request data (will be updated in loop with tool results)
+        current_request = request_data
+        current_input_tokens = input_tokens
+
+        full_text = ""
+
+        try:
+            # Main loop: keep sending requests until model stops calling tools
+            while iteration < max_iterations:
+                iteration += 1
+                request_id = f"discord_live_{uuid.uuid4().hex[:8]}"
+
+                try:
+                    async with global_limiter.concurrency_slot():
+                        stream = self.provider.stream_response(
+                            current_request, current_input_tokens, request_id=request_id
+                        )
+
+                        # Track tool calls in this stream
+                        current_tool_use = None
+                        current_tool_input = ""
+                        tool_results = []  # List of (tool_name, tool_input, tool_result)
+
+                        async for chunk in stream:
+                            if not chunk.strip():
+                                continue
                             try:
                                 event_data = chunk.split("data: ", 1)[-1].strip()
-                                import json
                                 data = json.loads(event_data)
-                                if data.get("type") == "content_block_delta":
+
+                                # Track tool_use start
+                                if data.get("type") == "content_block_start":
+                                    block = data.get("block", {})
+                                    if block.get("type") == "tool_use":
+                                        current_tool_use = {
+                                            "id": block.get("id"),
+                                            "name": block.get("name"),
+                                            "input": ""
+                                        }
+                                        current_tool_input = ""
+
+                                # Accumulate tool input
+                                elif data.get("type") == "content_block_delta" and current_tool_use:
+                                    delta = data.get("delta", {})
+                                    if delta.get("type") == "input_json_delta":
+                                        current_tool_input += delta.get("partial_json", "")
+
+                                # Tool complete
+                                elif data.get("type") == "content_block_stop" and current_tool_use:
+                                    current_tool_use["input"] = current_tool_input
+                                    tool_results.append(current_tool_use)
+                                    tools_used.add(current_tool_use["name"])
+                                    current_tool_use = None
+                                    current_tool_input = ""
+
+                                # Collect text for final output
+                                elif data.get("type") == "content_block_delta":
                                     delta = data.get("delta", {})
                                     if delta.get("type") == "text_delta":
                                         full_text += delta.get("text", "")
+
                             except Exception:
                                 continue
+
+                        # If no tools were called, we're done
+                        if not tool_results:
+                            break
+
                 except Exception as e:
-                    await channel.send(f"Error: {str(e)[:1900]}")
-                    return
+                    logger.error(f"Stream error during web search iteration {iteration}: {e}")
+                    break
+
+                # Execute tool calls and build tool results
+                tool_result_messages = []
+                for tool in tool_results:
+                    tool_id = tool["id"]
+                    tool_name = tool["name"]
+                    tool_input_str = tool["input"]
+
+                    logger.info(f"[WEB SEARCH] tool={tool_name} input={tool_input_str!r}")
+
+                    try:
+                        tool_input = json.loads(tool_input_str) if tool_input_str else {}
+
+                        if tool_name == "web_search":
+                            query = tool_input.get("query", "")
+                            result = await execute_web_search(query, max_results=max_results)
+                        elif tool_name == "fetch_page":
+                            url = tool_input.get("url", "")
+                            offset = tool_input.get("offset", 0)
+                            limit = tool_input.get("limit", 10000)
+                            search = tool_input.get("search")
+                            result = await execute_fetch_page(url, offset, limit, search)
+                        else:
+                            result = f"Unknown tool: {tool_name}"
+
+                        logger.info(f"[WEB SEARCH] tool={tool_name} | result_len={len(result)}")
+                        tool_result_messages.append({
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_id,
+                                    "content": result
+                                }
+                            ]
+                        })
+
+                    except Exception as e:
+                        logger.error(f"Tool {tool_name} execution failed: {e}")
+                        tool_result_messages.append({
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_id,
+                                    "content": f"Error executing tool: {e}",
+                                    "is_error": True
+                                }
+                            ]
+                        })
+
+                # Build next request with tool results
+                new_messages = current_request.messages + [
+                    {"role": "assistant", "content": [{"type": "tool_use", **t} for t in tool_results]}
+                ] + tool_result_messages
+
+                current_request = MessagesRequest(
+                    model=self._discord_model,
+                    messages=[Message(role=m["role"], content=m["content"]) for m in new_messages],
+                    max_tokens=self.settings.discord_max_tokens,
+                    system=system_prompt,
+                    tools=WEB_SEARCH_TOOLS if web_search_enabled else None,
+                )
+                current_input_tokens = get_token_count(
+                    current_request.messages, system_prompt, current_request.tools
+                )
+
         finally:
             # Stop typing indicator
             typing_active = False
@@ -484,16 +613,21 @@ class NimbusDiscordBot(commands.Bot):
                     await typing_task
                 except asyncio.CancelledError:
                     pass
+
         # Record successful typing completion (reset delay on success)
         self._typing_retry_delays[channel.id] = 10.0
         self._typing_locks[channel.id] = time.monotonic()
 
-        # Store the assistant response in conversation
-        # (user message was already saved unconditionally in on_message)
+        # Add disclaimer prefix if web search tools were used
+        if tools_used:
+            full_text = "-# This response used online resources, please make sure to verify the information\n\n" + full_text
+
+        # Store the assistant response in conversation (with tools_used)
         if full_text:
             safe_response = full_text.replace("@everyone", "@every\u200bone").replace("@here", "@her\u200be")
             self.conversation_manager.add_message_with_user(
                 channel.id, "assistant", safe_response, None, "NIM",
+                tools_used=list(tools_used),
                 auto_compact=self.settings.discord_auto_compact
             )
 

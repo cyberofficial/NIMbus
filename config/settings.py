@@ -298,6 +298,17 @@ class Settings(BaseSettings):
         default=True, validation_alias="DISCORD_CMD_PREFIX_STATUS"
     )
 
+    # Web search settings for Discord bot
+    discord_enable_web_search: bool = Field(
+        default=True, validation_alias="DISCORD_ENABLE_WEB_SEARCH"
+    )
+    discord_web_search_max_results: int = Field(
+        default=5, validation_alias="DISCORD_WEB_SEARCH_MAX_RESULTS"
+    )
+    discord_web_search_max_iterations: int = Field(
+        default=10, validation_alias="DISCORD_WEB_SEARCH_MAX_ITERATIONS"
+    )
+
     @property
     def discord_enabled(self) -> bool:
         """Check if Discord bot is enabled.

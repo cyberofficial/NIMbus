@@ -16,6 +16,7 @@ class ConversationMessage:
     user_id: Optional[int] = None
     username: str = ""  # Display name for context
     reply_message: str = ""  # Content of the bot message this user message is replying to
+    tools_used: list[str] = field(default_factory=list)  # List of tool names used in this response
 
 
 @dataclass
@@ -139,12 +140,12 @@ class ConversationManager:
 
         Returns: {"status": "ok" | "auto_compact" | "needs_compaction" | "dropped"}
         """
-        return self.add_message_with_user(channel_id, role, content, None, "", "", auto_compact)
+        return self.add_message_with_user(channel_id, role, content, None, "", "", [], auto_compact)
 
     def add_message_with_user(
         self, channel_id: int, role: str, content: str,
         user_id: Optional[int] = None, username: str = "", reply_message: str = "",
-        auto_compact: bool = True
+        tools_used: list[str] = None, auto_compact: bool = True
     ) -> dict:
         """
         Add message with user context and return status.
@@ -180,7 +181,8 @@ class ConversationManager:
                     session.token_count = 0
 
         msg = ConversationMessage(
-            role=role, content=content, user_id=user_id, username=username, reply_message=reply_message
+            role=role, content=content, user_id=user_id, username=username,
+            reply_message=reply_message, tools_used=tools_used or []
         )
         session.messages.append(msg)
         session.token_count += msg_tokens
@@ -225,7 +227,7 @@ class ConversationManager:
         summary_tokens = self._count_tokens(summary)
         self._sessions[channel_id] = ConversationSession(
             channel_id=channel_id,
-            messages=[ConversationMessage(role="assistant", content=summary, username="Summary", reply_message="")],
+            messages=[ConversationMessage(role="assistant", content=summary, username="Summary", reply_message="", tools_used=[])],
             token_count=summary_tokens,
         )
         # Persist after compaction and reset warning flag
