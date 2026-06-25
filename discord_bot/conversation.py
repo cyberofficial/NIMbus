@@ -15,6 +15,7 @@ class ConversationMessage:
     content: str
     user_id: Optional[int] = None
     username: str = ""  # Display name for context
+    reply_message: str = ""  # Content of the bot message this user message is replying to
 
 
 @dataclass
@@ -138,11 +139,11 @@ class ConversationManager:
 
         Returns: {"status": "ok" | "auto_compact" | "needs_compaction" | "dropped"}
         """
-        return self.add_message_with_user(channel_id, role, content, None, "", auto_compact)
+        return self.add_message_with_user(channel_id, role, content, None, "", "", auto_compact)
 
     def add_message_with_user(
         self, channel_id: int, role: str, content: str,
-        user_id: Optional[int] = None, username: str = "",
+        user_id: Optional[int] = None, username: str = "", reply_message: str = "",
         auto_compact: bool = True
     ) -> dict:
         """
@@ -179,7 +180,7 @@ class ConversationManager:
                     session.token_count = 0
 
         msg = ConversationMessage(
-            role=role, content=content, user_id=user_id, username=username
+            role=role, content=content, user_id=user_id, username=username, reply_message=reply_message
         )
         session.messages.append(msg)
         session.token_count += msg_tokens
@@ -224,7 +225,7 @@ class ConversationManager:
         summary_tokens = self._count_tokens(summary)
         self._sessions[channel_id] = ConversationSession(
             channel_id=channel_id,
-            messages=[ConversationMessage(role="assistant", content=summary, username="Summary")],
+            messages=[ConversationMessage(role="assistant", content=summary, username="Summary", reply_message="")],
             token_count=summary_tokens,
         )
         # Persist after compaction and reset warning flag

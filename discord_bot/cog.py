@@ -186,8 +186,10 @@ class NimbusCog(commands.Cog):
                 start += last_space + 1
         return chunks
 
-    async def prefix_ask(self, channel: discord.TextChannel, user: discord.User, question: str):
+    async def prefix_ask(self, message: discord.Message, question: str):
         """Text-prefix version of ask: !!ask <question>."""
+        channel = message.channel
+        user = message.author
         if is_blocked := __import__("discord_bot.user_blocking", fromlist=["is_blocked"]).is_blocked:
             if is_blocked(user.id):
                 return
@@ -263,10 +265,13 @@ class NimbusCog(commands.Cog):
             content_out = full_text.strip() if full_text else "(No response)"
             if len(content_out) > 1900:
                 chunks = [content_out[i:i+1900] for i in range(0, len(content_out), 1900)]
-                for chunk in chunks:
-                    await channel.send(chunk)
+                for i, chunk in enumerate(chunks):
+                    if i == 0:
+                        await message.reply(chunk)
+                    else:
+                        await channel.send(chunk)
             else:
-                await channel.send(content_out)
+                await message.reply(content_out)
 
     async def prefix_compact(self, channel: discord.TextChannel, user: discord.User):
         """Text-prefix version of compact: !!compact."""

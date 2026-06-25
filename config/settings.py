@@ -362,6 +362,11 @@ class Settings(BaseSettings):
         channel_ids = self.discord_conversation_channel_ids
         category_ids = self.discord_conversation_category_ids
 
+        # Fallback to single category for backward compatibility
+        # (bot.py has the same fallback in its is_conversation_channel method)
+        if not category_ids and self.discord_conversation_category_id:
+            category_ids = {self.discord_conversation_category_id}
+
         # Check if in specific channels list
         in_channels = channel_id in channel_ids if channel_ids else False
 

@@ -296,10 +296,8 @@ class NimbusDiscordBot(commands.Bot):
             if not args:
                 await message.channel.send("Usage: `!!ask <your question>`")
                 return True
-            channel = message.channel
-            user = message.author
-            if hasattr(channel, "send") and hasattr(user, "display_name"):
-                await cog.prefix_ask(channel, user, args)  # type: ignore[arg-type]
+            if hasattr(message.channel, "send") and hasattr(message.author, "display_name"):
+                await cog.prefix_ask(message, args)
             return True
 
         if cmd == "compact" and self.settings.discord_cmd_prefix_compact:
@@ -330,11 +328,13 @@ class NimbusDiscordBot(commands.Bot):
         await self._send_prefix_help(message.channel)
         return True
 
-    async def _handle_conversation_message(self, channel, user, content, replied_message=None):
+    async def _handle_conversation_message(self, message: discord.Message, content: str, replied_message=None):
         """Handle a message in a conversation channel."""
         from api.models.anthropic import MessagesRequest, Message
         from providers.rate_limit import GlobalRateLimiter
         from api.request_utils import get_token_count
+        channel = message.channel
+        user = message.author
         # Check owner access for owner-only mode
         if self.settings.discord_owner_only and user.id != self.settings.discord_owner_id:
             return
@@ -504,10 +504,15 @@ class NimbusDiscordBot(commands.Bot):
         if len(content_out) > 1900:
             # Split into chunks of ~1900 chars and send multiple messages
             chunks = [content_out[i:i+1900] for i in range(0, len(content_out), 1900)]
-            for chunk in chunks:
-                await channel.send(chunk)
+            for i, chunk in enumerate(chunks):
+                if i == 0:
+                    # First chunk: reply to the user's message
+                    await message.reply(chunk)
+                else:
+                    # Subsequent chunks: send as follow-up in the same thread
+                    await channel.send(chunk)
         else:
-            await channel.send(content_out)
+            await message.reply(content_out)
 
     def _split_at_word_boundary(self, text: str, threshold: int) -> list[str]:
         """Split text at word boundaries, not mid-word."""
@@ -584,14 +589,35 @@ class NimbusDiscordBot(commands.Bot):
         # Unconditionally save every message in a conversation channel to history,
         # regardless of whether the bot will respond. This ensures all channel
         # conversations are persisted to .discord_data/conversations.json.
+        # Check if this is a reply to a bot message - if so, include the bot's message content
+        reply_message = ""
+        if message.reference and message.reference.message_id:
+            try:
+                replied_msg = await message.channel.fetch_message(message.reference.message_id)
+                # Check if the replied message is from the bot
+                if self.user and replied_msg.author.id == self.user.id:
+                    reply_message = replied_msg.content or ""
+            except Exception:
+                pass  # Failed to fetch replied message, continue without reply context
+
         self.conversation_manager.add_message_with_user(
             message.channel.id, "user", content, message.author.id, message.author.display_name,
-            auto_compact=self.settings.discord_auto_compact
+            reply_message=reply_message, auto_compact=self.settings.discord_auto_compact
         )
+
+        # Check if this is a reply to the bot's message
+        is_reply_to_bot = False
+        if message.reference and message.reference.message_id and self.user:
+            try:
+                replied_msg = await message.channel.fetch_message(message.reference.message_id)
+                if replied_msg.author.id == self.user.id:
+                    is_reply_to_bot = True
+            except Exception:
+                pass  # Failed to fetch, treat as not a reply to bot
 
         is_mention = self._is_bot_mentioned(message)
         has_prefix = content.startswith(self.settings.discord_command_prefix)
-        should_respond = is_mention or has_prefix or not self.settings.discord_require_mention
+        should_respond = is_mention or has_prefix or is_reply_to_bot or not self.settings.discord_require_mention
 
         # Leave @mention in content for full conversation context
         # (the bot tag shows who is being addressed)
@@ -620,13 +646,12 @@ class NimbusDiscordBot(commands.Bot):
         if should_respond:
             await self._queue_message(
                 message.channel.id,
-                message.channel,
-                message.author,
+                message,
                 content,
                 replied_message,
             )
 
-    async def _queue_message(self, channel_id: int, channel, user, content, replied_message=None):
+    async def _queue_message(self, channel_id: int, message: discord.Message, content: str, replied_message=None):
         """Queue a message for sequential processing in the channel."""
         session = self.conversation_manager.get_session(channel_id)
         if session is None:
@@ -637,10 +662,9 @@ class NimbusDiscordBot(commands.Bot):
                 session = ConversationSession(channel_id=channel_id)
                 self.conversation_manager._sessions[channel_id] = session
 
-        # Add message to queue
+        # Add message to queue (store full message object for reply support)
         await session.processing_queue.put({
-            'channel': channel,
-            'user': user,
+            'message': message,
             'content': content,
             'replied_message': replied_message,
         })
@@ -666,8 +690,7 @@ class NimbusDiscordBot(commands.Bot):
                     for attempt in range(max_retries):
                         try:
                             await self._handle_conversation_message(
-                                msg_data['channel'],
-                                msg_data['user'],
+                                msg_data['message'],
                                 msg_data['content'],
                                 msg_data.get('replied_message')
                             )
@@ -688,7 +711,7 @@ class NimbusDiscordBot(commands.Bot):
                                 )
                                 # Send error notification to the channel
                                 try:
-                                    await msg_data['channel'].send(
+                                    await msg_data['message'].channel.send(
                                         "⚠️ An error occurred while processing your message. "
                                         "Please try again."
                                     )
