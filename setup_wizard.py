@@ -707,6 +707,66 @@ def _run_section(
             "request_queue_num_workers": request_queue_num_workers,
         })
 
+    elif section == "request_queue":
+        # Request Queue Configuration (standalone update section)
+        print()
+        print("Step: Request Queue Configuration")
+        print("-" * 40)
+        print("  NIMbus can queue requests to respect NVIDIA NIM's")
+        print("  per-worker limit (32 concurrent requests max).")
+        print("  The queue prevents 'Worker local total request limit reached' errors.")
+        print()
+        request_queue_enabled = _prompt_yes_no(
+            "  Enable request queue?", default=True
+        )
+        request_queue_max_concurrent = 32
+        request_queue_max_size = 600
+        request_queue_timeout = 300.0
+        request_queue_num_workers = 4
+        if request_queue_enabled:
+            print()
+            print("  Max Concurrent: Maximum requests sent to NVIDIA simultaneously.")
+            print("  Must not exceed 32 (NVIDIA worker limit). Default: 32")
+            max_concurrent_str = _prompt("  Max concurrent requests", default="32")
+            try:
+                request_queue_max_concurrent = int(max_concurrent_str)
+                if request_queue_max_concurrent > 32:
+                    print("  Limiting to 32 (NVIDIA worker limit)")
+                    request_queue_max_concurrent = 32
+            except ValueError:
+                request_queue_max_concurrent = 32
+            print()
+            print("  Max Queue Size: Maximum requests waiting in queue before rejection.")
+            print("  Default: 600 (supports multiple concurrent sessions)")
+            max_queue_str = _prompt("  Max queue size", default="600")
+            try:
+                request_queue_max_size = int(max_queue_str)
+            except ValueError:
+                request_queue_max_size = 600
+            print()
+            print("  Queue Timeout: Max seconds a request waits in queue before timeout.")
+            print("  Default: 300s (5 minutes)")
+            timeout_str = _prompt("  Queue timeout (seconds)", default="300")
+            try:
+                request_queue_timeout = float(timeout_str)
+            except ValueError:
+                request_queue_timeout = 300.0
+            print()
+            print("  Worker Threads: Number of background workers processing the queue.")
+            print("  Default: 4")
+            workers_str = _prompt("  Number of worker threads", default="4")
+            try:
+                request_queue_num_workers = int(workers_str)
+            except ValueError:
+                request_queue_num_workers = 4
+        updates.update({
+            "request_queue_enabled": request_queue_enabled,
+            "request_queue_max_concurrent": request_queue_max_concurrent,
+            "request_queue_max_size": request_queue_max_size,
+            "request_queue_timeout": request_queue_timeout,
+            "request_queue_num_workers": request_queue_num_workers,
+        })
+
     elif section == "optimizations":
         # Step 6: Optimization Settings
         print()
