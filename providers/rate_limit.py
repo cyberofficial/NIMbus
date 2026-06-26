@@ -343,6 +343,24 @@ class GlobalRateLimiter:
                 f"{remaining} left"
             )
 
+        # Worker status bar (NVIDIA concurrent request slots)
+        worker_limit = self._worker_limit
+        worker_used = worker_limit - (self._worker_sem._value if hasattr(self._worker_sem, '_value') else 0)
+        worker_pct = (worker_used / worker_limit) * 100 if worker_limit > 0 else 0
+        w_filled = int((worker_used / worker_limit) * bar_width) if worker_limit > 0 else bar_width
+        w_empty = bar_width - w_filled
+        w_bar = "█" * w_filled + "░" * w_empty
+        if worker_pct >= 90:
+            w_emoji = "🔴"
+        elif worker_pct >= 70:
+            w_emoji = "🟡"
+        else:
+            w_emoji = "🟢"
+        logger.info(
+            f"{w_emoji} [Workers   ] [{w_bar}] {worker_used}/{worker_limit} ({worker_pct:.0f}%) | "
+            f"{worker_limit - worker_used} free"
+        )
+
     def set_blocked(self, seconds: float = 60) -> None:
         """
         Set global block for specified seconds (reactive).
