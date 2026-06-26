@@ -19,6 +19,7 @@ import httpx
 from loguru import logger
 from openai import (
     APIConnectionError,
+    APIError,
     APIStatusError,
     APITimeoutError,
     AsyncOpenAI,
@@ -205,6 +206,16 @@ def _is_retryable_server_error(e: Exception) -> bool:
     return False
 
 
+def _is_resource_exhausted_error(e: Exception) -> bool:
+    """Check if an error indicates NVIDIA worker limit exhaustion.
+
+    NVIDIA returns ResourceExhausted errors as APIError in 200 responses
+    (not HTTP status codes), so they bypass normal retry logic.
+    """
+    msg = str(e).lower()
+    return "resourceexhausted" in msg or "worker local total request limit" in msg
+
+
 def _rebuild_without_thinking(body: dict) -> dict:
     """Clone request body, removing thinking/reasoning parameters from extra_body."""
     new_body = dict(body)
@@ -250,7 +261,7 @@ def _save_model_override(model_name: str) -> None:
     if path.exists():
         try:
             overrides = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError, OSError:
+        except (json.JSONDecodeError, OSError):
             overrides = {}
 
     model_overrides = overrides.setdefault("model_overrides", {})
@@ -511,11 +522,12 @@ class NvidiaNimProvider(BaseProvider):
                 APITimeoutError,
                 InternalServerError,
                 APIStatusError,
+                APIError,
             ) as e:
                 # Check if it's a retryable 5xx error
                 is_retryable = isinstance(
                     e, (APIConnectionError, APITimeoutError)
-                ) or _is_retryable_server_error(e)
+                ) or _is_retryable_server_error(e) or _is_resource_exhausted_error(e)
                 last_error = e
                 detail = _format_error_detail(e)
                 exhaustion_msg = (
@@ -566,47 +578,50 @@ class NvidiaNimProvider(BaseProvider):
         """Execute the actual buffered request (shared by queued and non-queued paths)."""
         req_token = request_id_var.set(request_id)
         try:
-            try:
-                response = await self._client.chat.completions.create(
-                    **body,
-                    stream=False,
-                )
-            except (
-                BadRequestError,
-                UnprocessableEntityError,
-                APIStatusError,
-            ) as e:
-                if _is_role_error(e):
-                    model = body.get("model", "")
-                    logger.warning(
-                        "{}_BUFFERED: System role rejected by model ({}) - "
-                        "retrying with system→user conversion",
-                        tag,
-                        model,
-                    )
-                    _system_as_user_cache.add(model)
-                    _save_model_override(model)
-                    body = _rebuild_with_system_as_user(body)
+            # Acquire worker slot for the entire buffered request duration
+            # to respect NVIDIA NIM's per-worker concurrent request limit.
+            async with self._global_rate_limiter.worker_slot():
+                try:
                     response = await self._client.chat.completions.create(
                         **body,
                         stream=False,
                     )
-                elif _is_thinking_param_error(e):
-                    model = body.get("model", "")
-                    logger.warning(
-                        "{}_BUFFERED: Thinking parameters rejected by model ({}) - "
-                        "retrying without thinking parameters",
-                        tag,
-                        model,
-                    )
-                    mark_thinking_unsupported(model)
-                    body = _rebuild_without_thinking(body)
-                    response = await self._client.chat.completions.create(
-                        **body,
-                        stream=False,
-                    )
-                else:
-                    raise
+                except (
+                    BadRequestError,
+                    UnprocessableEntityError,
+                    APIStatusError,
+                ) as e:
+                    if _is_role_error(e):
+                        model = body.get("model", "")
+                        logger.warning(
+                            "{}_BUFFERED: System role rejected by model ({}) - "
+                            "retrying with system→user conversion",
+                            tag,
+                            model,
+                        )
+                        _system_as_user_cache.add(model)
+                        _save_model_override(model)
+                        body = _rebuild_with_system_as_user(body)
+                        response = await self._client.chat.completions.create(
+                            **body,
+                            stream=False,
+                        )
+                    elif _is_thinking_param_error(e):
+                        model = body.get("model", "")
+                        logger.warning(
+                            "{}_BUFFERED: Thinking parameters rejected by model ({}) - "
+                            "retrying without thinking parameters",
+                            tag,
+                            model,
+                        )
+                        mark_thinking_unsupported(model)
+                        body = _rebuild_without_thinking(body)
+                        response = await self._client.chat.completions.create(
+                            **body,
+                            stream=False,
+                        )
+                    else:
+                        raise
         finally:
             request_id_var.reset(req_token)
 
@@ -839,14 +854,26 @@ class NvidiaNimProvider(BaseProvider):
 
             # Use rate limiter's concurrency slot only if not already
             # inside a queue worker (which holds the queue's worker semaphore)
-            if use_rate_limiter_concurrency:
-                async with self._global_rate_limiter.concurrency_slot():
+            try:
+                if use_rate_limiter_concurrency:
+                    async with self._global_rate_limiter.concurrency_slot():
+                        async for event in self._do_stream_request(body, sse, think_parser, heuristic_parser, request, attempt, max_retries, req_tag, tag, request_id, finish_reason, usage_info, last_error_tag):
+                            yield event
+                else:
+                    # Queue already holds worker slot - just execute
                     async for event in self._do_stream_request(body, sse, think_parser, heuristic_parser, request, attempt, max_retries, req_tag, tag, request_id, finish_reason, usage_info, last_error_tag):
                         yield event
-            else:
-                # Queue already holds worker slot - just execute
-                async for event in self._do_stream_request(body, sse, think_parser, heuristic_parser, request, attempt, max_retries, req_tag, tag, request_id, finish_reason, usage_info, last_error_tag):
-                    yield event
+            except Exception as e:
+                # The exception from _do_stream_request triggers the outer retry loop
+                error_occurred = True
+                logger.warning(
+                    "{}_STREAM: Exception on attempt {}/{} - {}, retrying",
+                    tag,
+                    attempt + 1,
+                    max_retries if max_retries > 0 else "∞",
+                    type(e).__name__,
+                )
+                continue
 
             # If we got here without error, the stream completed cleanly - exit retry loop
             if not error_occurred:
@@ -959,197 +986,233 @@ class NvidiaNimProvider(BaseProvider):
 
         await self._global_rate_limiter.wait_if_blocked()
 
-        req_token = request_id_var.set(request_id)
-        try:
+        # Acquire worker slot for the entire stream lifecycle (POST + chunk iteration)
+        # to respect NVIDIA NIM's per-worker concurrent request limit.
+        # execute_with_retry is called with use_worker_slot=False since we
+        # hold the slot here for the entire duration.
+        async with self._global_rate_limiter.worker_slot():
+
+            req_token = request_id_var.set(request_id)
             try:
-                stream = await self._global_rate_limiter.execute_with_retry(
-                    self._client.chat.completions.create, **body, stream=True
-                )
+                try:
+                    stream = await self._global_rate_limiter.execute_with_retry(
+                        self._client.chat.completions.create, **body, stream=True,
+                        use_worker_slot=False,
+                    )
+                except (
+                    BadRequestError,
+                    UnprocessableEntityError,
+                    APIStatusError,
+                ) as e:
+                    if _is_role_error(e):
+                        model = body.get("model", "")
+                        logger.warning(
+                            "{}_STREAM: System role rejected by model ({}) - "
+                            "retrying with system→user conversion",
+                            tag,
+                            model,
+                        )
+                        _system_as_user_cache.add(model)
+                        _save_model_override(model)
+                        body = _rebuild_with_system_as_user(body)
+                        stream = await self._global_rate_limiter.execute_with_retry(
+                            self._client.chat.completions.create,
+                            **body,
+                            stream=True,
+                            use_worker_slot=False,
+                        )
+                    elif _is_thinking_param_error(e):
+                        model = body.get("model", "")
+                        logger.warning(
+                            "{}_STREAM: Thinking parameters rejected by model ({}) - "
+                            "retrying without thinking parameters",
+                            tag,
+                            model,
+                        )
+                        mark_thinking_unsupported(model)
+                        body = _rebuild_without_thinking(body)
+                        stream = await self._global_rate_limiter.execute_with_retry(
+                            self._client.chat.completions.create,
+                            **body,
+                            stream=True,
+                            use_worker_slot=False,
+                        )
+                    else:
+                        raise
+                finally:
+                    request_id_var.reset(req_token)
+
+                try:
+                    async for chunk in stream:
+                        if getattr(chunk, "usage", None):
+                            usage_info = chunk.usage
+
+                        if not chunk.choices:
+                            continue
+
+                        choice = chunk.choices[0]
+                        delta = choice.delta
+                        if delta is None:
+                            continue
+
+                        if choice.finish_reason:
+                            finish_reason = choice.finish_reason
+                            logger.debug("{} finish_reason: {}", tag, finish_reason)
+
+                        # Handle reasoning_content (OpenAI extended format)
+                        reasoning = getattr(delta, "reasoning_content", None)
+                        if reasoning:
+                            for event in sse.ensure_thinking_block():
+                                yield event
+                            yield sse.emit_thinking_delta(reasoning)
+
+                        # Handle text content
+                        if delta.content:
+                            for part in think_parser.feed(delta.content):
+                                if part.type == ContentType.THINKING:
+                                    for event in sse.ensure_thinking_block():
+                                        yield event
+                                    yield sse.emit_thinking_delta(part.content)
+                                else:
+                                    filtered_text, detected_tools = (
+                                        heuristic_parser.feed(part.content)
+                                    )
+
+                                    if filtered_text:
+                                        for event in sse.ensure_text_block():
+                                            yield event
+                                        yield sse.emit_text_delta(filtered_text)
+
+                                    for tool_use in detected_tools:
+                                        for event in sse.close_content_blocks():
+                                            yield event
+
+                                        block_idx = sse.blocks.allocate_index()
+                                        if tool_use.get(
+                                            "name"
+                                        ) == "Task" and isinstance(
+                                            tool_use.get("input"), dict
+                                        ):
+                                            tool_use["input"][
+                                                "run_in_background"
+                                            ] = False
+                                        yield sse.content_block_start(
+                                            block_idx,
+                                            "tool_use",
+                                            id=tool_use["id"],
+                                            name=tool_use["name"],
+                                        )
+                                        yield sse.content_block_delta(
+                                            block_idx,
+                                            "input_json_delta",
+                                            json.dumps(tool_use["input"]),
+                                        )
+                                        yield sse.content_block_stop(block_idx)
+
+                        # Handle native tool calls
+                        if delta.tool_calls:
+                            for event in sse.close_content_blocks():
+                                yield event
+                            for tc in delta.tool_calls:
+                                tc_info = {
+                                    "index": tc.index,
+                                    "id": tc.id,
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments,
+                                    },
+                                }
+                                for event in self._process_tool_call(tc_info, sse):
+                                    yield event
+
+                except APIStatusError as e:
+                    # Check for system role error during streaming (e.g., "System message must be at the beginning")
+                    if _is_role_error(e):
+                        model = body.get("model", "")
+                        logger.warning(
+                            "{}_STREAM: System role rejected by model ({}) during streaming - "
+                            "retrying with system→user conversion",
+                            tag,
+                            model,
+                        )
+                        _system_as_user_cache.add(model)
+                        _save_model_override(model)
+                        body = _rebuild_with_system_as_user(body)
+                        # Increment attempt and retry the whole request
+                        attempt += 1
+                        raise  # Will be caught by outer retry loop
+                    # Not a system role error, fall through to generic exception handler
+                    raise
+
             except (
-                BadRequestError,
-                UnprocessableEntityError,
+                APIConnectionError,
+                APITimeoutError,
+                httpx.ReadError,
+                InternalServerError,
                 APIStatusError,
+                httpx.HTTPStatusError,
+                APIError,
             ) as e:
-                if _is_role_error(e):
-                    model = body.get("model", "")
-                    logger.warning(
-                        "{}_STREAM: System role rejected by model ({}) - "
-                        "retrying with system→user conversion",
+                # Check if it's a retryable 5xx server error
+                is_retryable = isinstance(
+                    e, (APIConnectionError, APITimeoutError, httpx.ReadError)
+                ) or _is_retryable_server_error(e) or _is_resource_exhausted_error(e)
+                last_error_tag = f"{type(e).__name__}"
+                detail = _format_error_detail(e)
+                if is_retryable:
+                    if max_retries == 0 or attempt < max_retries:
+                        logger.warning(
+                            "{}_STREAM: {} on attempt {}/{} - retrying. {}",
+                            tag,
+                            type(e).__name__,
+                            attempt + 1,
+                            max_retries if max_retries > 0 else "∞",
+                            detail,
+                        )
+                        attempt += 1
+                        raise  # Will be caught by outer retry loop
+                    # All retries exhausted for retryable error
+                    logger.error(
+                        "{}_STREAM: {} exhausted after {} attempts: {}",
                         tag,
-                        model,
-                    )
-                    _system_as_user_cache.add(model)
-                    _save_model_override(model)
-                    body = _rebuild_with_system_as_user(body)
-                    stream = await self._global_rate_limiter.execute_with_retry(
-                        self._client.chat.completions.create,
-                        **body,
-                        stream=True,
-                    )
-                elif _is_thinking_param_error(e):
-                    model = body.get("model", "")
-                    logger.warning(
-                        "{}_STREAM: Thinking parameters rejected by model ({}) - "
-                        "retrying without thinking parameters",
-                        tag,
-                        model,
-                    )
-                    mark_thinking_unsupported(model)
-                    body = _rebuild_without_thinking(body)
-                    stream = await self._global_rate_limiter.execute_with_retry(
-                        self._client.chat.completions.create,
-                        **body,
-                        stream=True,
+                        type(e).__name__,
+                        attempt + 1,
+                        detail,
                     )
                 else:
-                    raise
-            finally:
-                request_id_var.reset(req_token)
-
-            try:
-                async for chunk in stream:
-                    if getattr(chunk, "usage", None):
-                        usage_info = chunk.usage
-
-                    if not chunk.choices:
-                        continue
-
-                    choice = chunk.choices[0]
-                    delta = choice.delta
-                    if delta is None:
-                        continue
-
-                    if choice.finish_reason:
-                        finish_reason = choice.finish_reason
-                        logger.debug("{} finish_reason: {}", tag, finish_reason)
-
-                    # Handle reasoning_content (OpenAI extended format)
-                    reasoning = getattr(delta, "reasoning_content", None)
-                    if reasoning:
-                        for event in sse.ensure_thinking_block():
-                            yield event
-                        yield sse.emit_thinking_delta(reasoning)
-
-                    # Handle text content
-                    if delta.content:
-                        for part in think_parser.feed(delta.content):
-                            if part.type == ContentType.THINKING:
-                                for event in sse.ensure_thinking_block():
-                                    yield event
-                                yield sse.emit_thinking_delta(part.content)
-                            else:
-                                filtered_text, detected_tools = (
-                                    heuristic_parser.feed(part.content)
-                                )
-
-                                if filtered_text:
-                                    for event in sse.ensure_text_block():
-                                        yield event
-                                    yield sse.emit_text_delta(filtered_text)
-
-                                for tool_use in detected_tools:
-                                    for event in sse.close_content_blocks():
-                                        yield event
-
-                                    block_idx = sse.blocks.allocate_index()
-                                    if tool_use.get(
-                                        "name"
-                                    ) == "Task" and isinstance(
-                                        tool_use.get("input"), dict
-                                    ):
-                                        tool_use["input"][
-                                            "run_in_background"
-                                        ] = False
-                                    yield sse.content_block_start(
-                                        block_idx,
-                                        "tool_use",
-                                        id=tool_use["id"],
-                                        name=tool_use["name"],
-                                    )
-                                    yield sse.content_block_delta(
-                                        block_idx,
-                                        "input_json_delta",
-                                        json.dumps(tool_use["input"]),
-                                    )
-                                    yield sse.content_block_stop(block_idx)
-
-                    # Handle native tool calls
-                    if delta.tool_calls:
-                        for event in sse.close_content_blocks():
-                            yield event
-                        for tc in delta.tool_calls:
-                            tc_info = {
-                                "index": tc.index,
-                                "id": tc.id,
-                                "function": {
-                                    "name": tc.function.name,
-                                    "arguments": tc.function.arguments,
-                                },
-                            }
-                            for event in self._process_tool_call(tc_info, sse):
-                                yield event
-
-            except APIStatusError as e:
-                # Check for system role error during streaming (e.g., "System message must be at the beginning")
-                if _is_role_error(e):
-                    model = body.get("model", "")
-                    logger.warning(
-                        "{}_STREAM: System role rejected by model ({}) during streaming - "
-                        "retrying with system→user conversion",
-                        tag,
-                        model,
-                    )
-                    _system_as_user_cache.add(model)
-                    _save_model_override(model)
-                    body = _rebuild_with_system_as_user(body)
-                    # Increment attempt and retry the whole request
-                    attempt += 1
-                    raise  # Will be caught by outer retry loop
-                # Not a system role error, fall through to generic exception handler
-                raise
-
-        except (
-            APIConnectionError,
-            APITimeoutError,
-            httpx.ReadError,
-            InternalServerError,
-            APIStatusError,
-            httpx.HTTPStatusError,
-        ) as e:
-            # Check if it's a retryable 5xx server error
-            is_retryable = isinstance(
-                e, (APIConnectionError, APITimeoutError, httpx.ReadError)
-            ) or _is_retryable_server_error(e)
-            last_error_tag = f"{type(e).__name__}"
-            detail = _format_error_detail(e)
-            if is_retryable:
-                if max_retries == 0 or attempt < max_retries:
-                    logger.warning(
-                        "{}_STREAM: {} on attempt {}/{} - retrying. {}",
+                    # Non-retryable error - raise immediately without counting as a retry attempt
+                    logger.error(
+                        "{}_STREAM: Non-retryable {} on attempt {}/{}: {}",
                         tag,
                         type(e).__name__,
                         attempt + 1,
                         max_retries if max_retries > 0 else "∞",
                         detail,
                     )
-                    attempt += 1
-                    raise  # Will be caught by outer retry loop
-                # All retries exhausted for retryable error
+                    mapped_e = map_error(e)
+                    error_occurred = True
+                    error_message = append_request_id(
+                        get_user_facing_error_message(
+                            mapped_e, read_timeout_s=self._config.http_read_timeout
+                        ),
+                        request_id,
+                    )
+                    logger.info(
+                        "{}_STREAM: Emitting SSE error event for {}{}",
+                        tag,
+                        type(e).__name__,
+                        req_tag,
+                    )
+                    for event in sse.close_content_blocks():
+                        yield event
+                    for event in sse.emit_error(error_message):
+                        yield event
+                    return
                 logger.error(
                     "{}_STREAM: {} exhausted after {} attempts: {}",
                     tag,
                     type(e).__name__,
                     attempt + 1,
-                    detail,
-                )
-            else:
-                # Non-retryable error - raise immediately without counting as a retry attempt
-                logger.error(
-                    "{}_STREAM: Non-retryable {} on attempt {}/{}: {}",
-                    tag,
-                    type(e).__name__,
-                    attempt + 1,
-                    max_retries if max_retries > 0 else "∞",
                     detail,
                 )
                 mapped_e = map_error(e)
@@ -1170,61 +1233,35 @@ class NvidiaNimProvider(BaseProvider):
                     yield event
                 for event in sse.emit_error(error_message):
                     yield event
-                return
-            logger.error(
-                "{}_STREAM: {} exhausted after {} attempts: {}",
-                tag,
-                type(e).__name__,
-                attempt + 1,
-                detail,
-            )
-            mapped_e = map_error(e)
-            error_occurred = True
-            error_message = append_request_id(
-                get_user_facing_error_message(
-                    mapped_e, read_timeout_s=self._config.http_read_timeout
-                ),
-                request_id,
-            )
-            logger.info(
-                "{}_STREAM: Emitting SSE error event for {}{}",
-                tag,
-                type(e).__name__,
-                req_tag,
-            )
-            for event in sse.close_content_blocks():
-                yield event
-            for event in sse.emit_error(error_message):
-                yield event
 
-        except Exception as e:
-            # Log exception details for debugging
-            logger.error(
-                "{}_EXCEPTION_DIAGNOSTIC: type={} bases={} error={}",
-                tag,
-                type(e).__name__,
-                type(e).__bases__,
-                e,
-            )
-            # Non-retryable errors (auth, rate limit, etc.) - surface immediately
-            logger.error(
-                "{}_ERROR:{} {}: {}", tag, req_tag, type(e).__name__, e
-            )
-            mapped_e = map_error(e)
-            error_occurred = True
-            error_message = append_request_id(
-                get_user_facing_error_message(
-                    mapped_e, read_timeout_s=self._config.http_read_timeout
-                ),
-                request_id,
-            )
-            logger.info(
-                "{}_STREAM: Emitting SSE error event for {}{}",
-                tag,
-                type(e).__name__,
-                req_tag,
-            )
-            for event in sse.close_content_blocks():
-                yield event
-            for event in sse.emit_error(error_message):
-                yield event
+            except Exception as e:
+                # Log exception details for debugging
+                logger.error(
+                    "{}_EXCEPTION_DIAGNOSTIC: type={} bases={} error={}",
+                    tag,
+                    type(e).__name__,
+                    type(e).__bases__,
+                    e,
+                )
+                # Non-retryable errors (auth, rate limit, etc.) - surface immediately
+                logger.error(
+                    "{}_ERROR:{} {}: {}", tag, req_tag, type(e).__name__, e
+                )
+                mapped_e = map_error(e)
+                error_occurred = True
+                error_message = append_request_id(
+                    get_user_facing_error_message(
+                        mapped_e, read_timeout_s=self._config.http_read_timeout
+                    ),
+                    request_id,
+                )
+                logger.info(
+                    "{}_STREAM: Emitting SSE error event for {}{}",
+                    tag,
+                    type(e).__name__,
+                    req_tag,
+                )
+                for event in sse.close_content_blocks():
+                    yield event
+                for event in sse.emit_error(error_message):
+                    yield event
