@@ -77,6 +77,7 @@ class QueuedRequest:
     timestamp: float
     coro_factory: Callable[[], Awaitable[Any]]
     future: asyncio.Future
+    processing_started: asyncio.Event = field(default_factory=asyncio.Event)
     priority_name: str = "NORMAL"
 
     def __lt__(self, other: "QueuedRequest") -> bool:
@@ -264,10 +265,37 @@ class RequestQueue:
             f"(queue depth: {self._queue.qsize()}/{self._max_queue_size})"
         )
 
-        # Wait for result with timeout
+        # Two-phase timeout:
+        #   Phase 1 – wait for the request to be picked up by a worker
+        #              (capped by queue_timeout). If a worker picks it up
+        #              before the timeout, the processing_started event fires.
+        #   Phase 2 – once processing has started, wait indefinitely for it
+        #              to finish (no timeout, since streaming + retries can
+        #              take much longer than queue_timeout).
         try:
-            result = await asyncio.wait_for(future, timeout=self._queue_timeout)
-            return result
+            # Phase 1: Queue-wait phase (with timeout)
+            done, pending = await asyncio.wait(
+                [
+                    asyncio.ensure_future(future),
+                    asyncio.ensure_future(request.processing_started.wait()),
+                ],
+                timeout=self._queue_timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+
+            # If the future completed during Phase 1, return immediately
+            if future.done():
+                return future.result()
+
+            # Phase 2: Processing phase (no timeout – let it take as long as needed)
+            logger.debug(
+                f"Request dequeued after {request.priority_name} priority wait, "
+                f"waiting for processing to complete..."
+            )
+            return await future
+
         except asyncio.TimeoutError:
             async with self._stats_lock:
                 self._stats.total_timeouts += 1
@@ -348,6 +376,9 @@ class RequestQueue:
 
     async def _process_request(self, request: QueuedRequest, worker_id: int) -> None:
         """Process a single queued request."""
+        # Signal that processing has started so enqueue's two-phase timeout
+        # can stop the queue-wait timer and proceed to indefinite processing wait.
+        request.processing_started.set()
         wait_time_ms = (time.monotonic() - request.timestamp) * 1000
         start_time = time.monotonic()
 
