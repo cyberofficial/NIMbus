@@ -13,6 +13,7 @@ from .exceptions import (
     RateLimitError,
 )
 from .provider import NVIDIA_NIM_BASE_URL, NvidiaNimProvider
+from .request_queue import QueueStats, RequestPriority, RequestQueue
 
 __all__ = [
     "APIError",
@@ -24,5 +25,8 @@ __all__ = [
     "OverloadedError",
     "ProviderConfig",
     "ProviderError",
+    "QueueStats",
+    "RequestPriority",
+    "RequestQueue",
     "RateLimitError",
 ]

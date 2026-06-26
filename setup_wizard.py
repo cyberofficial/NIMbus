@@ -183,6 +183,7 @@ def _select_update_sections() -> list[str]:
         ("proxy_key", "Proxy API Key"),
         ("models", "Models (Sonnet/Opus/Haiku)"),
         ("port_mode", "Server Port & Mode"),
+        ("request_queue", "Request Queue Configuration"),
         ("optimizations", "Optimization Settings"),
         ("mcp", "MCP Server Settings"),
         ("discord", "Discord Bot Settings"),
@@ -397,6 +398,12 @@ def _write_dotenv(path: Path, params: dict, is_linux: bool = False) -> None:
         f"PROVIDER_MAX_WAIT_TIME={params.get('provider_max_wait', 30)}",
         f"PROVIDER_RETRY_ON_TRUNCATION={params.get('provider_retry_on_truncation', 3)}",
         f"PROVIDER_RETRY_DELAY={params.get('provider_retry_delay', 1.0)}",
+        # Request Queue settings
+        f"REQUEST_QUEUE_ENABLED={str(params.get('request_queue_enabled', True)).lower()}",
+        f"REQUEST_QUEUE_MAX_CONCURRENT={params.get('request_queue_max_concurrent', 32)}",
+        f"REQUEST_QUEUE_MAX_SIZE={params.get('request_queue_max_size', 600)}",
+        f"REQUEST_QUEUE_TIMEOUT={params.get('request_queue_timeout', 300.0)}",
+        f"REQUEST_QUEUE_NUM_WORKERS={params.get('request_queue_num_workers', 4)}",
         f"ENABLE_RECAP_SKIP={params.get('enable_recap_skip', 'true')}",
         f"ENABLE_NETWORK_PROBE_MOCK={params.get('enable_network_probe_mock', 'true')}",
         f"ENABLE_TITLE_GENERATION_SKIP={params.get('enable_title_generation_skip', 'true')}",
@@ -637,10 +644,67 @@ def _run_section(
                 provider_retry_delay = float(delay_str)
             except ValueError:
                 provider_retry_delay = 1.0
+
+        # ---- Step 5b: Request Queue Settings ----
+        print()
+        print("Step 5b: Request Queue Configuration")
+        print("-" * 40)
+        print("  NIMbus can queue requests to respect NVIDIA NIM's")
+        print("  per-worker limit (32 concurrent requests max).")
+        print("  The queue prevents 'Worker local total request limit reached' errors.")
+        print()
+        request_queue_enabled = _prompt_yes_no(
+            "  Enable request queue?", default=True
+        )
+        request_queue_max_concurrent = 32
+        request_queue_max_size = 600
+        request_queue_timeout = 300.0
+        request_queue_num_workers = 4
+        if request_queue_enabled:
+            print()
+            print("  Max Concurrent: Maximum requests sent to NVIDIA simultaneously.")
+            print("  Must not exceed 32 (NVIDIA worker limit). Default: 32")
+            max_concurrent_str = _prompt("  Max concurrent requests", default="32")
+            try:
+                request_queue_max_concurrent = int(max_concurrent_str)
+                if request_queue_max_concurrent > 32:
+                    print("  Limiting to 32 (NVIDIA worker limit)")
+                    request_queue_max_concurrent = 32
+            except ValueError:
+                request_queue_max_concurrent = 32
+            print()
+            print("  Max Queue Size: Maximum requests waiting in queue before rejection.")
+            print("  Default: 600 (supports multiple concurrent sessions)")
+            max_queue_str = _prompt("  Max queue size", default="600")
+            try:
+                request_queue_max_size = int(max_queue_str)
+            except ValueError:
+                request_queue_max_size = 600
+            print()
+            print("  Queue Timeout: Max seconds a request waits in queue before timeout.")
+            print("  Default: 300s (5 minutes)")
+            timeout_str = _prompt("  Queue timeout (seconds)", default="300")
+            try:
+                request_queue_timeout = float(timeout_str)
+            except ValueError:
+                request_queue_timeout = 300.0
+            print()
+            print("  Worker Threads: Number of background workers processing the queue.")
+            print("  Default: 4")
+            workers_str = _prompt("  Number of worker threads", default="4")
+            try:
+                request_queue_num_workers = int(workers_str)
+            except ValueError:
+                request_queue_num_workers = 4
         updates.update({
             "provider_max_wait": provider_max_wait,
             "provider_retry_on_truncation": provider_retry_on_truncation,
             "provider_retry_delay": provider_retry_delay,
+            "request_queue_enabled": request_queue_enabled,
+            "request_queue_max_concurrent": request_queue_max_concurrent,
+            "request_queue_max_size": request_queue_max_size,
+            "request_queue_timeout": request_queue_timeout,
+            "request_queue_num_workers": request_queue_num_workers,
         })
 
     elif section == "optimizations":
@@ -1459,6 +1523,12 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                     "provider_max_wait": float(merged.get("PROVIDER_MAX_WAIT_TIME", 30)),
                     "provider_retry_on_truncation": int(merged.get("PROVIDER_RETRY_ON_TRUNCATION", 3)),
                     "provider_retry_delay": float(merged.get("PROVIDER_RETRY_DELAY", 1.0)),
+                    # Request Queue settings
+                    "request_queue_enabled": updates.get("request_queue_enabled", merged.get("REQUEST_QUEUE_ENABLED", "true") == "true"),
+                    "request_queue_max_concurrent": updates.get("request_queue_max_concurrent", int(merged.get("REQUEST_QUEUE_MAX_CONCURRENT", 32))),
+                    "request_queue_max_size": updates.get("request_queue_max_size", int(merged.get("REQUEST_QUEUE_MAX_SIZE", 600))),
+                    "request_queue_timeout": updates.get("request_queue_timeout", float(merged.get("REQUEST_QUEUE_TIMEOUT", 300.0))),
+                    "request_queue_num_workers": updates.get("request_queue_num_workers", int(merged.get("REQUEST_QUEUE_NUM_WORKERS", 4))),
                     "enable_recap_skip": merged.get("ENABLE_RECAP_SKIP", "true"),
                     "enable_network_probe_mock": merged.get("ENABLE_NETWORK_PROBE_MOCK", "true"),
                     "enable_title_generation_skip": merged.get("ENABLE_TITLE_GENERATION_SKIP", "true"),
@@ -1700,6 +1770,58 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 provider_retry_delay = float(delay_str)
             except ValueError:
                 provider_retry_delay = 1.0
+
+        # ---- Step 5b: Request Queue Settings ----
+        print()
+        print("Step 5b: Request Queue Configuration")
+        print("-" * 40)
+        print("  NIMbus can queue requests to respect NVIDIA NIM's")
+        print("  per-worker limit (32 concurrent requests max).")
+        print("  The queue prevents 'Worker local total request limit reached' errors.")
+        print()
+        request_queue_enabled = _prompt_yes_no(
+            "  Enable request queue?", default=True
+        )
+        request_queue_max_concurrent = 32
+        request_queue_max_size = 600
+        request_queue_timeout = 300.0
+        request_queue_num_workers = 4
+        if request_queue_enabled:
+            print()
+            print("  Max Concurrent: Maximum requests sent to NVIDIA simultaneously.")
+            print("  Must not exceed 32 (NVIDIA worker limit). Default: 32")
+            max_concurrent_str = _prompt("  Max concurrent requests", default="32")
+            try:
+                request_queue_max_concurrent = int(max_concurrent_str)
+                if request_queue_max_concurrent > 32:
+                    print("  Limiting to 32 (NVIDIA worker limit)")
+                    request_queue_max_concurrent = 32
+            except ValueError:
+                request_queue_max_concurrent = 32
+            print()
+            print("  Max Queue Size: Maximum requests waiting in queue before rejection.")
+            print("  Default: 600 (supports multiple concurrent sessions)")
+            max_queue_str = _prompt("  Max queue size", default="600")
+            try:
+                request_queue_max_size = int(max_queue_str)
+            except ValueError:
+                request_queue_max_size = 600
+            print()
+            print("  Queue Timeout: Max seconds a request waits in queue before timeout.")
+            print("  Default: 300s (5 minutes)")
+            timeout_str = _prompt("  Queue timeout (seconds)", default="300")
+            try:
+                request_queue_timeout = float(timeout_str)
+            except ValueError:
+                request_queue_timeout = 300.0
+            print()
+            print("  Worker Threads: Number of background workers processing the queue.")
+            print("  Default: 4")
+            workers_str = _prompt("  Number of worker threads", default="4")
+            try:
+                request_queue_num_workers = int(workers_str)
+            except ValueError:
+                request_queue_num_workers = 4
 
         # ---- Step 6: Optimization Settings ----
         print()
@@ -2022,6 +2144,12 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 "provider_max_wait": provider_max_wait,
                 "provider_retry_on_truncation": provider_retry_on_truncation,
                 "provider_retry_delay": provider_retry_delay,
+                # Request Queue settings
+                "request_queue_enabled": request_queue_enabled,
+                "request_queue_max_concurrent": request_queue_max_concurrent,
+                "request_queue_max_size": request_queue_max_size,
+                "request_queue_timeout": request_queue_timeout,
+                "request_queue_num_workers": request_queue_num_workers,
                 "enable_recap_skip": enable_recap_skip,
                 "enable_network_probe_mock": enable_network_probe_mock,
                 "enable_title_generation_skip": enable_title_generation_skip,

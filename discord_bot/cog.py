@@ -12,6 +12,7 @@ from loguru import logger
 
 from api.models.anthropic import MessagesRequest, Message
 from providers.rate_limit import GlobalRateLimiter
+from providers.request_queue import RequestPriority
 from providers.text import extract_text_from_content
 from discord.permissions import Permissions
 
@@ -124,7 +125,7 @@ class NimbusCog(commands.Cog):
                 # Call stream_response directly - it's an async generator
                 # execute_with_retry doesn't work with generators
                 stream = self.provider.stream_response(
-                    request_data, input_tokens, request_id=request_id
+                    request_data, input_tokens, request_id=request_id, priority=RequestPriority.HIGH
                 )
 
                 # Collect full response (Discord doesn't support true streaming)
@@ -239,7 +240,9 @@ class NimbusCog(commands.Cog):
                     try:
                         import uuid
                         request_id = f"discord_prefix_{uuid.uuid4().hex[:8]}"
-                        stream = self.provider.stream_response(request_data, input_tokens, request_id=request_id)
+                        stream = self.provider.stream_response(
+                            request_data, input_tokens, request_id=request_id, priority=RequestPriority.HIGH
+                        )
                         async for chunk in stream:
                             if chunk.strip():
                                 try:
@@ -525,7 +528,7 @@ class NimbusCog(commands.Cog):
                 request_id = f"compact_{uuid.uuid4().hex[:8]}"
                 # Call directly - stream_response is an async generator
                 stream = self.provider.stream_response(
-                    summary_request, input_tokens, request_id=request_id
+                    summary_request, input_tokens, request_id=request_id, priority=RequestPriority.HIGH
                 )
 
                 async for chunk in stream:
@@ -680,7 +683,7 @@ class NimbusCog(commands.Cog):
             try:
                 request_id = f"compact_{uuid.uuid4().hex[:8]}"
                 stream = self.provider.stream_response(
-                    summary_request, input_tokens, request_id=request_id
+                    summary_request, input_tokens, request_id=request_id, priority=RequestPriority.HIGH
                 )
 
                 async for chunk in stream:
@@ -765,7 +768,7 @@ class NimbusCog(commands.Cog):
             try:
                 request_id = f"compact_{uuid.uuid4().hex[:8]}"
                 stream = self.provider.stream_response(
-                    summary_request, input_tokens, request_id=request_id
+                    summary_request, input_tokens, request_id=request_id, priority=RequestPriority.HIGH
                 )
 
                 async for chunk in stream:

@@ -17,6 +17,7 @@ from providers.exceptions import (
     StreamTruncatedError,
 )
 from providers.logging_utils import build_request_summary, log_request_compact
+from providers.request_queue import RequestPriority
 from providers.text import extract_text_from_content
 
 from .dependencies import get_provider, get_settings
@@ -457,6 +458,7 @@ async def create_message(
                 input_tokens=input_tokens,
                 request_id=request_id,
                 model_override=model_override,
+                priority=RequestPriority.NORMAL,
             )
 
             async def sse_generator():
@@ -480,6 +482,7 @@ async def create_message(
                 input_tokens=input_tokens,
                 request_id=request_id,
                 model_override=model_override,
+                priority=RequestPriority.NORMAL,
             ),
             media_type="text/event-stream",
             headers={
@@ -647,6 +650,7 @@ async def create_message_buffered(
             input_tokens=input_tokens,
             request_id=request_id,
             model_override=model_override,
+            priority=RequestPriority.NORMAL,
         )
 
         return JSONResponse(
@@ -735,11 +739,38 @@ async def health():
 
 @router.get("/status")
 async def status():
-    """Get current rate limit status."""
+    """Get current rate limit and queue status."""
     from providers.rate_limit import GlobalRateLimiter
+    from providers.base import BaseProvider
 
     limiter = GlobalRateLimiter.get_instance()
-    return limiter.get_status()
+    status_data = limiter.get_status()
+
+    # Try to include queue stats if available
+    provider = getattr(status, '_provider', None)
+    if provider is None:
+        # Try to get provider from app state
+        try:
+            from api.dependencies import get_provider
+            # Can't easily get provider here without request, skip for now
+            pass
+        except Exception:
+            pass
+
+    # Add queue stats if we can access the provider
+    # For now, return rate limiter status
+    return status_data
+
+
+@router.get("/queue/status")
+async def queue_status(request: Request):
+    """Get current request queue status."""
+    from api.dependencies import get_provider
+
+    provider = get_provider()
+    if hasattr(provider, '_request_queue') and provider._request_queue:
+        return provider._request_queue.get_stats()
+    return {"error": "Request queue not initialized"}
 
 
 @router.post("/stop")

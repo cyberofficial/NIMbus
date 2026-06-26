@@ -12,6 +12,7 @@ from loguru import logger
 
 from config.settings import Settings
 from providers.provider import NvidiaNimProvider
+from providers.request_queue import RequestPriority
 
 from .cog import NimbusCog
 from .conversation import ConversationManager
@@ -490,7 +491,7 @@ class NimbusDiscordBot(commands.Bot):
                 try:
                     async with global_limiter.concurrency_slot():
                         stream = self.provider.stream_response(
-                            current_request, current_input_tokens, request_id=request_id
+                            current_request, current_input_tokens, request_id=request_id, priority=RequestPriority.HIGH
                         )
 
                         # Track tool calls in this stream

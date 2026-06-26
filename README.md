@@ -248,6 +248,46 @@ Claude Code ──── JSON response ──── NIMbus ──── (wait + 
 
 > **Note:** NVIDIA's free tier occasionally drops connections mid-response. Stream mode will produce a partial answer; buffer mode will retry up to `PROVIDER_RETRY_ON_TRUNCATION` times to get a complete response.
 
+### Request Queue (New in v2.1)
+
+NIMbus includes a built-in request queue to prevent `Worker local total request limit reached (33/32)` errors from NVIDIA NIM. Each NVIDIA NIM worker has a hard limit of 32 concurrent requests. When multiple sessions send requests simultaneously, the queue serializes them while respecting priority.
+
+**How it works:**
+- Requests are queued FIFO within their priority lane
+- A worker pool (semaphore) limits concurrent in-flight requests to `REQUEST_QUEUE_MAX_CONCURRENT` (default 32)
+- Background workers pull from the queue when slots are available
+- If the queue is full, new requests receive a 503 error with retry guidance
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `REQUEST_QUEUE_ENABLED` | Enable the request queue | `true` |
+| `REQUEST_QUEUE_MAX_CONCURRENT` | Max concurrent requests to NVIDIA (must be ≤ 32) | `32` |
+| `REQUEST_QUEUE_MAX_SIZE` | Max requests waiting in queue | `600` |
+| `REQUEST_QUEUE_TIMEOUT` | Max seconds a request waits in queue before timeout | `300.0` |
+| `REQUEST_QUEUE_NUM_WORKERS` | Background worker threads processing the queue | `4` |
+| `REQUEST_QUEUE_DISCORD_PRIORITY` | Priority for Discord bot (2=HIGH, 1=NORMAL, 0=LOW) | `2` |
+| `REQUEST_QUEUE_API_PRIORITY` | Priority for API proxy requests (2=HIGH, 1=NORMAL, 0=LOW) | `1` |
+
+**Priority Lanes:**
+- **HIGH (2)**: Discord bot - interactive chat, gets processed first
+- **NORMAL (1)**: API proxy - buffered/streaming endpoints  
+- **LOW (0)**: Background tasks - future use
+
+**Observability:**
+- `GET /queue/status` - Returns queue stats (depth, wait times, rejections, worker usage)
+- `GET /status` - Includes `worker_limit` and `worker_available` from rate limiter
+- Logs show queue depth and wait times at DEBUG level
+
+**When to tune:**
+| Scenario | Adjustment |
+| --- | --- |
+| Many concurrent Discord users | Increase `REQUEST_QUEUE_MAX_SIZE` (e.g., 1000) |
+| Fewer NVIDIA workers available | Decrease `REQUEST_QUEUE_MAX_CONCURRENT` (e.g., 16) |
+| Queue timeouts under burst load | Increase `REQUEST_QUEUE_TIMEOUT` |
+| Need more throughput | Increase `REQUEST_QUEUE_NUM_WORKERS` |
+
+**Rollback:** Set `REQUEST_QUEUE_ENABLED=false` to bypass the queue entirely - falls back to the existing rate limiter and retry logic.
+
 ### Optimization Settings
 
 These settings speed up Claude Code by mocking/skipping unnecessary requests. The handlers run in this order at every request  -  first non-`None` result wins:

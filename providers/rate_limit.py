@@ -3,6 +3,9 @@
 When a 429 is encountered, this limiter progressively reduces the effective
 RPM rate limit and, once a floor is reached, starts introducing per-request
 hold delays.  The adaptive state can be reset via <nimrpm:reset>.
+
+Also provides worker-aware concurrency control to respect NVIDIA NIM's
+per-worker request limit (default 32 concurrent requests per worker).
 """
 
 import asyncio
@@ -55,6 +58,8 @@ class GlobalRateLimiter:
         rate_limit: int = 40,
         rate_window: float = 60.0,
         max_concurrency: int = 5,
+        # Worker-aware concurrency (NVIDIA NIM worker limit)
+        worker_limit: int = 32,
         # Adaptive backoff parameters
         rpm_drop: int = 10,
         rpm_min: int = 20,
@@ -70,6 +75,8 @@ class GlobalRateLimiter:
             raise ValueError("rate_window must be > 0")
         if max_concurrency <= 0:
             raise ValueError("max_concurrency must be > 0")
+        if worker_limit <= 0:
+            raise ValueError("worker_limit must be > 0")
 
         # ---- Static config ----
         self._rate_window = float(rate_window)
@@ -89,6 +96,11 @@ class GlobalRateLimiter:
         self._blocked_until: float = 0
         self._lock = asyncio.Lock()
         self._concurrency_sem = asyncio.Semaphore(max_concurrency)
+
+        # ---- Worker-aware concurrency ----
+        self._worker_limit = worker_limit
+        self._worker_sem = asyncio.Semaphore(worker_limit)
+
         self._initialized = True
 
         logger.info(
@@ -96,7 +108,7 @@ class GlobalRateLimiter:
             f"(initial={rate_limit} rpm, window={rate_window}s, "
             f"drop={rpm_drop}, min={rpm_min}, "
             f"hold_initial={hold_initial}s, hold_max={hold_max}s, "
-            f"max_concurrency={max_concurrency})"
+            f"max_concurrency={max_concurrency}, worker_limit={worker_limit})"
         )
 
     # ------------------------------------------------------------------
@@ -109,6 +121,7 @@ class GlobalRateLimiter:
         rate_limit: int | None = None,
         rate_window: float | None = None,
         max_concurrency: int = 5,
+        worker_limit: int = 32,
         rpm_drop: int | None = None,
         rpm_min: int | None = None,
         hold_initial: float | None = None,
@@ -120,6 +133,7 @@ class GlobalRateLimiter:
             rate_limit: Requests per window (only used on first creation)
             rate_window: Window in seconds (only used on first creation)
             max_concurrency: Max simultaneous open streams
+            worker_limit: Max concurrent requests per NVIDIA NIM worker
             rpm_drop: RPM reduction per 429 hit
             rpm_min: Floor RPM before hold delays activate
             hold_initial: First hold delay in seconds
@@ -130,6 +144,7 @@ class GlobalRateLimiter:
                 rate_limit=rate_limit or 40,
                 rate_window=rate_window or 60.0,
                 max_concurrency=max_concurrency,
+                worker_limit=worker_limit,
                 rpm_drop=rpm_drop or 10,
                 rpm_min=rpm_min or 20,
                 hold_initial=hold_initial or 5.0,
@@ -184,6 +199,33 @@ class GlobalRateLimiter:
     @property
     def hold_delay(self) -> float:
         return self._hold_delay
+
+    # ---- Worker-aware concurrency ----
+
+    @property
+    def worker_limit(self) -> int:
+        return self._worker_limit
+
+    @asynccontextmanager
+    async def worker_slot(self) -> AsyncIterator[None]:
+        """Acquire a worker slot for NVIDIA NIM worker concurrency control.
+
+        This limits concurrent requests to the NVIDIA worker limit (default 32)
+        to avoid "Worker local total request limit reached" errors.
+        """
+        await self._worker_sem.acquire()
+        try:
+            yield
+        finally:
+            self._worker_sem.release()
+
+    async def acquire_worker_slot(self) -> None:
+        """Acquire a worker slot (use with try/finally release)."""
+        await self._worker_sem.acquire()
+
+    def release_worker_slot(self) -> None:
+        """Release a worker slot."""
+        self._worker_sem.release()
 
     def reset_adaptive_backoff(self) -> None:
         """Restore initial RPM and clear hold delay."""
@@ -324,7 +366,8 @@ class GlobalRateLimiter:
 
         Returns:
             Dict with keys: current, max, remaining, reset_in_seconds,
-            is_blocked, effective_rpm, hold_delay, drop_count
+            is_blocked, effective_rpm, hold_delay, drop_count,
+            worker_limit, worker_available
         """
         now = time.monotonic()
         cutoff = now - self._rate_window
@@ -342,6 +385,9 @@ class GlobalRateLimiter:
             oldest = self._request_times[0]
             reset_in = max(0.0, (oldest + self._rate_window) - now)
 
+        # Worker slot availability
+        worker_available = self._worker_sem._value if hasattr(self._worker_sem, '_value') else self._worker_limit
+
         return {
             "current": current,
             "max": self._effective_rpm,
@@ -353,6 +399,8 @@ class GlobalRateLimiter:
             "effective_rpm": self._effective_rpm,
             "hold_delay": self._hold_delay,
             "drop_count": self._drop_count,
+            "worker_limit": self._worker_limit,
+            "worker_available": worker_available,
         }
 
     def update_limits(
@@ -441,6 +489,7 @@ class GlobalRateLimiter:
         base_delay: float = 2.0,
         max_delay: float = 60.0,
         jitter: float = 1.0,
+        use_worker_slot: bool = True,
         **kwargs: Any,
     ) -> Any:
         """Execute an async callable with rate limiting and retry on 429.
@@ -455,6 +504,7 @@ class GlobalRateLimiter:
             base_delay: Base delay in seconds for exponential backoff.
             max_delay: Maximum delay cap in seconds.
             jitter: Maximum random jitter in seconds added to each delay.
+            use_worker_slot: Whether to acquire a worker slot (default True).
 
         Returns:
             The result of the callable.
@@ -467,27 +517,34 @@ class GlobalRateLimiter:
         for attempt in range(1 + max_retries):
             await self.wait_if_blocked()
 
-            try:
-                return await fn(*args, **kwargs)
-            except openai.RateLimitError as e:
-                last_exc = e
-                # Fire adaptive backoff
-                self.on_rate_limit_hit()
+            # Acquire worker slot for the actual API call
+            async with self.worker_slot() if use_worker_slot else self._noop_context():
+                try:
+                    return await fn(*args, **kwargs)
+                except openai.RateLimitError as e:
+                    last_exc = e
+                    # Fire adaptive backoff
+                    self.on_rate_limit_hit()
 
-                if attempt >= max_retries:
+                    if attempt >= max_retries:
+                        logger.warning(
+                            f"Rate limit retry exhausted after {max_retries} retries"
+                        )
+                        break
+
+                    delay = min(base_delay * (2**attempt), max_delay)
+                    delay += random.uniform(0, jitter)
                     logger.warning(
-                        f"Rate limit retry exhausted after {max_retries} retries"
+                        f"Rate limited (429), attempt {attempt + 1}/{max_retries + 1}. "
+                        f"Retrying in {delay:.1f}s..."
                     )
-                    break
-
-                delay = min(base_delay * (2**attempt), max_delay)
-                delay += random.uniform(0, jitter)
-                logger.warning(
-                    f"Rate limited (429), attempt {attempt + 1}/{max_retries + 1}. "
-                    f"Retrying in {delay:.1f}s..."
-                )
-                self.set_blocked(delay)
-                await asyncio.sleep(delay)
+                    self.set_blocked(delay)
+                    await asyncio.sleep(delay)
 
         assert last_exc is not None
         raise last_exc
+
+    @asynccontextmanager
+    async def _noop_context(self) -> AsyncIterator[None]:
+        """No-op context manager for when worker slot is disabled."""
+        yield

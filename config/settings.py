@@ -56,6 +56,29 @@ class Settings(BaseSettings):
         default=5, validation_alias="PROVIDER_MAX_CONCURRENCY"
     )
 
+    # ==================== Request Queue ====================
+    request_queue_enabled: bool = Field(
+        default=True, validation_alias="REQUEST_QUEUE_ENABLED"
+    )
+    request_queue_max_concurrent: int = Field(
+        default=32, ge=1, validation_alias="REQUEST_QUEUE_MAX_CONCURRENT"
+    )
+    request_queue_max_size: int = Field(
+        default=600, ge=0, validation_alias="REQUEST_QUEUE_MAX_SIZE"
+    )
+    request_queue_timeout: float = Field(
+        default=300.0, ge=1.0, validation_alias="REQUEST_QUEUE_TIMEOUT"
+    )
+    request_queue_num_workers: int = Field(
+        default=4, ge=1, validation_alias="REQUEST_QUEUE_NUM_WORKERS"
+    )
+    request_queue_discord_priority: int = Field(
+        default=2, ge=0, le=2, validation_alias="REQUEST_QUEUE_DISCORD_PRIORITY"
+    )
+    request_queue_api_priority: int = Field(
+        default=1, ge=0, le=2, validation_alias="REQUEST_QUEUE_API_PRIORITY"
+    )
+
     # ==================== Server Type ====================
     server_type: str = Field(default="stream", validation_alias="SERVER_TYPE")
     provider_max_wait_time: float = Field(
