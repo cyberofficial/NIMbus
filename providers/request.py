@@ -83,6 +83,7 @@ def build_request_body(
                 "enable_thinking": True,
                 "reasoning_split": True,
                 "clear_thinking": False,
+                "force_nonempty_content": True,  # Required for tool calling (Nemotron 3)
             },
         )
 

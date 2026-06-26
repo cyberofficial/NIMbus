@@ -192,6 +192,9 @@ Both the bot token and a configured guild ID must be present (and `DISCORD_ENABL
 | `DISCORD_CMD_PREFIX_COMPACT` | Enable the `!!compact` prefix command | `true` |
 | `DISCORD_CMD_PREFIX_NEW` | Enable the `!!new` prefix command | `true` |
 | `DISCORD_CMD_PREFIX_STATUS` | Enable the `!!status` prefix command | `true` |
+| `DISCORD_ENABLE_WEB_SEARCH` | Enable web search/fetch for the Discord bot | `true` |
+| `DISCORD_WEB_SEARCH_MAX_RESULTS` | Max search results per query | `5` |
+| `DISCORD_WEB_SEARCH_MAX_ITERATIONS` | Max tool call iterations per response | `10` |
 
 ### Stream vs Buffer Modes
 
@@ -488,6 +491,7 @@ The bot also responds to every message in conversation channels (when `DISCORD_R
 - **Message splitting**: Automatically splits long responses for Discord's 2000 char limit
 - **Command toggles**: Disable individual slash commands via `DISCORD_CMD_*` settings; disable individual prefix commands via `DISCORD_CMD_PREFIX_*` settings
 - **Setup wizard**: `nimbus.exe --init` walks through every Discord setting interactively
+- **Web Search Integration**: The Bot can search the web and fetch pages using DuckDuckGo. When enabled (default), the model automatically detects when a search is needed (e.g., "what's the latest version of...", "search for...") and performs searches, fetches pages, and cross-references sources until confident. Results are incorporated into the final answer with a disclaimer: `-# This response used online resources, please make sure to verify the information`. Search activity is logged to console (`[WEB SEARCH] tool=web_search input="..." | result_len=...`). Configure with `DISCORD_ENABLE_WEB_SEARCH=true`, `DISCORD_WEB_SEARCH_MAX_RESULTS=5`, `DISCORD_WEB_SEARCH_MAX_ITERATIONS=10`.
 
 ## MCP Server Mode (Web Search Tools)
 

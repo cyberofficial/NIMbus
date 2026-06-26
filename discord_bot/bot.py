@@ -18,6 +18,9 @@ from .conversation import ConversationManager
 from .rate_limit import DiscordRateLimiter
 from .tools import WEB_SEARCH_TOOLS, execute_fetch_page, execute_web_search
 
+# Debug flag for verbose web search logging
+WEB_SEARCH_DEBUG = os.getenv("WEB_SEARCH_DEBUG", "false").lower() == "true"
+
 
 class NimbusDiscordBot(commands.Bot):
     """Discord bot for NIMbus - NVIDIA NIM proxy."""
@@ -332,12 +335,17 @@ class NimbusDiscordBot(commands.Bot):
         return True
 
     async def _handle_conversation_message(self, message: discord.Message, content: str, replied_message=None):
-        """Handle a message in a conversation channel."""
+        """Handle a message in a conversation channel with optional web search."""
         from api.models.anthropic import MessagesRequest, Message
         from providers.rate_limit import GlobalRateLimiter
         from api.request_utils import get_token_count
         channel = message.channel
         user = message.author
+
+        # Extract model early and validate (used throughout this method)
+        discord_model = self._discord_model
+        if discord_model is None:
+            return
         # Check owner access for owner-only mode
         if self.settings.discord_owner_only and user.id != self.settings.discord_owner_id:
             return
@@ -375,7 +383,7 @@ class NimbusDiscordBot(commands.Bot):
                     "*Tip: Run `/compact` manually to backup chat history to your DMs first.*"
                 )
                 cog = self.get_cog('NimbusCog')
-                if isinstance(cog, NimbusCog):
+                if isinstance(cog, NimbusCog) and isinstance(channel, discord.TextChannel):
                     await cog._do_compact_for_channel(channel)
 
         # Format message with username and user ID for context
@@ -396,14 +404,14 @@ class NimbusDiscordBot(commands.Bot):
         # Check if web search is enabled
         web_search_enabled = (
             getattr(self.settings, 'discord_enable_web_search', True)
-            and self._discord_model is not None
+            and discord_model is not None
         )
 
         # Build initial request with system prompt and optional web search tools
         messages = history + [{"role": "user", "content": formatted_content}]
         system_prompt = self.settings.discord_system_prompt
         request_data = MessagesRequest(
-            model=self._discord_model,
+            model=discord_model,
             messages=[Message(role=m["role"], content=m["content"]) for m in messages],
             max_tokens=self.settings.discord_max_tokens,
             system=system_prompt,
@@ -416,8 +424,9 @@ class NimbusDiscordBot(commands.Bot):
         )
 
         # Log request
+        channel_name = getattr(channel, 'name', 'DM')
         print(
-            f"[DISCORD-LIVE] {user.display_name} ({user.id}) in #{channel.name}: "
+            f"[DISCORD-LIVE] {user.display_name} ({user.id}) in #{channel_name}: "
             f"{content[:50]}{'...' if len(content) > 50 else ''}",
             flush=True
         )
@@ -589,13 +598,14 @@ class NimbusDiscordBot(commands.Bot):
                         })
 
                 # Build next request with tool results
-                new_messages = current_request.messages + [
-                    {"role": "assistant", "content": [{"type": "tool_use", **t} for t in tool_results]}
+                assistant_content = [{"type": "tool_use", **t} for t in tool_results]
+                new_messages = list(current_request.messages) + [
+                    {"role": "assistant", "content": assistant_content}
                 ] + tool_result_messages
 
                 current_request = MessagesRequest(
-                    model=self._discord_model,
-                    messages=[Message(role=m["role"], content=m["content"]) for m in new_messages],
+                    model=discord_model,
+                    messages=[Message(role=str(m["role"]), content=m["content"]) for m in new_messages],
                     max_tokens=self.settings.discord_max_tokens,
                     system=system_prompt,
                     tools=WEB_SEARCH_TOOLS if web_search_enabled else None,

@@ -1,7 +1,8 @@
 """Native DuckDuckGo HTML search implementation.
 
 Direct HTTP requests to DuckDuckGo's HTML endpoint with lxml parsing.
-No external search library dependency.
+Supports pagination to fetch more than 10 results.
+No external search library dependency (Playwright optional for JS-heavy scenarios).
 """
 
 import urllib.parse
@@ -17,6 +18,7 @@ class DuckDuckGoHTMLSearch:
 
     BASE_URL = "https://html.duckduckgo.com/html/"
     USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    RESULTS_PER_PAGE = 10  # DuckDuckGo shows ~10 results per page
 
     def __init__(self, timeout: float = 10.0) -> None:
         """Initialize the search client.
@@ -29,7 +31,7 @@ class DuckDuckGoHTMLSearch:
     async def search(
         self, query: str, max_results: int | None = None
     ) -> list[dict]:
-        """Search DuckDuckGo and return structured results.
+        """Search DuckDuckGo and return structured results with pagination support.
 
         Args:
             query: Search query string.
@@ -38,34 +40,74 @@ class DuckDuckGoHTMLSearch:
         Returns:
             List of dicts with keys: title, url, snippet.
         """
-        # 1. Fetch HTML from DuckDuckGo
-        html_content = await self._fetch_html(query)
+        if max_results is not None and max_results <= self.RESULTS_PER_PAGE:
+            # Single page request is enough
+            html_content = await self._fetch_html(query)
+            results = self._parse_results(html_content)
+            return results[:max_results] if max_results else results
 
-        # 2. Parse HTML and extract results
-        results = self._parse_results(html_content)
+        # Fetch multiple pages to get more results
+        all_results = []
+        page = 0
+        seen_urls: set[str] = set()
 
-        # 3. Apply max_results limit if provided
-        if max_results is not None:
-            results = results[:max_results]
+        while max_results is None or len(all_results) < max_results:
+            # Calculate offset for pagination (s parameter)
+            offset = page * self.RESULTS_PER_PAGE
+            html_content = await self._fetch_html(query, offset=offset)
 
-        return results
+            if not html_content:
+                break
 
-    async def _fetch_html(self, query: str) -> str:
-        """Fetch HTML from DuckDuckGo's HTML endpoint."""
-        encoded_query = urllib.parse.quote_plus(query)
-        url = f"{self.BASE_URL}?q={encoded_query}"
+            results = self._parse_results(html_content)
 
+            # Filter out duplicates
+            new_results = []
+            for result in results:
+                url = result["url"]
+                if url not in seen_urls:
+                    seen_urls.add(url)
+                    new_results.append(result)
+
+            if not new_results:
+                # No more results
+                break
+
+            all_results.extend(new_results)
+
+            if max_results is not None and len(all_results) >= max_results:
+                break
+
+            # Check if we got fewer results than expected (last page)
+            if len(results) < self.RESULTS_PER_PAGE:
+                break
+
+            page += 1
+
+        return all_results[:max_results] if max_results else all_results
+
+    async def _fetch_html(self, query: str, offset: int = 0) -> str:
+        """Fetch HTML from DuckDuckGo's HTML endpoint with optional pagination offset.
+
+        Args:
+            query: Search query string.
+            offset: Result offset for pagination (0, 10, 20, ...).
+        """
         headers = {
             "User-Agent": self.USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
         }
 
+        params = {"q": query}
+        if offset > 0:
+            params["s"] = str(offset)  # DuckDuckGo pagination parameter
+
         async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
             try:
                 response = await client.get(
                     self.BASE_URL,
-                    params={"q": query},
+                    params=params,
                     headers=headers,
                     follow_redirects=True,
                 )
