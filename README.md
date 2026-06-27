@@ -62,9 +62,14 @@ MODEL="deepseek-ai/deepseek-v4-flash"
 
 ### Running the Server
 
-**Using uv (recommended):**
+**Using the standalone .exe (recommended - Windows):**
 ```bash
-uv run uvicorn server:app --host 0.0.0.0 --port 8082
+nimbus.exe
+```
+
+**Using Python directly:**
+```bash
+python server.py
 ```
 
 **Using venv:**
@@ -73,7 +78,12 @@ python -m venv venv
 venv\Scripts\activate   # Windows
 source venv/bin/activate  # macOS/Linux
 pip install -r requirements.txt
-uvicorn server:app --host 0.0.0.0 --port 8082
+python server.py
+```
+
+**Using start_server.py (cross-platform):**
+```bash
+python start_server.py
 ```
 
 **Terminal 2 - Run Claude Code:**
