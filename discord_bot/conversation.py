@@ -145,7 +145,7 @@ class ConversationManager:
     def add_message_with_user(
         self, channel_id: int, role: str, content: str,
         user_id: Optional[int] = None, username: str = "", reply_message: str = "",
-        tools_used: list[str] = None, auto_compact: bool = True
+        tools_used: list[str] | None = None, auto_compact: bool = True
     ) -> dict:
         """
         Add message with user context and return status.

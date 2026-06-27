@@ -606,7 +606,7 @@ class NimbusDiscordBot(commands.Bot):
 
                 current_request = MessagesRequest(
                     model=discord_model,
-                    messages=[Message(role=str(m["role"]), content=m["content"]) for m in new_messages],
+                    messages=[Message(role=str(m["role"]), content=m["content"]) for m in new_messages],  # type: ignore[arg-type, index]
                     max_tokens=self.settings.discord_max_tokens,
                     system=system_prompt,
                     tools=WEB_SEARCH_TOOLS if web_search_enabled else None,

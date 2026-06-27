@@ -223,7 +223,7 @@ class NimbusCog(commands.Cog):
             messages = history + [{"role": "user", "content": f"{user.display_name}: {question}"}]
             system_prompt = self.settings.discord_system_prompt
             request_data = MessagesRequest(
-                model=self.settings.discord_model,
+                model=self.settings.discord_model or "",
                 messages=[Message(role=m["role"], content=m["content"]) for m in messages],
                 max_tokens=self.settings.discord_max_tokens,
                 system=system_prompt,
@@ -378,7 +378,7 @@ class NimbusCog(commands.Cog):
             messages = history + [{"role": "user", "content": question}]
             system_prompt = self.settings.discord_system_prompt
             request_data = MessagesRequest(
-                model=self.settings.discord_model,
+                model=self.settings.discord_model or "",
                 messages=[
                     Message(role=m["role"], content=m["content"])
                     for m in messages
@@ -508,7 +508,7 @@ class NimbusCog(commands.Cog):
 
         # Send to NIM for summary
         summary_request = MessagesRequest(
-            model=self.settings.discord_model,
+            model=self.settings.discord_model or "",
             messages=[Message(role="user", content=summary_prompt)],
             max_tokens=2000,  # Summary should be short
         )
@@ -664,7 +664,7 @@ class NimbusCog(commands.Cog):
 
         # Send to NIM for summary
         summary_request = MessagesRequest(
-            model=self.settings.discord_model,
+            model=self.settings.discord_model or "",
             messages=[Message(role="user", content=summary_prompt)],
             max_tokens=2000,
         )
@@ -749,7 +749,7 @@ class NimbusCog(commands.Cog):
 
         # Send to NIM for summary
         summary_request = MessagesRequest(
-            model=self.settings.discord_model,
+            model=self.settings.discord_model or "",
             messages=[Message(role="user", content=summary_prompt)],
             max_tokens=2000,
         )
@@ -999,7 +999,7 @@ class NimbusCog(commands.Cog):
             return
 
         # Can't block the bot itself
-        if user.id == self.bot.user.id:
+        if self.bot.user and user.id == self.bot.user.id:
             await interaction.response.send_message(
                 "❌ Cannot block the bot.", ephemeral=True
             )

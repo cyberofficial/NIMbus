@@ -94,7 +94,7 @@ async def _handle_modelswap(
     request: Request,
     request_data: MessagesRequest,
     settings: Settings,
-) -> tuple[dict | None, str | None]:
+) -> tuple[MessagesResponse | None, str | None]:
     """
     Handle modelswap logic for a request.
 
@@ -236,7 +236,7 @@ async def _handle_nimserver(
     request: Request,
     request_data: MessagesRequest,
     settings: Settings,
-) -> tuple[dict | None, str | None]:
+) -> tuple[MessagesResponse | None, str | None]:
     """
     Handle nimserver logic for a request.
 

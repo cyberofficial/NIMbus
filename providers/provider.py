@@ -13,7 +13,10 @@ import sys
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
-from typing import Any
+
+from typing import Any, Awaitable, Callable, TypeVar
+
+T = TypeVar("T")
 
 import httpx
 from loguru import logger
@@ -511,7 +514,7 @@ class NvidiaNimProvider(BaseProvider):
         if client is not None:
             await client.aclose()
 
-    def _execute_queued(self, coro_factory: callable, priority: int = RequestPriority.NORMAL):
+    def _execute_queued(self, coro_factory: Callable[..., Awaitable[Any]], priority: int = RequestPriority.NORMAL):
         """Execute a request through the queue or directly if disabled.
 
         Args:
@@ -575,7 +578,7 @@ class NvidiaNimProvider(BaseProvider):
 
         async def _do_buffered_request():
             return await self._buffered_request_impl(
-                request, input_tokens, request_id, model_override
+                request, input_tokens, request_id=request_id, model_override=model_override
             )
 
         return await self._execute_queued(_do_buffered_request, priority)
@@ -635,10 +638,10 @@ class NvidiaNimProvider(BaseProvider):
                 # inside a queue worker (which holds the queue's worker semaphore)
                 if use_rate_limiter_concurrency:
                     async with self._global_rate_limiter.concurrency_slot():
-                        return await self._do_buffered_request(body, request, input_tokens, request_id)
+                        return await self._do_buffered_request(body, request, input_tokens, request_id, tag=tag, attempt=attempt, req_tag=req_tag)
 
                 # Queue already holds worker slot - just execute
-                return await self._do_buffered_request(body, request, input_tokens, request_id)
+                return await self._do_buffered_request(body, request, input_tokens, request_id, tag=tag, attempt=attempt, req_tag=req_tag)
 
             except RateLimitError as e:
                 # RateLimitError (429) – trigger adaptive backoff and retry
@@ -740,7 +743,7 @@ class NvidiaNimProvider(BaseProvider):
             "NVIDIA backend dropped connection after all retries"
         ) from last_error
 
-    async def _do_buffered_request(self, body: dict, request: Any, input_tokens: int, request_id: str | None) -> dict:
+    async def _do_buffered_request(self, body: dict, request: Any, input_tokens: int, request_id: str | None, tag: str = "", attempt: int = 0, req_tag: str = "") -> dict:
         """Execute the actual buffered request (shared by queued and non-queued paths)."""
         req_token = request_id_var.set(request_id)
         try:
@@ -931,11 +934,13 @@ class NvidiaNimProvider(BaseProvider):
 
         async def _stream_factory() -> AsyncIterator[str]:
             async for event in self._stream_response_impl(
-                request, input_tokens, request_id, model_override, use_rate_limiter_concurrency=False
+                request, input_tokens, request_id=request_id, model_override=model_override, use_rate_limiter_concurrency=False
             ):
                 yield event
 
         # Queue the streaming request and collect events
+        if self._request_queue is None:
+            raise RuntimeError("Request queue is not initialized")
         events = await self._request_queue.enqueue_stream(_stream_factory, priority)
 
         # Yield collected events

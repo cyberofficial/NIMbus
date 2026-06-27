@@ -420,8 +420,10 @@ async def fetch_page(url: str, offset: int = 0, limit: int = 10000,
                 "expires_at": time.time(),
             }
 
-    total_length = meta["total_length"]
-    expires_at = datetime.datetime.fromtimestamp(meta["expires_at"], tz=datetime.timezone.utc).isoformat()
+    if meta is None:
+        meta = {}
+    total_length = meta.get("total_length", 0)
+    expires_at = datetime.datetime.fromtimestamp(meta.get("expires_at", 0), tz=datetime.timezone.utc).isoformat()
 
     # NEW: If search provided, return search results instead of chunk
     if search is not None:

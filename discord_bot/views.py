@@ -119,6 +119,9 @@ class ControlPanelView(ui.View):
                 )
                 return
 
+            if not isinstance(category, discord.CategoryChannel):
+                await interaction.response.send_message("Invalid channel type", ephemeral=True)
+                return
             # Get all channels in the category
             channels = [
                 ch for ch in category.channels

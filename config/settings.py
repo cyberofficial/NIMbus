@@ -611,12 +611,12 @@ class Settings(BaseSettings):
         """
         return self.model_list[0] if self.model_list else self.model
 
-    @classmethod
-    def _generate_env_alias(cls, field_name: str) -> str | None:
+    @staticmethod
+    def _generate_env_alias(field_name: str) -> str:
         """Convert snake_case field name to PREFIX_UPPER_SNAKE env var.
 
         Pattern: field_name like "provider_rate_limit" -> "PROVIDER_RATE_LIMIT"
-        Returns None for fields that should not have env aliases.
+        For fields with explicit validation_alias, return the field name (explicit takes precedence).
         """
         # Special cases that don't follow the PREFIX_FIELD pattern
         special = {
@@ -628,7 +628,8 @@ class Settings(BaseSettings):
         if field_name in special:
             alias = special[field_name]
             if alias is None:
-                return None
+                # For nested settings with no alias, return field name as fallback
+                return field_name.upper()
             return alias
 
         # Fields that should NOT have env aliases (constants, internal fields)
@@ -653,7 +654,8 @@ class Settings(BaseSettings):
         }
 
         if field_name in no_alias:
-            return None
+            # Return field name as fallback - explicit validation_alias will take precedence
+            return field_name.upper()
 
         # Default: convert to PREFIX_UPPER_SNAKE
         # field_name like "provider_rate_limit" -> "PROVIDER_RATE_LIMIT"

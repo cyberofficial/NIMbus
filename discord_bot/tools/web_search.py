@@ -259,8 +259,10 @@ async def execute_fetch_page(
             }
         logger.info(f"[WEB FETCH] url={url} | fetched | length={len(full_content)}")
 
-    total_length = meta["total_length"]
-    expires_at = datetime.datetime.fromtimestamp(meta["expires_at"], tz=datetime.timezone.utc).isoformat()
+    if meta is None:
+        meta = {}
+    total_length = meta.get("total_length", 0)
+    expires_at = datetime.datetime.fromtimestamp(meta.get("expires_at", 0), tz=datetime.timezone.utc).isoformat()
 
     # If search provided, return search matches instead of chunk
     if search is not None:

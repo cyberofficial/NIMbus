@@ -23,7 +23,7 @@ class DiscordRateLimiter:
         server_window: float = 60.0,   # Window in seconds
     ):
         self._user_cooldown = user_cooldown
-        self._user_last_request: dict[int, float] = {}  # user_id -> timestamp
+        self._user_last_request: dict[tuple[int, int], float] = {}  # (user_id, channel_id) -> timestamp
 
         self._server_limit = server_limit
         self._server_window = server_window

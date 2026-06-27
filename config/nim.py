@@ -7,9 +7,12 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-def _load_reasoning_effort() -> str:
+def _load_reasoning_effort() -> Literal['low', 'medium', 'high']:
     """Load reasoning effort from environment variable."""
-    return os.environ.get("NIM_REASONING_EFFORT", "high").lower()
+    value = os.environ.get("NIM_REASONING_EFFORT", "high").lower()
+    if value not in ("low", "medium", "high"):
+        value = "high"
+    return value  # type: ignore[return-value]
 
 
 def _load_reasoning_effort_mappings() -> dict[str, dict[str, str]] | None:

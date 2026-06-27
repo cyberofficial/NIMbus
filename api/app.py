@@ -118,6 +118,8 @@ async def lifespan(app: FastAPI):
             from api.dependencies import get_provider
 
             provider = get_provider()
+            from providers.provider import NvidiaNimProvider
+            assert isinstance(provider, NvidiaNimProvider), "Provider must be NvidiaNimProvider"
             discord_bot = NimbusDiscordBot(settings, provider)
 
             # Start bot in background task

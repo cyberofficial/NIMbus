@@ -58,7 +58,8 @@ def optimization_response_to_sse(response: MessagesResponse, input_tokens: int =
         yield sse.content_block_stop(0)
 
     # message_delta with stop_reason
-    yield sse.message_delta(response.stop_reason, response.usage.output_tokens)
+    stop_reason = response.stop_reason or "end_turn"
+    yield sse.message_delta(stop_reason, response.usage.output_tokens)
 
     # message_stop
     yield sse.message_stop()
