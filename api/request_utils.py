@@ -5,12 +5,12 @@ Contains token counting for API requests.
 
 import json
 
-import tiktoken
 from loguru import logger
 
 from providers.message_converter import get_block_attr
+from providers.tiktoken_cache import get_encoder
 
-ENCODER = tiktoken.get_encoding("cl100k_base")
+ENCODER = get_encoder("cl100k_base")
 
 # Special tokens like <|endoftext|> appear in Claude Code's system prompts
 # (DeepSeek uses them in chat templates). Allow them through token counting.

@@ -102,6 +102,14 @@ async def lifespan(app: FastAPI):
 
     settings = get_settings()
 
+    # Warm NVIDIA model cache at startup to avoid first-request latency
+    try:
+        from config.settings import startup_model_cache
+        startup_model_cache()
+        logger.debug("NVIDIA model cache warmed at startup")
+    except Exception as e:
+        logger.warning(f"Failed to warm NVIDIA model cache: {e}")
+
     # Discord Bot initialization (optional)
     discord_bot = None
     if settings.discord_enabled:

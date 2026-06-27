@@ -216,6 +216,165 @@ def _is_resource_exhausted_error(e: Exception) -> bool:
     return "resourceexhausted" in msg or "worker local total request limit" in msg
 
 
+# ============================================================
+# Shared retry logic for buffered and streaming requests
+# ============================================================
+
+async def _execute_with_retry(
+    coro_factory: Callable[[], Awaitable[T]],
+    max_retries: int,
+    resource_exhausted_retries: int,
+    retry_delay: float,
+    tag: str,
+    is_retryable_fn: Callable[[Exception], bool],
+    is_resource_exhausted_fn: Callable[[Exception], bool],
+    on_rate_limit_hit: Callable[[], None],
+    should_fallback_system_role_fn: Callable[[Exception], tuple[bool, dict | None]] | None = None,
+    should_fallback_thinking_fn: Callable[[Exception], tuple[bool, dict | None]] | None = None,
+    rebuild_request_fn: Callable[[], dict] | None = None,
+    body: dict | None = None,
+    request_id: str | None = None,
+) -> T:
+    """
+    Shared retry logic for buffered and streaming requests.
+
+    Args:
+        coro_factory: Factory function that creates the coroutine to execute
+        max_retries: Base max retries (0 = endless)
+        resource_exhausted_retries: Specific retry count for ResourceExhausted errors
+        retry_delay: Base delay between retries (multiplied by attempt)
+        tag: Logging tag (e.g., "NVIDIA")
+        is_retryable_fn: Callable to determine if error is retryable
+        is_resource_exhausted_fn: Callable to detect ResourceExhausted errors
+        on_rate_limit_hit: Callback when 429 hit (for adaptive backoff)
+        should_fallback_system_role_fn: Optional callable to detect system role errors
+            Returns (should_retry, new_body) where new_body is the modified request body
+        should_fallback_thinking_fn: Optional callable to detect thinking param errors
+            Returns (should_retry, new_body) where new_body is the modified request body
+        rebuild_request_fn: Optional factory to rebuild request body after fallback
+        body: Request body (for logging)
+        request_id: Optional request ID for logging
+
+    Returns:
+        Result of successful coro_factory() execution
+    """
+    attempt = 0
+    max_retries_effective = max_retries
+    last_error = None
+    body_ref = body  # Mutable reference for body rebuilds
+
+    while max_retries == 0 or attempt < (max_retries + 1):
+        try:
+            if attempt > 0:
+                delay = retry_delay * attempt
+                logger.warning(
+                    "{}: Retry attempt {}/{} after {:.1f}s delay",
+                    tag,
+                    attempt + 1,
+                    max_retries if max_retries > 0 else "∞",
+                    retry_delay * attempt,
+                )
+                await asyncio.sleep(delay)
+
+            # Execute the coroutine
+            result = await coro_factory()
+            return result
+
+        except RateLimitError as e:
+            # RateLimitError (429) - trigger adaptive backoff and retry
+            max_retries_effective = max_retries
+            on_rate_limit_hit()
+            detail = _format_error_detail(e)
+
+            if max_retries > 0 and attempt >= max_retries:
+                logger.error(
+                    "{}: Non-retryable RateLimitError after {} attempts - {}",
+                    tag,
+                    attempt + 1,
+                    _format_error_detail(e),
+                )
+                raise
+
+            # Exponential backoff with jitter for 429
+            base_delay = 2.0
+            max_delay = 60.0
+            delay = min(base_delay * (2**attempt), max_delay)
+            delay += random.uniform(0, 1.0)
+            detail = _format_error_detail(e)
+            logger.warning(
+                "{}: RateLimited (429) attempt {}/{} - retrying in {:.1f}s. {}",
+                tag,
+                attempt + 1,
+                max_retries if max_retries > 0 else "∞",
+                delay,
+                detail,
+            )
+            attempt += 1
+            continue
+
+        except Exception as e:
+            # Check if it's a system role fallback error
+            if should_fallback_system_role_fn and should_fallback_system_role_fn(e)[0]:
+                # System role fallbacks don't count against retry budget
+                if rebuild_request_fn is not None:
+                    body_ref = rebuild_request_fn()
+                raise  # Will be caught by outer loop and retried
+
+            # Check if it's a thinking param fallback error
+            if should_fallback_thinking_fn and should_fallback_thinking_fn(e)[0]:
+                should_retry, new_body = should_fallback_thinking_fn(e)
+                if should_retry and rebuild_request_fn is not None:
+                    body_ref = rebuild_request_fn()
+                raise  # Will be caught by outer loop and retried
+
+            # Check if it's a ResourceExhausted error (has its own retry count)
+            is_resource_exhausted = is_resource_exhausted_fn(e)
+            is_retryable = is_retryable_fn(e) or is_resource_exhausted
+
+            if is_resource_exhausted:
+                effective_max_retries = resource_exhausted_retries
+            else:
+                effective_max_retries = max_retries
+
+            if is_retryable:
+                exhaustion_msg = (
+                    f"after {attempt + 1} attempts"
+                    if effective_max_retries > 0
+                    else f"after {attempt + 1} attempts (endless retries - still trying)"
+                )
+                if effective_max_retries > 0 and attempt >= effective_max_retries:
+                    logger.error(
+                        "{}: {} exhausted after {} attempts: {}",
+                        tag,
+                        type(e).__name__,
+                        attempt + 1,
+                        _format_error_detail(e),
+                    )
+                    raise
+                # Exponential backoff with jitter for retryable errors
+                base_delay = 2.0
+                max_delay = 60.0
+                delay = min(base_delay * (2**attempt), max_delay)
+                delay += random.uniform(0, 1.0)
+                detail = _format_error_detail(e)
+                logger.warning(
+                    "{}: {} on attempt {}/{} - retrying in {:.1f}s. {}",
+                    tag,
+                    type(e).__name__,
+                    attempt + 1,
+                    max_retries if max_retries > 0 else "∞",
+                    delay,
+                    detail,
+                )
+                attempt += 1
+                continue
+            else:
+                # Non-retryable error - raise immediately
+                raise
+
+    raise StreamTruncatedError("Exhausted all retries") from last_error
+
+
 def _rebuild_without_thinking(body: dict) -> dict:
     """Clone request body, removing thinking/reasoning parameters from extra_body."""
     new_body = dict(body)

@@ -7,10 +7,10 @@ from typing import Any
 
 from loguru import logger
 
-try:
-    import tiktoken
+from providers.tiktoken_cache import get_encoder
 
-    ENCODER = tiktoken.get_encoding("cl100k_base")
+try:
+    ENCODER = get_encoder("cl100k_base")
 except Exception:
     ENCODER = None
 

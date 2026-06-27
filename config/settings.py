@@ -611,10 +611,64 @@ class Settings(BaseSettings):
         """
         return self.model_list[0] if self.model_list else self.model
 
+    @classmethod
+    def _generate_env_alias(cls, field_name: str) -> str | None:
+        """Convert snake_case field name to PREFIX_UPPER_SNAKE env var.
+
+        Pattern: field_name like "provider_rate_limit" -> "PROVIDER_RATE_LIMIT"
+        Returns None for fields that should not have env aliases.
+        """
+        # Special cases that don't follow the PREFIX_FIELD pattern
+        special = {
+            "api_key": "NVIDIA_NIM_API_KEY",   # not API_KEY
+            "model": "MODEL",                  # not MODEL_MODEL
+            "discord_enabled_field": "DISCORD_ENABLED",  # not DISCORD_ENABLED_FIELD
+            "nim": None,                       # nested settings, no alias
+        }
+        if field_name in special:
+            alias = special[field_name]
+            if alias is None:
+                return None
+            return alias
+
+        # Fields that should NOT have env aliases (constants, internal fields)
+        no_alias = {
+            "host", "port", "log_file", "proxy_api_key",  # server config
+            "fast_prefix_detection", "enable_network_probe_mock", "enable_title_generation_skip",
+            "enable_suggestion_mode_skip", "enable_filepath_extraction_mock", "enable_recap_skip",
+            "swapper_enabled", "swapper_test_prompt", "swapper_test_timeout",
+            "web_search_fetch_timeout", "mcp_cache_ttl",
+            "discord_bot_token", "discord_guild_id", "discord_control_channel_id",
+            "discord_conversation_category_id", "discord_conversation_channel_id",
+            "discord_owner_id", "discord_owner_only", "discord_max_tokens",
+            "discord_compact_threshold", "discord_user_cooldown", "discord_server_limit",
+            "discord_server_window", "discord_system_prompt", "discord_skip_files",
+            "discord_split_threshold", "discord_auto_compact", "discord_model",
+            "discord_cmd_ask", "discord_cmd_compact", "discord_cmd_new", "discord_cmd_status",
+            "discord_cmd_download", "discord_cmd_block", "discord_cmd_unblock", "discord_cmd_blocked",
+            "discord_cmd_newchannel", "discord_command_prefix", "discord_require_mention",
+            "discord_cmd_prefix_ask", "discord_cmd_prefix_compact", "discord_cmd_prefix_new", "discord_cmd_prefix_status",
+            "discord_enable_web_search", "discord_web_search_max_results", "discord_web_search_max_iterations",
+            "provider_resource_exhausted_retries",
+        }
+
+        if field_name in no_alias:
+            return None
+
+        # Default: convert to PREFIX_UPPER_SNAKE
+        # field_name like "provider_rate_limit" -> "PROVIDER_RATE_LIMIT"
+        parts = field_name.split("_")
+        if len(parts) == 1:
+            return field_name.upper()
+        prefix = parts[0].upper()
+        rest = "_".join(parts[1:]).upper()
+        return f"{prefix}_{rest}"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        alias_generator=_generate_env_alias,
     )
 
 
@@ -651,6 +705,11 @@ def _fetch_nvidia_models() -> dict[str, str]:
         pass
     _NVIDIA_MODEL_CACHE = {}
     return {}
+
+
+def startup_model_cache() -> dict[str, str]:
+    """Pre-warm NVIDIA model cache at startup to avoid first-request latency."""
+    return _fetch_nvidia_models()
 
 
 def _to_full_nim_model(name: str) -> str:

@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-import tiktoken
+from providers.tiktoken_cache import get_encoder
 
 
 @dataclass
@@ -43,7 +43,7 @@ class ConversationManager:
     def __init__(self, max_tokens: int, compact_threshold: float = 0.8, system_prompt: str = ""):
         self._max_tokens = max_tokens
         self._compact_threshold = compact_threshold
-        self._encoder = tiktoken.get_encoding("cl100k_base")
+        self._encoder = get_encoder("cl100k_base")
         self._system_prompt = system_prompt
         self._system_prompt_tokens = self._count_tokens(system_prompt) if system_prompt else 0
 
