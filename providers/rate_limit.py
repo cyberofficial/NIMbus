@@ -214,10 +214,31 @@ class GlobalRateLimiter:
         to avoid "Worker local total request limit reached" errors.
         """
         await self._worker_sem.acquire()
+        self._log_worker_status()
         try:
             yield
         finally:
             self._worker_sem.release()
+
+    def _log_worker_status(self) -> None:
+        """Log NVIDIA worker slot usage to console."""
+        worker_limit = self._worker_limit
+        worker_used = worker_limit - (self._worker_sem._value if hasattr(self._worker_sem, '_value') else 0)
+        worker_pct = (worker_used / worker_limit) * 100 if worker_limit > 0 else 0
+        bar_width = 30
+        w_filled = int((worker_used / worker_limit) * bar_width) if worker_limit > 0 else bar_width
+        w_empty = bar_width - w_filled
+        w_bar = "█" * w_filled + "░" * w_empty
+        if worker_pct >= 90:
+            w_emoji = "🔴"
+        elif worker_pct >= 70:
+            w_emoji = "🟡"
+        else:
+            w_emoji = "🟢"
+        logger.info(
+            f"{w_emoji} [Workers   ] [{w_bar}] {worker_used}/{worker_limit} ({worker_pct:.0f}%) | "
+            f"{worker_limit - worker_used} free"
+        )
 
     async def acquire_worker_slot(self) -> None:
         """Acquire a worker slot (use with try/finally release)."""
@@ -342,24 +363,6 @@ class GlobalRateLimiter:
                 f"{emoji} [Rate Limit] [{bar}] {current}/{self._effective_rpm} ({percentage:.0f}%) | "
                 f"{remaining} left"
             )
-
-        # Worker status bar (NVIDIA concurrent request slots)
-        worker_limit = self._worker_limit
-        worker_used = worker_limit - (self._worker_sem._value if hasattr(self._worker_sem, '_value') else 0)
-        worker_pct = (worker_used / worker_limit) * 100 if worker_limit > 0 else 0
-        w_filled = int((worker_used / worker_limit) * bar_width) if worker_limit > 0 else bar_width
-        w_empty = bar_width - w_filled
-        w_bar = "█" * w_filled + "░" * w_empty
-        if worker_pct >= 90:
-            w_emoji = "🔴"
-        elif worker_pct >= 70:
-            w_emoji = "🟡"
-        else:
-            w_emoji = "🟢"
-        logger.info(
-            f"{w_emoji} [Workers   ] [{w_bar}] {worker_used}/{worker_limit} ({worker_pct:.0f}%) | "
-            f"{worker_limit - worker_used} free"
-        )
 
     def set_blocked(self, seconds: float = 60) -> None:
         """

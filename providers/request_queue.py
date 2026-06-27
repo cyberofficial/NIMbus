@@ -272,20 +272,23 @@ class RequestQueue:
         #   Phase 2 – once processing has started, wait indefinitely for it
         #              to finish (no timeout, since streaming + retries can
         #              take much longer than queue_timeout).
+        #
+        # NOTE: We do NOT wrap the future in asyncio.ensure_future() during
+        # Phase 1 — doing so would create a Task that, when cancelled below,
+        # would prevent the future from ever receiving set_result() from the
+        # worker. We only await processing_started with a timeout, then
+        # handle both the fast-path (future already done) and normal path.
         try:
             # Phase 1: Queue-wait phase (with timeout)
-            done, pending = await asyncio.wait(
-                [
-                    asyncio.ensure_future(future),
-                    asyncio.ensure_future(request.processing_started.wait()),
-                ],
+            # Only watch processing_started — the future is never wrapped in
+            # a task, so it can still receive set_result() from the worker.
+            await asyncio.wait_for(
+                request.processing_started.wait(),
                 timeout=self._queue_timeout,
-                return_when=asyncio.FIRST_COMPLETED,
             )
-            for t in pending:
-                t.cancel()
 
-            # If the future completed during Phase 1, return immediately
+            # Fast-path: if the future completed before processing_started
+            # fired (extremely fast non-streaming request), return directly.
             if future.done():
                 return future.result()
 
@@ -297,6 +300,10 @@ class RequestQueue:
             return await future
 
         except asyncio.TimeoutError:
+            # Check if the future somehow became done during the timeout wait
+            if future.done():
+                return future.result()
+
             async with self._stats_lock:
                 self._stats.total_timeouts += 1
             logger.warning(
