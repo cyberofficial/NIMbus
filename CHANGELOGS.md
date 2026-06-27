@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Worker Status Logging** - Periodic logging of worker slot utilization (current/available/limit) at DEBUG level; included in `/status` endpoint.
 - **Setup Wizard Queue Configuration** - Interactive wizard now prompts for request queue settings (enabled, max concurrent, max size, timeout, workers, Discord/API priority).
 - **User Reasoning Effort Mapping** - New `user_reasoning_effort_mapping.json` for custom effort level mappings per user.
+- **Adaptive Rate Limiting** - Runtime NVIDIA RPM backoff: `NIM_RPM_INITIAL` (starting RPM), `NIM_RPM_DROP` (RPM drop per 429), `NIM_RPM_MIN` (floor RPM), `NIM_RPM_HOLD_INITIAL`/`_MAX` (hold delays). Reset with `<nimrpm:reset>` chat tag.
+- **HTTP Client Timeouts** - Configurable `HTTP_READ_TIMEOUT`, `HTTP_WRITE_TIMEOUT`, `HTTP_CONNECT_TIMEOUT` for provider API requests.
+- **NIM Core Settings** - `NIM_MAX_TOKENS`, `NIM_REASONING_EFFORT` (low/medium/high), `NIM_REASONING_EFFORT_MAPPINGS` (JSON mapping for effort levels).
+- **Model Swapper** - Enable dynamic model switching via `SWAPPER_ENABLED` with `SWAPPER_TEST_PROMPT` and `SWAPPER_TEST_TIMEOUT` for validation.
+- **MCP Cache TTL** - `MCP_CACHE_TTL` for MCP server web page fetch caching (default 600s, max 3600, 0 = disabled).
+- **Discord Web Search** - `DISCORD_ENABLE_WEB_SEARCH`, `DISCORD_WEB_SEARCH_MAX_RESULTS`, `DISCORD_WEB_SEARCH_MAX_ITERATIONS` (enabled by default).
+- **Fast Prefix Detection** - `FAST_PREFIX_DETECTION` optimization (enabled by default).
+- **Complete Setup Wizard Coverage** - New wizard sections: Provider Rate Limiting & Adaptive, HTTP Timeouts, NIM Core Settings, Model Swapper, MCP Cache, Discord Web Search. Update mode includes all sections. All new .env keys written through full and update wizard flows.
 
 ### Fixed
 - **Retry Logic Improvements** - Broader exception handling (includes `APIError`); better handling of model capability errors (system-role rejection, thinking-parameter rejection) by rebuilding requests and retrying.
@@ -38,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `providers/rate_limit.py` - Worker slot tracking, adaptive backoff, status logging
 - `providers/provider.py` - Worker slot acquisition, retry logic, error handling
 - `providers/base.py` - New `worker_limit` / `worker_available` properties
-- `config/settings.py` - Queue settings, Discord web search settings
+- `config/settings.py` - Queue settings, Discord web search settings, adaptive rate limiting, HTTP timeouts, NIM settings, model swapper, MCP cache
 - `api/routes.py` - Queue stats endpoint (`/queue/status`), priority handling
 - `api/dependencies.py` - Provider accessor for queue
 - `discord_bot/bot.py` - Reply handling, web search integration, retry logic, channel checks
@@ -46,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `discord_bot/conversation.py` - Unconditional message saving, reply_message field
 - `discord_bot/persistence.py` - Reply serialization
 - `discord_bot/tools/web_search.py` - Web search + fetch_page tools with caching
-- `setup_wizard.py` - Queue config prompts, web search config
+- `setup_wizard.py` - Queue config prompts, web search config, adaptive rate limiting, HTTP timeouts, NIM settings, model swapper, MCP cache, Discord web search
 - `websearch/duckduckgo_html.py` - Pagination, deduping, offset-aware fetch
 - `providers/request.py` - Non-empty content enforcement
 - `user_reasoning_effort_mapping.json` - New: per-user effort mappings
