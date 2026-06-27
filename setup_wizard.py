@@ -185,8 +185,14 @@ def _select_update_sections() -> list[str]:
         ("port_mode", "Server Port & Mode"),
         ("request_queue", "Request Queue Configuration"),
         ("optimizations", "Optimization Settings"),
+        ("provider_rate_limit", "Provider Rate Limiting & Adaptive"),
+        ("http_timeouts", "HTTP Client Timeouts"),
+        ("nim_settings", "NIM Core Settings"),
+        ("model_swapper", "Model Swapper"),
         ("mcp", "MCP Server Settings"),
+        ("mcp_cache", "MCP Cache Settings"),
         ("discord", "Discord Bot Settings"),
+        ("discord_web_search", "Discord Web Search"),
         ("all", "All (run full wizard)"),
     ]
 
@@ -380,7 +386,7 @@ def _write_dotenv(path: Path, params: dict, is_linux: bool = False) -> None:
     Args:
         path: Path to the .env file.
         params: Configuration parameters.
-        is_linux: If True, writes actual model names instead of windows:settings.json sentinel.
+        is_linux: If True, True, writes actual model names instead of windows:settings.json sentinel.
     """
     # Always use windows:settings.json sentinel - reads models from Claude Code settings.json
     model_line = "MODEL=windows:settings.json"
@@ -399,19 +405,44 @@ def _write_dotenv(path: Path, params: dict, is_linux: bool = False) -> None:
         f"PROVIDER_RETRY_ON_TRUNCATION={params.get('provider_retry_on_truncation', 3)}",
         f"PROVIDER_RETRY_DELAY={params.get('provider_retry_delay', 1.0)}",
         f"RESOURCE_EXHAUSTED_RETRIES={params.get('resource_exhausted_retries', 10)}",
+        # Provider Rate Limiting
+        f"PROVIDER_RATE_LIMIT={params.get('provider_rate_limit', 40)}",
+        f"PROVIDER_RATE_WINDOW={params.get('provider_rate_window', 60)}",
+        f"PROVIDER_MAX_CONCURRENCY={params.get('provider_max_concurrency', 5)}",
+        # Adaptive Rate Limiting
+        f"NIM_RPM_INITIAL={params.get('nim_rpm_initial', 40)}",
+        f"NIM_RPM_DROP={params.get('nim_rpm_drop', 10)}",
+        f"NIM_RPM_MIN={params.get('nim_rpm_min', 20)}",
+        f"NIM_RPM_HOLD_INITIAL={params.get('nim_rpm_hold_initial', 5)}",
+        f"NIM_RPM_HOLD_MAX={params.get('nim_rpm_hold_max', 10)}",
+        # HTTP Client Timeouts
+        f"HTTP_READ_TIMEOUT={params.get('http_read_timeout', 300)}",
+        f"HTTP_WRITE_TIMEOUT={params.get('http_write_timeout', 10)}",
+        f"HTTP_CONNECT_TIMEOUT={params.get('http_connect_timeout', 2)}",
         # Request Queue settings
         f"REQUEST_QUEUE_ENABLED={str(params.get('request_queue_enabled', True)).lower()}",
         f"REQUEST_QUEUE_MAX_CONCURRENT={params.get('request_queue_max_concurrent', 32)}",
         f"REQUEST_QUEUE_MAX_SIZE={params.get('request_queue_max_size', 600)}",
         f"REQUEST_QUEUE_TIMEOUT={params.get('request_queue_timeout', 300.0)}",
         f"REQUEST_QUEUE_NUM_WORKERS={params.get('request_queue_num_workers', 4)}",
+        # NIM Settings
+        f"NIM_MAX_TOKENS={params.get('nim_max_tokens', 202000)}",
+        f"NIM_REASONING_EFFORT={params.get('nim_reasoning_effort', 'high')}",
+        f"NIM_REASONING_EFFORT_MAPPINGS={params.get('nim_reasoning_effort_mappings', '')}",
+        # Model Swapper
+        f"SWAPPER_ENABLED={str(params.get('swapper_enabled', False)).lower()}",
+        f"SWAPPER_TEST_PROMPT={params.get('swapper_test_prompt', 'Please reply with pong only, nothing else')}",
+        f"SWAPPER_TEST_TIMEOUT={params.get('swapper_test_timeout', 120.0)}",
+        # Optimization settings
         f"ENABLE_RECAP_SKIP={params.get('enable_recap_skip', 'true')}",
         f"ENABLE_NETWORK_PROBE_MOCK={params.get('enable_network_probe_mock', 'true')}",
         f"ENABLE_TITLE_GENERATION_SKIP={params.get('enable_title_generation_skip', 'true')}",
         f"ENABLE_SUGGESTION_MODE_SKIP={params.get('enable_suggestion_mode_skip', 'true')}",
         f"ENABLE_FILEPATH_EXTRACTION_MOCK={params.get('enable_filepath_extraction_mock', 'true')}",
+        f"FAST_PREFIX_DETECTION={str(params.get('fast_prefix_detection', True)).lower()}",
         # MCP Server settings
         f"WEB_SEARCH_FETCH_TIMEOUT={params.get('mcp_fetch_timeout', 10.0)}",
+        f"MCP_CACHE_TTL={params.get('mcp_cache_ttl', 600)}",
         # Discord Bot settings
         f"DISCORD_ENABLED={str(params.get('configure_discord', False)).lower()}",
         f'DISCORD_BOT_TOKEN="{params.get("discord_token", "")}"',
@@ -446,6 +477,10 @@ def _write_dotenv(path: Path, params: dict, is_linux: bool = False) -> None:
         f"DISCORD_CMD_PREFIX_COMPACT={str(params.get('discord_cmd_prefix_compact', True)).lower()}",
         f"DISCORD_CMD_PREFIX_NEW={str(params.get('discord_cmd_prefix_new', True)).lower()}",
         f"DISCORD_CMD_PREFIX_STATUS={str(params.get('discord_cmd_prefix_status', True)).lower()}",
+        # Discord Web Search
+        f"DISCORD_ENABLE_WEB_SEARCH={str(params.get('discord_enable_web_search', True)).lower()}",
+        f"DISCORD_WEB_SEARCH_MAX_RESULTS={params.get('discord_web_search_max_results', 10)}",
+        f"DISCORD_WEB_SEARCH_MAX_ITERATIONS={params.get('discord_web_search_max_iterations', 10)}",
     ]
     content = (
         "# NIMbus configuration -- generated by --init\n" + "\n".join(lines) + "\n"
@@ -760,12 +795,22 @@ def _run_section(
                 request_queue_num_workers = int(workers_str)
             except ValueError:
                 request_queue_num_workers = 4
+            print()
+            print("  Resource Exhausted Retries: Max retry attempts for 'Worker local")
+            print("  total request limit reached' errors from NVIDIA's shared worker nodes.")
+            print("  Set to 0 for endless retries. Default: 10")
+            exhausted_str = _prompt("  Resource exhausted retries", default=str(existing.get("RESOURCE_EXHAUSTED_RETRIES", "10")))
+            try:
+                resource_exhausted_retries = int(exhausted_str)
+            except ValueError:
+                resource_exhausted_retries = 10
         updates.update({
             "request_queue_enabled": request_queue_enabled,
             "request_queue_max_concurrent": request_queue_max_concurrent,
             "request_queue_max_size": request_queue_max_size,
             "request_queue_timeout": request_queue_timeout,
             "request_queue_num_workers": request_queue_num_workers,
+            "resource_exhausted_retries": resource_exhausted_retries,
         })
 
     elif section == "optimizations":
@@ -787,6 +832,7 @@ def _run_section(
             ("enable_title_generation_skip", "Skip conversation title generation"),
             ("enable_suggestion_mode_skip", "Skip suggestion mode requests (disabled by default)"),
             ("enable_filepath_extraction_mock", "Mock filepath extraction (speeds up file searching)"),
+            ("fast_prefix_detection", "Fast command prefix detection"),
         ]
         for key, desc in opt_defs:
             # Default to False for the two disabled optimizations
@@ -795,6 +841,215 @@ def _run_section(
             opts[key] = "true" if yn else "false"
             print()
         updates.update(opts)
+
+    elif section == "provider_rate_limit":
+        # Provider Rate Limiting & Adaptive Rate Limiting
+        print()
+        print("Step: Provider Rate Limiting & Adaptive Rate Limiting")
+        print("-" * 40)
+        print("  NIMbus limits requests to stay within NVIDIA NIM's free tier limits.")
+        print("  The adaptive rate limiter automatically backs off on 429 responses.")
+        print()
+        rate_limit_str = _prompt("  Max requests per window (PROVIDER_RATE_LIMIT)", default=str(existing.get("PROVIDER_RATE_LIMIT", "40")))
+        try:
+            provider_rate_limit = int(rate_limit_str)
+        except ValueError:
+            provider_rate_limit = 40
+        rate_window_str = _prompt("  Rate window in seconds (PROVIDER_RATE_WINDOW)", default=str(existing.get("PROVIDER_RATE_WINDOW", "60")))
+        try:
+            provider_rate_window = int(rate_window_str)
+        except ValueError:
+            provider_rate_window = 60
+        max_concurrency_str = _prompt("  Max concurrent streams (PROVIDER_MAX_CONCURRENCY)", default=str(existing.get("PROVIDER_MAX_CONCURRENCY", "5")))
+        try:
+            provider_max_concurrency = int(max_concurrency_str)
+        except ValueError:
+            provider_max_concurrency = 5
+        print()
+        print("  Adaptive Rate Limiting (backoff on 429 responses):")
+        print("  When a 429 is received, the limiter progressively reduces effective RPM.")
+        print()
+        rpm_initial_str = _prompt("  Starting RPM (NIM_RPM_INITIAL)", default=str(existing.get("NIM_RPM_INITIAL", "40")))
+        try:
+            nim_rpm_initial = int(rpm_initial_str)
+        except ValueError:
+            nim_rpm_initial = 40
+        rpm_drop_str = _prompt("  RPM drop per 429 hit (NIM_RPM_DROP)", default=str(existing.get("NIM_RPM_DROP", "10")))
+        try:
+            nim_rpm_drop = int(rpm_drop_str)
+        except ValueError:
+            nim_rpm_drop = 10
+        rpm_min_str = _prompt("  Floor RPM before hold delays (NIM_RPM_MIN)", default=str(existing.get("NIM_RPM_MIN", "20")))
+        try:
+            nim_rpm_min = int(rpm_min_str)
+        except ValueError:
+            nim_rpm_min = 20
+        rpm_hold_initial_str = _prompt("  First hold delay in seconds (NIM_RPM_HOLD_INITIAL)", default=str(existing.get("NIM_RPM_HOLD_INITIAL", "5")))
+        try:
+            nim_rpm_hold_initial = float(rpm_hold_initial_str)
+        except ValueError:
+            nim_rpm_hold_initial = 5.0
+        rpm_hold_max_str = _prompt("  Maximum hold delay in seconds (NIM_RPM_HOLD_MAX)", default=str(existing.get("NIM_RPM_HOLD_MAX", "10")))
+        try:
+            nim_rpm_hold_max = float(rpm_hold_max_str)
+        except ValueError:
+            nim_rpm_hold_max = 10.0
+        updates.update({
+            "provider_rate_limit": provider_rate_limit,
+            "provider_rate_window": provider_rate_window,
+            "provider_max_concurrency": provider_max_concurrency,
+            "nim_rpm_initial": nim_rpm_initial,
+            "nim_rpm_drop": nim_rpm_drop,
+            "nim_rpm_min": nim_rpm_min,
+            "nim_rpm_hold_initial": nim_rpm_hold_initial,
+            "nim_rpm_hold_max": nim_rpm_hold_max,
+        })
+
+    elif section == "http_timeouts":
+        # HTTP Client Timeouts
+        print()
+        print("Step: HTTP Client Timeouts")
+        print("-" * 40)
+        print("  Timeouts for provider API requests (seconds).")
+        print()
+        read_timeout_str = _prompt("  Read timeout (HTTP_READ_TIMEOUT)", default=str(existing.get("HTTP_READ_TIMEOUT", "300")))
+        try:
+            http_read_timeout = float(read_timeout_str)
+        except ValueError:
+            http_read_timeout = 300.0
+        write_timeout_str = _prompt("  Write timeout (HTTP_WRITE_TIMEOUT)", default=str(existing.get("HTTP_WRITE_TIMEOUT", "10")))
+        try:
+            http_write_timeout = float(write_timeout_str)
+        except ValueError:
+            http_write_timeout = 10.0
+        connect_timeout_str = _prompt("  Connect timeout (HTTP_CONNECT_TIMEOUT)", default=str(existing.get("HTTP_CONNECT_TIMEOUT", "2")))
+        try:
+            http_connect_timeout = float(connect_timeout_str)
+        except ValueError:
+            http_connect_timeout = 2.0
+        updates.update({
+            "http_read_timeout": http_read_timeout,
+            "http_write_timeout": http_write_timeout,
+            "http_connect_timeout": http_connect_timeout,
+        })
+
+    elif section == "nim_settings":
+        # NIM Core Settings
+        print()
+        print("Step: NIM Core Settings")
+        print("-" * 40)
+        print("  Core settings for NVIDIA NIM model requests.")
+        print()
+        max_tokens_str = _prompt("  Max output tokens (NIM_MAX_TOKENS)", default=str(existing.get("NIM_MAX_TOKENS", "202000")))
+        try:
+            nim_max_tokens = int(max_tokens_str)
+        except ValueError:
+            nim_max_tokens = 202000
+        print()
+        print("  Reasoning effort level for models that support it:")
+        reasoning_choices = ["low", "medium", "high"]
+        effort_idx = _prompt_choices(
+            "  Reasoning effort (NIM_REASONING_EFFORT):", reasoning_choices,
+            default=reasoning_choices.index(existing.get("NIM_REASONING_EFFORT", "high"))
+        )
+        nim_reasoning_effort = reasoning_choices[effort_idx]
+        print()
+        print("  Optional JSON mapping: maps Claude effort levels to model-specific values.")
+        print("  Example: {\"deepseek\": {\"xhigh\": \"max\", \"high\": \"high\"}}")
+        nim_reasoning_effort_mappings = _prompt(
+            "  Reasoning effort mappings JSON (NIM_REASONING_EFFORT_MAPPINGS)",
+            default=existing.get("NIM_REASONING_EFFORT_MAPPINGS", "")
+        )
+        updates.update({
+            "nim_max_tokens": nim_max_tokens,
+            "nim_reasoning_effort": nim_reasoning_effort,
+            "nim_reasoning_effort_mappings": nim_reasoning_effort_mappings,
+        })
+
+    elif section == "model_swapper":
+        # Model Swapper
+        print()
+        print("Step: Model Swapper")
+        print("-" * 40)
+        print("  Enable dynamic model switching via <modelswap:model-name> chat tag.")
+        print("  Short names resolved against NVIDIA's live catalog; test prompt validates swap-in.")
+        print()
+        swapper_enabled = _prompt_yes_no("  Enable model swapper (SWAPPER_ENABLED)?", default=False)
+        swapper_test_prompt = "Please reply with pong only, nothing else"
+        swapper_test_timeout = 120.0
+        if swapper_enabled:
+            print()
+            swapper_test_prompt = _prompt(
+                "  Test prompt (SWAPPER_TEST_PROMPT)",
+                default=existing.get("SWAPPER_TEST_PROMPT", "Please reply with pong only, nothing else")
+            )
+            swapper_test_timeout_str = _prompt(
+                "  Test timeout in seconds (SWAPPER_TEST_TIMEOUT)",
+                default=str(existing.get("SWAPPER_TEST_TIMEOUT", "120.0"))
+            )
+            try:
+                swapper_test_timeout = float(swapper_test_timeout_str)
+            except ValueError:
+                swapper_test_timeout = 120.0
+        updates.update({
+            "swapper_enabled": swapper_enabled,
+            "swapper_test_prompt": swapper_test_prompt,
+            "swapper_test_timeout": swapper_test_timeout,
+        })
+
+    elif section == "mcp_cache":
+        # MCP Cache TTL
+        print()
+        print("Step: MCP Cache Settings")
+        print("-" * 40)
+        print("  Cache TTL for MCP server web page fetches.")
+        print()
+        mcp_cache_ttl_str = _prompt("  Cache TTL in seconds (MCP_CACHE_TTL, max 3600, 0=disabled)",
+                                     default=str(existing.get("MCP_CACHE_TTL", "600")))
+        try:
+            mcp_cache_ttl = int(mcp_cache_ttl_str)
+        except ValueError:
+            mcp_cache_ttl = 600
+        updates.update({
+            "mcp_cache_ttl": mcp_cache_ttl,
+        })
+
+    elif section == "discord_web_search":
+        # Discord Web Search
+        print()
+        print("Step: Discord Web Search")
+        print("-" * 40)
+        print("  Enable web search and page fetch for the Discord bot.")
+        print("  When enabled, the bot can search DuckDuckGo and fetch pages for up-to-date answers.")
+        print()
+        discord_enable_web_search = _prompt_yes_no(
+            "  Enable web search (DISCORD_ENABLE_WEB_SEARCH)?", default=True
+        )
+        discord_web_search_max_results = 10
+        discord_web_search_max_iterations = 10
+        if discord_enable_web_search:
+            print()
+            max_results_str = _prompt(
+                "  Max search results per query (DISCORD_WEB_SEARCH_MAX_RESULTS)",
+                default=str(existing.get("DISCORD_WEB_SEARCH_MAX_RESULTS", "10"))
+            )
+            try:
+                discord_web_search_max_results = int(max_results_str)
+            except ValueError:
+                discord_web_search_max_results = 10
+            max_iter_str = _prompt(
+                "  Max tool call iterations per response (DISCORD_WEB_SEARCH_MAX_ITERATIONS)",
+                default=str(existing.get("DISCORD_WEB_SEARCH_MAX_ITERATIONS", "10"))
+            )
+            try:
+                discord_web_search_max_iterations = int(max_iter_str)
+            except ValueError:
+                discord_web_search_max_iterations = 10
+        updates.update({
+            "discord_enable_web_search": discord_enable_web_search,
+            "discord_web_search_max_results": discord_web_search_max_results,
+            "discord_web_search_max_iterations": discord_web_search_max_iterations,
+        })
 
     elif section == "mcp":
         # Step 7: MCP Server Configuration
@@ -1584,6 +1839,21 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                     "provider_max_wait": float(merged.get("PROVIDER_MAX_WAIT_TIME", 30)),
                     "provider_retry_on_truncation": int(merged.get("PROVIDER_RETRY_ON_TRUNCATION", 3)),
                     "provider_retry_delay": float(merged.get("PROVIDER_RETRY_DELAY", 1.0)),
+                    "resource_exhausted_retries": int(merged.get("RESOURCE_EXHAUSTED_RETRIES", 10)),
+                    # Provider Rate Limiting
+                    "provider_rate_limit": int(merged.get("PROVIDER_RATE_LIMIT", 40)),
+                    "provider_rate_window": int(merged.get("PROVIDER_RATE_WINDOW", 60)),
+                    "provider_max_concurrency": int(merged.get("PROVIDER_MAX_CONCURRENCY", 5)),
+                    # Adaptive Rate Limiting
+                    "nim_rpm_initial": int(merged.get("NIM_RPM_INITIAL", 40)),
+                    "nim_rpm_drop": int(merged.get("NIM_RPM_DROP", 10)),
+                    "nim_rpm_min": int(merged.get("NIM_RPM_MIN", 20)),
+                    "nim_rpm_hold_initial": float(merged.get("NIM_RPM_HOLD_INITIAL", 5)),
+                    "nim_rpm_hold_max": float(merged.get("NIM_RPM_HOLD_MAX", 10)),
+                    # HTTP Client Timeouts
+                    "http_read_timeout": float(merged.get("HTTP_READ_TIMEOUT", 300)),
+                    "http_write_timeout": float(merged.get("HTTP_WRITE_TIMEOUT", 10)),
+                    "http_connect_timeout": float(merged.get("HTTP_CONNECT_TIMEOUT", 2)),
                     # Request Queue settings
                     "request_queue_enabled": updates.get("request_queue_enabled", merged.get("REQUEST_QUEUE_ENABLED", "true") == "true"),
                     "request_queue_max_concurrent": updates.get("request_queue_max_concurrent", int(merged.get("REQUEST_QUEUE_MAX_CONCURRENT", 32))),
@@ -1595,10 +1865,20 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                     "enable_title_generation_skip": merged.get("ENABLE_TITLE_GENERATION_SKIP", "true"),
                     "enable_suggestion_mode_skip": merged.get("ENABLE_SUGGESTION_MODE_SKIP", "true"),
                     "enable_filepath_extraction_mock": merged.get("ENABLE_FILEPATH_EXTRACTION_MOCK", "true"),
+                    "fast_prefix_detection": merged.get("FAST_PREFIX_DETECTION", "true") == "true",
+                    # NIM Settings
+                    "nim_max_tokens": int(merged.get("NIM_MAX_TOKENS", 202000)),
+                    "nim_reasoning_effort": merged.get("NIM_REASONING_EFFORT", "high"),
+                    "nim_reasoning_effort_mappings": merged.get("NIM_REASONING_EFFORT_MAPPINGS", ""),
+                    # Model Swapper
+                    "swapper_enabled": merged.get("SWAPPER_ENABLED", "false") == "true",
+                    "swapper_test_prompt": merged.get("SWAPPER_TEST_PROMPT", "Please reply with pong only, nothing else"),
+                    "swapper_test_timeout": float(merged.get("SWAPPER_TEST_TIMEOUT", 120.0)),
                     "model_sonnet_full": merged.get("model_sonnet_full", "deepseek-ai/deepseek-v4-flash"),
                     "model_opus_full": merged.get("model_opus_full", "deepseek-ai/deepseek-v4-flash"),
                     "model_haiku_full": merged.get("model_haiku_full", "deepseek-ai/deepseek-v4-flash"),
                     "mcp_fetch_timeout": float(merged.get("WEB_SEARCH_FETCH_TIMEOUT", 10.0)),
+                    "mcp_cache_ttl": int(merged.get("MCP_CACHE_TTL", 600)),
                     # Discord Bot settings - prefer new-style keys (from updates) over old DISCORD_* keys (from existing)
                     "configure_discord": updates.get("configure_discord", merged.get("DISCORD_ENABLED", "false") == "true"),
                     "discord_token": updates.get("discord_token", merged.get("DISCORD_BOT_TOKEN", "")),
@@ -1627,6 +1907,16 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                     "discord_cmd_unblock": updates.get("discord_cmd_unblock", merged.get("DISCORD_CMD_UNBLOCK", "true") == "true"),
                     "discord_cmd_blocked": updates.get("discord_cmd_blocked", merged.get("DISCORD_CMD_BLOCKED", "true") == "true"),
                     "discord_cmd_newchannel": updates.get("discord_cmd_newchannel", merged.get("DISCORD_CMD_NEWCHANNEL", "true") == "true"),
+                    "discord_require_mention": merged.get("DISCORD_REQUIRE_MENTION", "true") == "true",
+                    "discord_command_prefix": merged.get("DISCORD_COMMAND_PREFIX", "!!"),
+                    "discord_cmd_prefix_ask": updates.get("discord_cmd_prefix_ask", merged.get("DISCORD_CMD_PREFIX_ASK", "true") == "true"),
+                    "discord_cmd_prefix_compact": updates.get("discord_cmd_prefix_compact", merged.get("DISCORD_CMD_PREFIX_COMPACT", "true") == "true"),
+                    "discord_cmd_prefix_new": updates.get("discord_cmd_prefix_new", merged.get("DISCORD_CMD_PREFIX_NEW", "true") == "true"),
+                    "discord_cmd_prefix_status": updates.get("discord_cmd_prefix_status", merged.get("DISCORD_CMD_PREFIX_STATUS", "true") == "true"),
+                    # Discord Web Search
+                    "discord_enable_web_search": merged.get("DISCORD_ENABLE_WEB_SEARCH", "true") == "true",
+                    "discord_web_search_max_results": int(merged.get("DISCORD_WEB_SEARCH_MAX_RESULTS", 10)),
+                    "discord_web_search_max_iterations": int(merged.get("DISCORD_WEB_SEARCH_MAX_ITERATIONS", 10)),
                 },
                 is_linux=is_linux,
             )
@@ -1920,6 +2210,145 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
         enable_title_generation_skip = opts["enable_title_generation_skip"]
         enable_suggestion_mode_skip = opts["enable_suggestion_mode_skip"]
         enable_filepath_extraction_mock = opts["enable_filepath_extraction_mock"]
+        fast_prefix_detection = opts["fast_prefix_detection"]
+
+        # ---- Step 6b: Provider Rate Limiting & Adaptive ----
+        print()
+        print("Step 6b: Provider Rate Limiting & Adaptive Rate Limiting")
+        print("-" * 40)
+        print("  NIMbus limits requests to stay within NVIDIA NIM's free tier limits.")
+        print("  The adaptive rate limiter automatically backs off on 429 responses.")
+        print()
+        rate_limit_str = _prompt("  Max requests per window (PROVIDER_RATE_LIMIT)", default="40")
+        try:
+            provider_rate_limit = int(rate_limit_str)
+        except ValueError:
+            provider_rate_limit = 40
+        rate_window_str = _prompt("  Rate window in seconds (PROVIDER_RATE_WINDOW)", default="60")
+        try:
+            provider_rate_window = int(rate_window_str)
+        except ValueError:
+            provider_rate_window = 60
+        max_concurrency_str = _prompt("  Max concurrent streams (PROVIDER_MAX_CONCURRENCY)", default="5")
+        try:
+            provider_max_concurrency = int(max_concurrency_str)
+        except ValueError:
+            provider_max_concurrency = 5
+        print()
+        print("  Adaptive Rate Limiting (backoff on 429 responses):")
+        print("  When a 429 is received, the limiter progressively reduces effective RPM.")
+        print()
+        rpm_initial_str = _prompt("  Starting RPM (NIM_RPM_INITIAL)", default="40")
+        try:
+            nim_rpm_initial = int(rpm_initial_str)
+        except ValueError:
+            nim_rpm_initial = 40
+        rpm_drop_str = _prompt("  RPM drop per 429 hit (NIM_RPM_DROP)", default="10")
+        try:
+            nim_rpm_drop = int(rpm_drop_str)
+        except ValueError:
+            nim_rpm_drop = 10
+        rpm_min_str = _prompt("  Floor RPM before hold delays (NIM_RPM_MIN)", default="20")
+        try:
+            nim_rpm_min = int(rpm_min_str)
+        except ValueError:
+            nim_rpm_min = 20
+        rpm_hold_initial_str = _prompt("  First hold delay in seconds (NIM_RPM_HOLD_INITIAL)", default="5")
+        try:
+            nim_rpm_hold_initial = float(rpm_hold_initial_str)
+        except ValueError:
+            nim_rpm_hold_initial = 5.0
+        rpm_hold_max_str = _prompt("  Maximum hold delay in seconds (NIM_RPM_HOLD_MAX)", default="10")
+        try:
+            nim_rpm_hold_max = float(rpm_hold_max_str)
+        except ValueError:
+            nim_rpm_hold_max = 10.0
+
+        # ---- Step 6c: HTTP Client Timeouts ----
+        print()
+        print("Step 6c: HTTP Client Timeouts")
+        print("-" * 40)
+        print("  Timeouts for provider API requests (seconds).")
+        print()
+        read_timeout_str = _prompt("  Read timeout (HTTP_READ_TIMEOUT)", default="300")
+        try:
+            http_read_timeout = float(read_timeout_str)
+        except ValueError:
+            http_read_timeout = 300.0
+        write_timeout_str = _prompt("  Write timeout (HTTP_WRITE_TIMEOUT)", default="10")
+        try:
+            http_write_timeout = float(write_timeout_str)
+        except ValueError:
+            http_write_timeout = 10.0
+        connect_timeout_str = _prompt("  Connect timeout (HTTP_CONNECT_TIMEOUT)", default="2")
+        try:
+            http_connect_timeout = float(connect_timeout_str)
+        except ValueError:
+            http_connect_timeout = 2.0
+
+        # ---- Step 6d: NIM Core Settings ----
+        print()
+        print("Step 6d: NIM Core Settings")
+        print("-" * 40)
+        print("  Core settings for NVIDIA NIM model requests.")
+        print()
+        max_tokens_str = _prompt("  Max output tokens (NIM_MAX_TOKENS)", default="202000")
+        try:
+            nim_max_tokens = int(max_tokens_str)
+        except ValueError:
+            nim_max_tokens = 202000
+        print()
+        print("  Reasoning effort level for models that support it:")
+        reasoning_choices = ["low", "medium", "high"]
+        effort_idx = _prompt_choices(
+            "  Reasoning effort (NIM_REASONING_EFFORT):", reasoning_choices, default=2
+        )
+        nim_reasoning_effort = reasoning_choices[effort_idx]
+        print()
+        print("  Optional JSON mapping: maps Claude effort levels to model-specific values.")
+        print("  Example: {\"deepseek\": {\"xhigh\": \"max\", \"high\": \"high\"}}")
+        nim_reasoning_effort_mappings = _prompt(
+            "  Reasoning effort mappings JSON (NIM_REASONING_EFFORT_MAPPINGS)",
+            default=""
+        )
+
+        # ---- Step 6e: Model Swapper ----
+        print()
+        print("Step 6e: Model Swapper")
+        print("-" * 40)
+        print("  Enable dynamic model switching via <modelswap:model-name> chat tag.")
+        print("  Short names resolved against NVIDIA's live catalog; test prompt validates swap-in.")
+        print()
+        swapper_enabled = _prompt_yes_no("  Enable model swapper (SWAPPER_ENABLED)?", default=False)
+        swapper_test_prompt = "Please reply with pong only, nothing else"
+        swapper_test_timeout = 120.0
+        if swapper_enabled:
+            print()
+            swapper_test_prompt = _prompt(
+                "  Test prompt (SWAPPER_TEST_PROMPT)",
+                default="Please reply with pong only, nothing else"
+            )
+            swapper_test_timeout_str = _prompt(
+                "  Test timeout in seconds (SWAPPER_TEST_TIMEOUT)",
+                default="120.0"
+            )
+            try:
+                swapper_test_timeout = float(swapper_test_timeout_str)
+            except ValueError:
+                swapper_test_timeout = 120.0
+
+        # ---- Step 6f: MCP Cache Settings ----
+        print()
+        print("Step 6f: MCP Cache Settings")
+        print("-" * 40)
+        print("  Cache TTL for MCP server web page fetches.")
+        print()
+        mcp_cache_ttl_str = _prompt("  Cache TTL in seconds (MCP_CACHE_TTL, max 3600, 0=disabled)",
+                                     default="600")
+        try:
+            mcp_cache_ttl = int(mcp_cache_ttl_str)
+        except ValueError:
+            mcp_cache_ttl = 600
 
         # ---- Step 7: MCP Server Configuration ----
         print()
@@ -2164,6 +2593,36 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
             print("  /newchannel - Create a new dedicated conversation channel")
             discord_cmd_newchannel = _prompt_yes_no("  Enable /newchannel command?", default=True)
 
+            # ---- Discord Web Search ----
+            print()
+            print("  Web Search:")
+            print("  Enable web search and page fetch for the Discord bot.")
+            print("  When enabled, the bot can search DuckDuckGo and fetch pages for up-to-date answers.")
+            print()
+            discord_enable_web_search = _prompt_yes_no(
+                "  Enable web search (DISCORD_ENABLE_WEB_SEARCH)?", default=True
+            )
+            discord_web_search_max_results = 10
+            discord_web_search_max_iterations = 10
+            if discord_enable_web_search:
+                print()
+                max_results_str = _prompt(
+                    "  Max search results per query (DISCORD_WEB_SEARCH_MAX_RESULTS)",
+                    default="10"
+                )
+                try:
+                    discord_web_search_max_results = int(max_results_str)
+                except ValueError:
+                    discord_web_search_max_results = 10
+                max_iter_str = _prompt(
+                    "  Max tool call iterations per response (DISCORD_WEB_SEARCH_MAX_ITERATIONS)",
+                    default="10"
+                )
+                try:
+                    discord_web_search_max_iterations = int(max_iter_str)
+                except ValueError:
+                    discord_web_search_max_iterations = 10
+
         # ---- Step 9: Claude Code settings ----
         print()
         print("Step 8: Claude Code Configuration")
@@ -2205,6 +2664,21 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 "provider_max_wait": provider_max_wait,
                 "provider_retry_on_truncation": provider_retry_on_truncation,
                 "provider_retry_delay": provider_retry_delay,
+                "resource_exhausted_retries": 10,  # Default, not prompted in full wizard
+                # Provider Rate Limiting
+                "provider_rate_limit": provider_rate_limit,
+                "provider_rate_window": provider_rate_window,
+                "provider_max_concurrency": provider_max_concurrency,
+                # Adaptive Rate Limiting
+                "nim_rpm_initial": nim_rpm_initial,
+                "nim_rpm_drop": nim_rpm_drop,
+                "nim_rpm_min": nim_rpm_min,
+                "nim_rpm_hold_initial": nim_rpm_hold_initial,
+                "nim_rpm_hold_max": nim_rpm_hold_max,
+                # HTTP Client Timeouts
+                "http_read_timeout": http_read_timeout,
+                "http_write_timeout": http_write_timeout,
+                "http_connect_timeout": http_connect_timeout,
                 # Request Queue settings
                 "request_queue_enabled": request_queue_enabled,
                 "request_queue_max_concurrent": request_queue_max_concurrent,
@@ -2216,12 +2690,22 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 "enable_title_generation_skip": enable_title_generation_skip,
                 "enable_suggestion_mode_skip": enable_suggestion_mode_skip,
                 "enable_filepath_extraction_mock": enable_filepath_extraction_mock,
+                "fast_prefix_detection": fast_prefix_detection,
+                # NIM Settings
+                "nim_max_tokens": nim_max_tokens,
+                "nim_reasoning_effort": nim_reasoning_effort,
+                "nim_reasoning_effort_mappings": nim_reasoning_effort_mappings,
+                # Model Swapper
+                "swapper_enabled": swapper_enabled,
+                "swapper_test_prompt": swapper_test_prompt,
+                "swapper_test_timeout": swapper_test_timeout,
                 # Full NIM model IDs for Linux .env MODEL line
                 "model_sonnet_full": model_sonnet_full,
                 "model_opus_full": model_opus_full,
                 "model_haiku_full": model_haiku_full,
                 # MCP Server settings
                 "mcp_fetch_timeout": mcp_fetch_timeout,
+                "mcp_cache_ttl": mcp_cache_ttl,
                 # Discord Bot settings
                 "configure_discord": configure_discord,
                 "discord_token": discord_token,
@@ -2250,6 +2734,16 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 "discord_cmd_unblock": discord_cmd_unblock,
                 "discord_cmd_blocked": discord_cmd_blocked,
                 "discord_cmd_newchannel": discord_cmd_newchannel,
+                "discord_require_mention": True,  # Default, not prompted in full wizard
+                "discord_command_prefix": "!!",  # Default, not prompted in full wizard
+                "discord_cmd_prefix_ask": discord_cmd_prefix_ask,
+                "discord_cmd_prefix_compact": discord_cmd_prefix_compact,
+                "discord_cmd_prefix_new": discord_cmd_prefix_new,
+                "discord_cmd_prefix_status": discord_cmd_prefix_status,
+                # Discord Web Search
+                "discord_enable_web_search": discord_enable_web_search,
+                "discord_web_search_max_results": discord_web_search_max_results,
+                "discord_web_search_max_iterations": discord_web_search_max_iterations,
             },
             is_linux=is_linux,
         )

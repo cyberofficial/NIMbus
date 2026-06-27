@@ -79,6 +79,13 @@ class Settings(BaseSettings):
         default=1, ge=0, le=2, validation_alias="REQUEST_QUEUE_API_PRIORITY"
     )
 
+    # ==================== Adaptive Rate Limiting ====================
+    nim_rpm_initial: int = Field(default=40, validation_alias="NIM_RPM_INITIAL")
+    nim_rpm_drop: int = Field(default=10, validation_alias="NIM_RPM_DROP")
+    nim_rpm_min: int = Field(default=20, validation_alias="NIM_RPM_MIN")
+    nim_rpm_hold_initial: float = Field(default=5.0, validation_alias="NIM_RPM_HOLD_INITIAL")
+    nim_rpm_hold_max: float = Field(default=10.0, validation_alias="NIM_RPM_HOLD_MAX")
+
     # ==================== Server Type ====================
     server_type: str = Field(default="stream", validation_alias="SERVER_TYPE")
     provider_max_wait_time: float = Field(
@@ -126,6 +133,14 @@ class Settings(BaseSettings):
 
     # ==================== NIM Settings ====================
     nim: NimSettings = Field(default_factory=NimSettings)  # type: ignore[arg-type]
+
+    # ==================== MCP Server ====================
+    web_search_fetch_timeout: float = Field(
+        default=10.0, validation_alias="WEB_SEARCH_FETCH_TIMEOUT"
+    )
+    mcp_cache_ttl: int = Field(
+        default=600, validation_alias="MCP_CACHE_TTL"
+    )
 
     # ==================== Server ====================
     host: str = "0.0.0.0"
