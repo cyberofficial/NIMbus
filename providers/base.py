@@ -26,6 +26,7 @@ class ProviderConfig(BaseModel):
     max_wait_time: float = 30.0
     retry_on_truncation: int = 3
     retry_delay: float = 1.0
+    resource_exhausted_retries: int = 10
     # Request queue settings
     request_queue_enabled: bool = True
     request_queue_max_concurrent: int = 32

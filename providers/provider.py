@@ -530,9 +530,16 @@ class NvidiaNimProvider(BaseProvider):
                 ) or _is_retryable_server_error(e) or _is_resource_exhausted_error(e)
                 last_error = e
                 detail = _format_error_detail(e)
+
+                # ResourceExhausted errors have their own retry count
+                if _is_resource_exhausted_error(e):
+                    effective_max_retries = self._config.resource_exhausted_retries
+                else:
+                    effective_max_retries = max_retries
+
                 exhaustion_msg = (
                     f"after {attempt + 1} attempts"
-                    if max_retries > 0
+                    if effective_max_retries > 0
                     else f"after {attempt + 1} attempts (endless retries - still trying)"
                 )
                 if is_retryable:
@@ -551,16 +558,16 @@ class NvidiaNimProvider(BaseProvider):
                         exhaustion_msg,
                         detail,
                     )
-                if max_retries > 0 and attempt >= max_retries:
+                if effective_max_retries > 0 and attempt >= effective_max_retries:
                     if is_retryable:
                         if isinstance(e, (APIConnectionError, APITimeoutError)):
                             raise StreamTruncatedError(
                                 f"NVIDIA backend dropped connection after "
-                                f"{max_retries + 1} attempts: {e}"
+                                f"{effective_max_retries + 1} attempts: {e}"
                             ) from e
                         raise StreamTruncatedError(
                             f"NVIDIA backend server error (5xx) after "
-                            f"{max_retries + 1} attempts: {e}"
+                            f"{effective_max_retries + 1} attempts: {e}"
                         ) from e
                     raise
                 if is_retryable:
@@ -1159,8 +1166,15 @@ class NvidiaNimProvider(BaseProvider):
                 ) or _is_retryable_server_error(e) or _is_resource_exhausted_error(e)
                 last_error_tag = f"{type(e).__name__}"
                 detail = _format_error_detail(e)
+
+                # ResourceExhausted errors have their own retry count
+                if _is_resource_exhausted_error(e):
+                    effective_max_retries = self._config.resource_exhausted_retries
+                else:
+                    effective_max_retries = max_retries
+
                 if is_retryable:
-                    if max_retries == 0 or attempt < max_retries:
+                    if effective_max_retries == 0 or attempt < effective_max_retries:
                         logger.warning(
                             "{}_STREAM: {} on attempt {}/{} - retrying. {}",
                             tag,

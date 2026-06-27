@@ -398,6 +398,7 @@ def _write_dotenv(path: Path, params: dict, is_linux: bool = False) -> None:
         f"PROVIDER_MAX_WAIT_TIME={params.get('provider_max_wait', 30)}",
         f"PROVIDER_RETRY_ON_TRUNCATION={params.get('provider_retry_on_truncation', 3)}",
         f"PROVIDER_RETRY_DELAY={params.get('provider_retry_delay', 1.0)}",
+        f"RESOURCE_EXHAUSTED_RETRIES={params.get('resource_exhausted_retries', 10)}",
         # Request Queue settings
         f"REQUEST_QUEUE_ENABLED={str(params.get('request_queue_enabled', True)).lower()}",
         f"REQUEST_QUEUE_MAX_CONCURRENT={params.get('request_queue_max_concurrent', 32)}",

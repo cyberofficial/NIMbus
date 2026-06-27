@@ -90,6 +90,9 @@ class Settings(BaseSettings):
     provider_retry_delay: float = Field(
         default=1.0, ge=0, validation_alias="PROVIDER_RETRY_DELAY"
     )
+    provider_resource_exhausted_retries: int = Field(
+        default=10, ge=0, validation_alias="RESOURCE_EXHAUSTED_RETRIES"
+    )
 
     # ==================== HTTP Client Timeouts ====================
     http_read_timeout: float = Field(

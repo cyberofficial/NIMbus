@@ -45,7 +45,7 @@ To restore a backed-up settings.json: `nimbus.exe --init restore`
 
 ### Option 2: Python (any OS)
 
-**Prerequisites:** NVIDIA NIM API key, Python 3.14.2+, [Claude Code](https://github.com/anthropics/claude-code)
+**Prerequisites:** NVIDIA NIM API key, Python 3.12+, [Claude Code](https://github.com/anthropics/claude-code)
 
 ```bash
 git clone https://github.com/cyberofficial/NIMbus.git
@@ -133,25 +133,26 @@ Browse all: [build.nvidia.com/explore/discover](https://build.nvidia.com/explore
 | `PROVIDER_RATE_LIMIT` | Requests per window | `40` |
 | `PROVIDER_RATE_WINDOW` | Rate window in seconds | `60` |
 | `PROVIDER_MAX_CONCURRENCY` | Max concurrent streams | `5` |
+| `NIM_RPM_INITIAL` | Starting requests per minute (adaptive rate limiting) | `40` |
+| `NIM_RPM_DROP` | RPM reduction per 429 hit | `10` |
+| `NIM_RPM_MIN` | Floor RPM before hold delays | `20` |
+| `NIM_RPM_HOLD_INITIAL` | First hold delay in seconds | `5` |
+| `NIM_RPM_HOLD_MAX` | Maximum hold delay in seconds | `10` |
 | `PROVIDER_RETRY_ON_TRUNCATION` | Buffer mode retry count | `3` |
 | `PROVIDER_RETRY_DELAY` | Buffer mode retry base delay (s) | `1.0` |
 | `PROVIDER_MAX_WAIT_TIME` | Buffer mode max wait (s) | `30` |
+| `RESOURCE_EXHAUSTED_RETRIES` | Max retries for ResourceExhausted (worker limit) errors (0 = endless) | `10` |
 | `HTTP_READ_TIMEOUT` | Read timeout in seconds | `300` |
 | `HTTP_WRITE_TIMEOUT` | Write timeout in seconds | `10` |
 | `HTTP_CONNECT_TIMEOUT` | Connect timeout in seconds | `2` |
 | `PORT` | Server port | `8082` |
 | `PROXY_API_KEY` | Optional proxy authentication (auto-generated if empty) | (random) |
-| `FAST_PREFIX_DETECTION` | Fast command prefix detection | `true` |
-| `ENABLE_NETWORK_PROBE_MOCK` | Mock quota probe requests | `true` |
-| `ENABLE_TITLE_GENERATION_SKIP` | Skip title generation requests | `true` |
-| `ENABLE_SUGGESTION_MODE_SKIP` | Skip suggestion mode requests | `false` (no-op) |
-| `ENABLE_FILEPATH_EXTRACTION_MOCK` | Mock filepath extraction | `true` |
-| `ENABLE_RECAP_SKIP` | Block recap requests (stepped away/return) | `false` (no-op) |
 | `SWAPPER_ENABLED` | Enable dynamic `<modelswap:...>` chat tag | `false` |
 | `SWAPPER_TEST_PROMPT` | Prompt used to validate swap-in model | `Please reply with pong only, nothing else` |
 | `SWAPPER_TEST_TIMEOUT` | Model swapper test timeout (s) | `120.0` |
 | `WEB_SEARCH_FETCH_TIMEOUT` | MCP `fetch_page` HTTP timeout (s) | `10.0` |
 | `MCP_CACHE_TTL` | MCP cache TTL (s), max 3600, 0=disabled | `600` |
+| `WEB_SEARCH_DEBUG` | Enable verbose web search SSE logging | `false` |
 
 ### Discord Bot (Optional)
 
@@ -356,6 +357,7 @@ See [`.env.example`](.env.example) for all options.
 | `POST /v1/messages/count_tokens` | Count tokens for a request |
 | `GET /health` | Health check |
 | `GET /status` | Server status |
+| `GET /queue/status` | Request queue status (depth, wait times, rejections) |
 | `POST /stop` | Stop all CLI sessions and pending tasks |
 
 ## Model Swapper

@@ -46,6 +46,7 @@ def _create_provider(settings: Settings) -> BaseProvider:
         max_wait_time=settings.provider_max_wait_time,
         retry_on_truncation=settings.provider_retry_on_truncation,
         retry_delay=settings.provider_retry_delay,
+        resource_exhausted_retries=settings.provider_resource_exhausted_retries,
         # Request queue settings
         request_queue_enabled=settings.request_queue_enabled,
         request_queue_max_concurrent=settings.request_queue_max_concurrent,

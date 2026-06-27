@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## v2.0.8 - Date: 2026-06-26
+
+### Added
+- **Built-in Request Queue** - New priority-based request queue to prevent NVIDIA NIM "Worker local total request limit reached (33/32)" errors. Handles up to 32 concurrent requests (configurable) with FIFO ordering, priority lanes (HIGH for Discord, NORMAL for API), and background workers.
+- **Two-Phase Timeout** - Queue timeout split into: (1) wait for worker pickup (configurable, default 300s), then (2) wait indefinitely for processing to complete. Prevents cancelling requests that have already started long-running operations (streaming, retries).
+- **NVIDIA Worker Slot Accounting** - Track per-worker concurrent request limits (32) via `worker_limit` and `worker_available` fields. Buffered and streaming requests now acquire worker slots for their full lifecycle.
+- **Resource Exhaustion Retry** - Detect NVIDIA "ResourceExhausted" (429/rate limit) responses and automatically participate in retry logic with exponential backoff.
+- **Worker Status Logging** - Periodic logging of worker slot utilization (current/available/limit) at DEBUG level; included in `/status` endpoint.
+- **Setup Wizard Queue Configuration** - Interactive wizard now prompts for request queue settings (enabled, max concurrent, max size, timeout, workers, Discord/API priority).
+- **User Reasoning Effort Mapping** - New `user_reasoning_effort_mapping.json` for custom effort level mappings per user.
+
+### Fixed
+- **Retry Logic Improvements** - Broader exception handling (includes `APIError`); better handling of model capability errors (system-role rejection, thinking-parameter rejection) by rebuilding requests and retrying.
+- **Exception Tuple Bug** - Fixed `except` tuple for `JSONDecodeError`/`OSError` which was not catching both exceptions.
+- **Streaming Error Emission** - Improved SSE error event emission on terminal failures.
+- **Queue Timeout Stats** - Properly increment timeout stats when future is done but timed out waiting for `processing_started`.
+
+### Changed
+- **Default Model** - Switched from `deepseek-ai/deepseek-v4-flash` to `nvidia/nemotron-3-super-120b-a12b` in `.env.example` and setup wizard.
+- **Discord Web Search Enabled by Default** - Added `DISCORD_ENABLE_WEB_SEARCH=true`, `DISCORD_WEB_SEARCH_MAX_RESULTS=10`, `DISCORD_WEB_SEARCH_MAX_ITERATIONS=10`.
+- **Discord Reply Integration** - Bot now uses native Discord `message.reply()` for responses; captures replied-to bot message content when users use Discord reply feature; responds to replies to bot messages even when `require_mention` is enabled.
+- **Conversation History** - User messages now saved unconditionally in `on_message` event (not just when bot replies), preventing missing history.
+- **Discord Message Processing Retry** - Added up to 3 retries with exponential backoff (1s base) for transient failures when processing messages from the queue.
+- **Web Search Pagination** - DuckDuckGo HTML search now supports multi-page results with deduping across pages.
+- **Request Payload Validation** - Force non-empty content in requests (required for Nemotron tool calls).
+
+### Files Touched
+- `providers/request_queue.py` - New file: priority queue implementation with worker pool
+- `providers/rate_limit.py` - Worker slot tracking, adaptive backoff, status logging
+- `providers/provider.py` - Worker slot acquisition, retry logic, error handling
+- `providers/base.py` - New `worker_limit` / `worker_available` properties
+- `config/settings.py` - Queue settings, Discord web search settings
+- `api/routes.py` - Queue stats endpoint (`/queue/status`), priority handling
+- `api/dependencies.py` - Provider accessor for queue
+- `discord_bot/bot.py` - Reply handling, web search integration, retry logic, channel checks
+- `discord_bot/cog.py` - Reply support, command handling
+- `discord_bot/conversation.py` - Unconditional message saving, reply_message field
+- `discord_bot/persistence.py` - Reply serialization
+- `discord_bot/tools/web_search.py` - Web search + fetch_page tools with caching
+- `setup_wizard.py` - Queue config prompts, web search config
+- `websearch/duckduckgo_html.py` - Pagination, deduping, offset-aware fetch
+- `providers/request.py` - Non-empty content enforcement
+- `user_reasoning_effort_mapping.json` - New: per-user effort mappings
+
+---
+
 ## v2.0.7 - Date: 2026-06-23
 
 ### Added
