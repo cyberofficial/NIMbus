@@ -7,7 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## v2.0.8 - Date: 2026-06-26
+## v2.0.9 - Date: 2026-06-28
+
+### Added
+- **Portable Build Browser Bundling** - Playwright Chromium pre-downloaded at build time and embedded via `--add-data` into single-file exe (~25 MB); no external `ms-playwright` folder needed; runs on any Windows machine without `playwright install`
+- **Discord Bot Role Mention Support** - Bot now responds when mentioned via role (`@&role_id`) in addition to direct user mentions; checks if any mentioned role is assigned to the bot
+
+### Fixed
+- **MCP Server Headless Mode** - `start_server.py` now loads `.env` before starting MCP server, so `MCP_BROWSER_HEADLESS=false` and `DISCORD_BROWSER_HEADLESS=false` are properly applied
+- **Tool Choice Conversion** - Anthropic `tool_choice` (any/auto/none/tool) correctly converted to OpenAI format in `message_converter.py`
+
+### Changed
+- **Single-File Portable Build** - Browsers extracted to `_MEIPASS` temp dir at runtime via updated `runtime-playwright.py` hook; source runs use system Playwright install
+- **DuckDuckGo Search Robustness** - Uses only `lite.duckduckgo.com` endpoint via Playwright for reliable results; removes fragile HTML endpoint parsing
+- **Debug Logging** - Final buffered response logged for Discord web search troubleshooting
+
+### Files Touched
+- `build_exe.bat` - Pre-download browsers, copy to build_resources, bundle via --add-data
+- `build_hooks/runtime-playwright.py` - Use _MEIPASS for embedded browsers
+- `discord_bot/bot.py` - Role mention detection, debug logging
+- `websearch/duckduckgo_html.py` - Source vs portable browser path logic, error handling
+- `start_server.py` - Load .env before MCP server launch
+- `providers/message_converter.py` - tool_choice conversion logic
+- `requirements.txt` - Added playwright, playwright-stealth, pywin32, dotenv
+- `nimbus.spec` - Full PyInstaller spec with browser datas and hidden imports
+
+---
+
+## v2.0.8 - Date: 2026-06-27
+
+### Added
+- **Playwright-Backed DuckDuckGo Search** - Web search now uses Playwright with stealth mode, persistent storage state (cookies), multi-endpoint fallback (html + lite), and auto-detection of result format
+- **DuckDuckGo Lite Parser** - Robust parsing for `lite.duckduckgo.com` table-based results with URL cleaning (removes DDG redirect wrapper)
+- **DuckDuckGo Pagination Resilience** - Failed pagination pages (e.g., rate limit 202) stop gracefully while preserving collected results
+- **Discord Web Search Failure Tracking** - Consecutive `web_search` failures (2+) automatically disable the tool, keeping only `fetch_page` available
+- **Final Buffered Fallback** - When tool calls produce no text after max iterations, sends final buffered request without tools to force text response
+- **Tool Use Logging** - Detects and logs `tool_use` start events with name and ID
+- **Tool Input/Result Robustness** - Fixed tool input parsing (handles string vs dict), tool result construction with proper error messages
+
+### Fixed
+- **Pylance Type-Checker Errors** - Resolved across 11 files: added missing imports (Path, Callable, Awaitable, TypeVar), fixed coro_factory type hints, corrected keyword-only arg calls, added RuntimeError guard for uninitialized queue, aligned abstract method signatures, fixed return type annotations for modelswap/nimserver, fixed Message construction with union types, added meta None guards, added isinstance checks for CategoryChannel, validated reasoning_effort env var values, fixed _generate_env_alias to always return str
+- **extract_text_from_content** - Now robust to dicts, objects with .text attribute, and strings
+
+### Changed
+- **FETCH_PAGE Tool Schema** - Added offset/limit/chunked reading docs, search param capped at 5 matches with 200 char context
+- **Request Queue Priority** - Added `priority` parameter to `stream_response` and `buffered_request` abstract methods in `BaseProvider`
+- **System Role Fallback Logging** - Clearer warning when model rejects system role
+- **Model Warmup at Startup** - NVIDIA model cache pre-warmed in `api/app.py` lifespan to avoid first-request latency
+- **Shared tiktoken Cache** - New `providers/tiktoken_cache.py` eliminates 3 redundant encoder loads across sse_builder, request_utils, conversation
+- **Auto-Generated Validation Aliases** - `alias_generator` in Settings eliminates ~60 manual validation_alias fields
+- **Shared Retry Logic** - `_execute_with_retry` helper in provider.py consolidates buffered/streaming retry logic
+
+### Files Touched
+- `build_hooks/runtime-playwright.py` - New: PyInstaller runtime hook for browser path
+- `discord_bot/bot.py` - Web search robustness, failure tracking, final fallback, tool logging
+- `discord_bot/tools/web_search.py` - FETCH_PAGE schema, match/context limits, error messages
+- `providers/text.py` - extract_text_from_content handles dicts
+- `websearch/duckduckgo_html.py` - Complete rewrite: Playwright, persistent context, stealth, multi-endpoint, pagination, lite parser
+- `providers/tiktoken_cache.py` - New: shared encoder cache
+- `providers/provider.py` - Shared retry logic, type fixes, queue initialization guard
+- `providers/base.py` - Added priority param to abstract methods
+- `config/settings.py` - alias_generator, startup_model_cache
+- `api/app.py` - NVIDIA model cache warmup
+- `api/optimization_handlers.py` - stop_reason fallback
+- `api/routes.py` - Return type annotations
+- `config/nim.py` - reasoning_effort validation
+- `discord_bot/cog.py` - discord_model fallback, bot user check
+- `discord_bot/conversation.py` - tools_used type fix
+- `discord_bot/rate_limit.py` - (user_id, channel_id) tuple keys
+- `discord_bot/views.py` - CategoryChannel isinstance check
+- `mcp_server.py` - meta None guard
+
+---
+
+## v2.0.7 - Date: 2026-06-26
 
 ### Added
 - **Built-in Request Queue** - New priority-based request queue to prevent NVIDIA NIM "Worker local total request limit reached (33/32)" errors. Handles up to 32 concurrent requests (configurable) with FIFO ordering, priority lanes (HIGH for Discord, NORMAL for API), and background workers.
