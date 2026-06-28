@@ -2,9 +2,10 @@
 import os
 import sys
 
-# Set browsers path relative to the exe directory
+# Browsers are embedded via --add-data and extracted to _MEIPASS at runtime
 if getattr(sys, "frozen", False):
-    exe_dir = os.path.dirname(sys.executable)
-    browsers_dir = os.path.join(exe_dir, "ms-playwright")
-    if os.path.isdir(browsers_dir):
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browsers_dir
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        browsers_dir = os.path.join(meipass, "ms-playwright")
+        if os.path.isdir(browsers_dir):
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browsers_dir

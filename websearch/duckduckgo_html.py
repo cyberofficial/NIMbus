@@ -6,6 +6,7 @@ No external search library dependency (Playwright optional for JS-heavy scenario
 """
 
 import os
+import sys
 import urllib.parse
 from pathlib import Path
 
@@ -66,17 +67,31 @@ class DuckDuckGoHTMLSearch:
         self._storage_file = Path(__file__).parent.parent / ".playwright_data" / "ddg_state.json"
 
     async def _get_browser(self):
-        """Lazy-init Playwright browser with anti-detection (reused across searches)."""
-        if self._browser is None:
-            from playwright.async_api import async_playwright
-            self._playwright = await async_playwright().start()
+        """Lazy-init Playwright browser. Uses bundled browsers from _MEIPASS in portable build, system browsers when running from source."""
+        if self._browser is not None:
+            return self._browser
+
+        from playwright.async_api import async_playwright
+
+        # Only override PLAYWRIGHT_BROWSERS_PATH in frozen (PyInstaller) builds
+        # When running from source, let Playwright use its default location (~/.cache/ms-playwright or %APPDATA%)
+        if getattr(sys, 'frozen', False):
+            meipass = getattr(sys, "_MEIPASS", None)
+            if meipass:
+                browsers_dir = Path(meipass) / "ms-playwright"
+                os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers_dir)
+
+        self._playwright = await async_playwright().start()
+
+        try:
             self._browser = await self._playwright.chromium.launch(
                 headless=os.getenv("DISCORD_BROWSER_HEADLESS", os.getenv("MCP_BROWSER_HEADLESS", "true")).lower() != "false",
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                ],
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
             )
+        except Exception as e:
+            logger.error(f"Failed to launch Chromium: {e}")
+            raise RuntimeError(f"Could not launch Chromium. Ensure Playwright browsers are installed (run 'playwright install chromium').") from e
+
         return self._browser
 
     async def _fetch_via_playwright(self, query: str, offset: int = 0) -> str:

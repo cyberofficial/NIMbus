@@ -12,3 +12,7 @@ openai>=2.16.0
 loguru>=0.7.0
 mcp>=1.27.2
 lxml>=4.9.0
+playwright>=1.40.0
+playwright-stealth>=2.0.0
+pywin32>=312
+dotenv

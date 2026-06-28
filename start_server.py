@@ -271,7 +271,10 @@ def run_swapper_mode():
 
 def main():
     """Main entry point."""
-    # Check for --mcp / --mcpwebsearch flag first
+    # Load configuration FIRST so environment variables are available for MCP server
+    config = load_env_config()
+
+    # Check for --mcp / --mcpwebsearch flag
     if "--mcpwebsearch" in sys.argv or "--mcp" in sys.argv:
         run_mcp_server()
         return
@@ -284,9 +287,6 @@ def main():
     print("=" * 60)
     print("Claude Code Proxy Server Launcher")
     print("=" * 60)
-
-    # Load configuration
-    config = load_env_config()
 
     print(f"Host: {config['host']}")
     print(f"Port: {config['port']}")

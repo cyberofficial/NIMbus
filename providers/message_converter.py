@@ -231,6 +231,26 @@ def build_base_request_body(
         body["tools"] = AnthropicToOpenAIConverter.convert_tools(tools)
     tool_choice = getattr(request_data, "tool_choice", None)
     if tool_choice:
-        body["tool_choice"] = tool_choice
+        # Convert Anthropic tool_choice to OpenAI format
+        if isinstance(tool_choice, dict):
+            tool_type = tool_choice.get("type")
+            if tool_type == "none":
+                body["tool_choice"] = "none"
+            elif tool_type == "auto":
+                body["tool_choice"] = "auto"
+            elif tool_type == "any":
+                # OpenAI doesn't have "any", use "auto" as closest equivalent
+                body["tool_choice"] = "auto"
+            elif tool_type == "tool" and "name" in tool_choice:
+                body["tool_choice"] = {
+                    "type": "function",
+                    "function": {"name": tool_choice["name"]}
+                }
+            else:
+                # Fallback: pass through as-is (may cause error, but preserves original behavior)
+                body["tool_choice"] = tool_choice
+        else:
+            # Not a dict, pass through as-is
+            body["tool_choice"] = tool_choice
 
     return body

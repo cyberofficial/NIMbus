@@ -88,7 +88,17 @@ class NimbusDiscordBot(commands.Bot):
         if bot_id is None:
             return False
         # Support both <@id> and <@!id> formats (regular and nickname mention)
-        return f"<@{bot_id}>" in content or f"<@!{bot_id}>" in content
+        if f"<@{bot_id}>" in content or f"<@!{bot_id}>" in content:
+            return True
+        # Also check if any mentioned role is a role the bot has
+        if message.role_mentions:
+            bot_member = message.guild.get_member(bot_id) if message.guild else None
+            if bot_member:
+                bot_role_ids = {r.id for r in bot_member.roles}
+                for role in message.role_mentions:
+                    if role.id in bot_role_ids:
+                        return True
+        return False
 
     async def setup_hook(self) -> None:
         """Set up bot - called before login."""
@@ -679,6 +689,8 @@ class NimbusDiscordBot(commands.Bot):
                             request_id=f"discord_final_{uuid.uuid4().hex[:8]}",
                             priority=RequestPriority.HIGH
                         )
+                    # DEBUG: log full response
+                    logger.info(f"[DISCORD-WEB] Final response raw: {response}")
                     full_text = extract_text_from_content(response.get("content", ""))
                     if full_text:
                         logger.info(f"[DISCORD-WEB] Final response received: {len(full_text)} chars")
