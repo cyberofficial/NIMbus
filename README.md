@@ -43,9 +43,11 @@ The `--init` wizard handles everything:
 
 To restore a backed-up settings.json: `nimbus.exe --init restore`
 
+**Portable build:** The standalone exe embeds Playwright Chromium (~25 MB, total exe ~365 MB) via PyInstaller `--add-data`. No external `ms-playwright` folder or `playwright install` needed — browsers are extracted to a temp directory at runtime and cleaned up on exit.
+
 ### Option 2: Python (any OS)
 
-**Prerequisites:** NVIDIA NIM API key, Python 3.12+, [Claude Code](https://github.com/anthropics/claude-code)
+**Prerequisites:** NVIDIA NIM API key, Python 3.14.3+, [Claude Code](https://github.com/anthropics/claude-code)
 
 ```bash
 git clone https://github.com/cyberofficial/NIMbus.git
@@ -168,6 +170,8 @@ Browse all: [build.nvidia.com/explore/discover](https://build.nvidia.com/explore
 
 Both the bot token and a configured guild ID must be present (and `DISCORD_ENABLED` not set to `false`) for the bot to start.
 
+**Role mentions:** The bot now responds when mentioned via role (`@&role_id`) in addition to direct user mentions (`@username`). It checks if the mentioned role is assigned to the bot.
+
 | Variable | Description | Default |
 | --- | --- | --- |
 | `DISCORD_ENABLED` | Explicit kill-switch  -  must be `true` for the bot to start even when a token/guild are configured | `true` (Pydantic default; `.env.example` ships `false`) |
@@ -206,6 +210,23 @@ Both the bot token and a configured guild ID must be present (and `DISCORD_ENABL
 | `DISCORD_ENABLE_WEB_SEARCH` | Enable web search/fetch for the Discord bot | `true` |
 | `DISCORD_WEB_SEARCH_MAX_RESULTS` | Max search results per query | `5` |
 | `DISCORD_WEB_SEARCH_MAX_ITERATIONS` | Max tool call iterations per response | `10` |
+
+### Web Search (Discord Bot & MCP Server)
+
+The Discord bot and MCP server include web search and page fetch tools using **DuckDuckGo via Playwright** (since v2.0.8). This provides robust, JavaScript-capable searching with:
+
+- **Playwright with stealth mode** — evades anti-bot detection via `playwright-stealth`
+- **Persistent storage state** — reuses cookies/session across searches for better results
+- **Multi-endpoint fallback** — tries `html.duckduckgo.com` first, falls back to `lite.duckduckgo.com`
+- **Pagination with deduping** — fetches multiple pages, removes duplicate URLs
+- **Failure tracking (Discord)** — consecutive `web_search` failures (2+) auto-disable the search tool, keeping only `fetch_page` available
+- **Final buffered fallback** — when tool calls produce no text after max iterations, sends final request without tools to force a text response
+
+MCP server configuration (see [MCP Server Mode](#mcp-server-mode-web-search-tools) for setup):
+| Variable | Description | Default |
+| --- | --- | --- |
+| `WEB_SEARCH_FETCH_TIMEOUT` | HTTP timeout for `fetch_page` (s) | `10.0` |
+| `MCP_CACHE_TTL` | Cache TTL (s), max 3600, 0=disabled | `600` |
 
 ### Stream vs Buffer Modes
 
