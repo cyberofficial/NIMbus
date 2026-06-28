@@ -57,16 +57,18 @@ FETCH_PAGE_TOOL = Tool(
     name="fetch_page",
     description=(
         "Fetch and extract text content from a webpage. Use after web_search to get full "
-        "content of important results. Use the 'search' parameter to find specific "
-        "information within long pages. Verify claims by fetching primary sources."
+        "content of important results. For large pages (>10000 chars), use offset/limit to "
+        "read in chunks (e.g., offset=0 limit=5000, then offset=5000 limit=5000). "
+        "Use the 'search' parameter to find specific information within long pages. "
+        "Verify claims by fetching primary sources."
     ),
     input_schema={
         "type": "object",
         "properties": {
             "url": {"type": "string", "description": "URL to fetch"},
-            "offset": {"type": "integer", "default": 0},
-            "limit": {"type": "integer", "default": 10000},
-            "search": {"type": "string", "description": "Optional search term to find within page"}
+            "offset": {"type": "integer", "default": 0, "description": "Character offset to start reading from (for chunked reading)"},
+            "limit": {"type": "integer", "default": 10000, "description": "Max characters to return (use with offset for chunks)"},
+            "search": {"type": "string", "description": "Optional search term (capped at 5 matches, 200 chars context each)"}
         },
         "required": ["url"]
     }
@@ -280,12 +282,15 @@ async def execute_fetch_page(
                 "matches": [],
             })
 
+        # Limit matches to avoid massive payloads (>26MB NVIDIA limit)
+        MAX_MATCHES = 5
+        MAX_CONTEXT = 200
         line_index = _build_line_index(full_content)
         match_list = []
-        for match_start, match_end in matches:
+        for match_start, match_end in matches[:MAX_MATCHES]:
             context = _extract_match_with_context(
                 full_content, line_index, match_start, match_end,
-                before_chars=400, after_chars=500
+                before_chars=MAX_CONTEXT, after_chars=MAX_CONTEXT
             )
             match_list.append({
                 "line_number": context["line_number"],

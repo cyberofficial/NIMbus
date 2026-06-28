@@ -10,7 +10,12 @@ def extract_text_from_content(content: Any) -> str:
     if isinstance(content, list):
         parts = []
         for block in content:
-            text = getattr(block, "text", "")
+            if hasattr(block, "text"):
+                text = block.text
+            elif isinstance(block, dict):
+                text = block.get("text", "")
+            else:
+                text = ""
             if text and isinstance(text, str):
                 parts.append(text)
         return "".join(parts)

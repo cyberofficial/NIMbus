@@ -13,6 +13,7 @@ from loguru import logger
 from config.settings import Settings
 from providers.provider import NvidiaNimProvider
 from providers.request_queue import RequestPriority
+from providers.text import extract_text_from_content
 
 from .cog import NimbusCog
 from .conversation import ConversationManager
@@ -335,6 +336,16 @@ class NimbusDiscordBot(commands.Bot):
         await self._send_prefix_help(message.channel)
         return True
 
+    def _get_active_tools(self, web_search_enabled: bool, failure_count: int) -> list | None:
+        """Return active tools, dropping web_search after 2+ consecutive failures."""
+        if not web_search_enabled:
+            return None
+        from discord_bot.tools.web_search import FETCH_PAGE_TOOL, WEB_SEARCH_TOOL
+        if failure_count >= 2:
+            # Keep fetch_page available, remove web_search
+            return [FETCH_PAGE_TOOL]
+        return [WEB_SEARCH_TOOL, FETCH_PAGE_TOOL]
+
     async def _handle_conversation_message(self, message: discord.Message, content: str, replied_message=None):
         """Handle a message in a conversation channel with optional web search."""
         from api.models.anthropic import MessagesRequest, Message
@@ -474,6 +485,7 @@ class NimbusDiscordBot(commands.Bot):
         tools_used = set()
         max_iterations = getattr(self.settings, 'discord_web_search_max_iterations', 10)
         max_results = getattr(self.settings, 'discord_web_search_max_results', 5)
+        consecutive_web_search_failures = 0  # Track failures to disable web_search tool
         iteration = 0
 
         # Current request data (will be updated in loop with tool results)
@@ -508,7 +520,7 @@ class NimbusDiscordBot(commands.Bot):
 
                                 # Track tool_use start
                                 if data.get("type") == "content_block_start":
-                                    block = data.get("block", {})
+                                    block = data.get("content_block", {})
                                     if block.get("type") == "tool_use":
                                         current_tool_use = {
                                             "id": block.get("id"),
@@ -516,6 +528,8 @@ class NimbusDiscordBot(commands.Bot):
                                             "input": ""
                                         }
                                         current_tool_input = ""
+                                        logger.info(f"[DISCORD_TOOL] Detected tool_use: {block.get('name')} (id={block.get('id')})")
+
 
                                 # Accumulate tool input
                                 elif data.get("type") == "content_block_delta" and current_tool_use:
@@ -573,6 +587,13 @@ class NimbusDiscordBot(commands.Bot):
                             result = f"Unknown tool: {tool_name}"
 
                         logger.info(f"[WEB SEARCH] tool={tool_name} | result_len={len(result)}")
+                        if tool_name == "web_search":
+                            if result and "No results found" not in result:
+                                consecutive_web_search_failures = 0  # Reset only on actual results
+                            else:
+                                consecutive_web_search_failures += 1
+                                if consecutive_web_search_failures >= 2:
+                                    logger.warning(f"[DISCORD-WEB] {consecutive_web_search_failures} consecutive empty/failed web_searches - will remove web_search tool")
                         tool_result_messages.append({
                             "role": "user",
                             "content": [
@@ -586,34 +607,85 @@ class NimbusDiscordBot(commands.Bot):
 
                     except Exception as e:
                         logger.error(f"Tool {tool_name} execution failed: {e}")
+                        if tool_name == "web_search":
+                            consecutive_web_search_failures += 1
+                            if consecutive_web_search_failures >= 2:
+                                logger.warning(f"[DISCORD-WEB] {consecutive_web_search_failures} consecutive web_search failures - will remove web_search tool")
                         tool_result_messages.append({
                             "role": "user",
                             "content": [
                                 {
                                     "type": "tool_result",
                                     "tool_use_id": tool_id,
-                                    "content": f"Error executing tool: {e}",
+                                    "content": f"Error executing tool: {e}. Web search is currently unavailable.",
                                     "is_error": True
                                 }
                             ]
                         })
 
                 # Build next request with tool results
-                assistant_content = [{"type": "tool_use", **t} for t in tool_results]
+                assistant_content = []
+                for t in tool_results:
+                    tool_obj = {"type": "tool_use", "id": t["id"], "name": t["name"]}
+                    tool_input = t["input"]
+                    if isinstance(tool_input, str):
+                        try:
+                            tool_input = json.loads(tool_input)
+                        except json.JSONDecodeError:
+                            pass
+                    tool_obj["input"] = tool_input
+                    assistant_content.append(tool_obj)
                 new_messages = list(current_request.messages) + [
                     {"role": "assistant", "content": assistant_content}
                 ] + tool_result_messages
 
                 current_request = MessagesRequest(
                     model=discord_model,
-                    messages=[Message(role=str(m["role"]), content=m["content"]) for m in new_messages],  # type: ignore[arg-type, index]
+                    messages=[
+                        Message(
+                            role=str(m.role if hasattr(m, "role") else m["role"]),
+                            content=m.content if hasattr(m, "content") else m["content"]
+                        )
+                        for m in new_messages
+                    ],
                     max_tokens=self.settings.discord_max_tokens,
                     system=system_prompt,
-                    tools=WEB_SEARCH_TOOLS if web_search_enabled else None,
+                    tools=self._get_active_tools(web_search_enabled, consecutive_web_search_failures),
                 )
                 current_input_tokens = get_token_count(
                     current_request.messages, system_prompt, current_request.tools
                 )
+
+            # If we hit max_iterations without getting a text answer,
+            # send one final buffered request (no tools) to get the model's response
+            if not full_text and tools_used:
+                logger.info("[DISCORD-WEB] Hit max_iterations with tool calls but no text - sending final buffered request")
+                try:
+                    # Truncate to last 15 messages to prevent context overflow
+                    final_messages = current_request.messages[-15:] if len(current_request.messages) > 15 else current_request.messages
+                    final_request = MessagesRequest(
+                        model=discord_model,
+                        messages=final_messages,
+                        max_tokens=self.settings.discord_max_tokens,
+                        system=system_prompt,
+                        tools=None,  # No tools - force text response
+                    )
+                    final_input_tokens = get_token_count(
+                        final_request.messages, system_prompt, final_request.tools
+                    )
+                    async with global_limiter.concurrency_slot():
+                        response = await self.provider.buffered_request(
+                            final_request, final_input_tokens,
+                            request_id=f"discord_final_{uuid.uuid4().hex[:8]}",
+                            priority=RequestPriority.HIGH
+                        )
+                    full_text = extract_text_from_content(response.get("content", ""))
+                    if full_text:
+                        logger.info(f"[DISCORD-WEB] Final response received: {len(full_text)} chars")
+                    else:
+                        logger.warning("[DISCORD-WEB] Final response still empty")
+                except Exception as e:
+                    logger.error(f"[DISCORD-WEB] Final buffered request failed: {e}")
 
         finally:
             # Stop typing indicator
