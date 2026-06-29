@@ -280,7 +280,7 @@ Claude Code ──── JSON response ──── NIMbus ──── (wait + 
 
 > **Note:** NVIDIA's free tier occasionally drops connections mid-response. Stream mode will produce a partial answer; buffer mode will retry up to `PROVIDER_RETRY_ON_TRUNCATION` times to get a complete response.
 
-### Request Queue (New in v2.1)
+### Request Queue (New in v2.0.7)
 
 NIMbus includes a built-in request queue to prevent `Worker local total request limit reached (33/32)` errors from NVIDIA NIM. Each NVIDIA NIM worker has a hard limit of 32 concurrent requests. When multiple sessions send requests simultaneously, the queue serializes them while respecting priority.
 
