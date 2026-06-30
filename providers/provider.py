@@ -682,13 +682,15 @@ class NvidiaNimProvider(BaseProvider):
             except (
                 APIConnectionError,
                 APITimeoutError,
+                httpx.ReadError,
+                httpx.TimeoutException,
                 InternalServerError,
                 APIStatusError,
                 APIError,
             ) as e:
                 # Check if it's a retryable 5xx error
                 is_retryable = isinstance(
-                    e, (APIConnectionError, APITimeoutError)
+                    e, (APIConnectionError, APITimeoutError, httpx.ReadError, httpx.TimeoutException)
                 ) or _is_retryable_server_error(e) or _is_resource_exhausted_error(e)
                 last_error = e
                 detail = _format_error_detail(e)
@@ -722,7 +724,7 @@ class NvidiaNimProvider(BaseProvider):
                     )
                 if effective_max_retries > 0 and attempt >= effective_max_retries:
                     if is_retryable:
-                        if isinstance(e, (APIConnectionError, APITimeoutError)):
+                        if isinstance(e, (APIConnectionError, APITimeoutError, httpx.ReadError, httpx.TimeoutException)):
                             raise StreamTruncatedError(
                                 f"NVIDIA backend dropped connection after "
                                 f"{effective_max_retries + 1} attempts: {e}"
@@ -1319,6 +1321,7 @@ class NvidiaNimProvider(BaseProvider):
                 APIConnectionError,
                 APITimeoutError,
                 httpx.ReadError,
+                httpx.TimeoutException,
                 InternalServerError,
                 APIStatusError,
                 httpx.HTTPStatusError,
@@ -1326,7 +1329,7 @@ class NvidiaNimProvider(BaseProvider):
             ) as e:
                 # Check if it's a retryable 5xx server error
                 is_retryable = isinstance(
-                    e, (APIConnectionError, APITimeoutError, httpx.ReadError)
+                    e, (APIConnectionError, APITimeoutError, httpx.ReadError, httpx.TimeoutException)
                 ) or _is_retryable_server_error(e) or _is_resource_exhausted_error(e)
                 last_error_tag = f"{type(e).__name__}"
                 detail = _format_error_detail(e)
