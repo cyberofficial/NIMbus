@@ -1,5 +1,7 @@
 """Model swapper validator - validates and tests models against NVIDIA NIM."""
 
+import asyncio
+import random
 import httpx
 from loguru import logger
 
@@ -7,6 +9,55 @@ from config.settings import Settings, _to_full_nim_model
 
 NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
 NVIDIA_MODELS_URL = f"{NVIDIA_NIM_BASE_URL}/models"
+
+# Retry configuration for validation
+VALIDATION_MAX_RETRIES = 3
+VALIDATION_BASE_DELAY = 1.0  # seconds
+VALIDATION_MAX_DELAY = 10.0  # seconds
+
+# HTTP status codes that should trigger a retry
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+
+async def _execute_with_retry(coro_factory, max_retries=VALIDATION_MAX_RETRIES, base_delay=VALIDATION_BASE_DELAY, max_delay=VALIDATION_MAX_DELAY):
+    """
+    Execute a coroutine with retry on transient failures.
+
+    Retries on: 429 (rate limit), 5xx server errors, network errors
+    """
+    attempt = 0
+    last_error = None
+
+    while max_retries == 0 or attempt < (max_retries + 1):
+        try:
+            if attempt > 0:
+                delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+                delay += random.uniform(0, 0.5)
+                logger.warning("Validation retry attempt {}/{} after {:.1f}s delay", attempt, max_retries if max_retries > 0 else "∞", delay)
+                await asyncio.sleep(delay)
+
+            return await coro_factory()
+
+        except httpx.HTTPStatusError as e:
+            last_error = e
+            if e.response.status_code in _RETRYABLE_STATUS:
+                logger.warning("Validation retryable HTTP error: {} {}", e.response.status_code, e)
+                attempt += 1
+                continue
+            # Non-retryable HTTP error
+            raise
+        except (httpx.RequestError, httpx.TimeoutException, asyncio.TimeoutError) as e:
+            last_error = e
+            logger.warning("Validation retryable network/timeout error: {}", e)
+            attempt += 1
+            continue
+        except Exception as e:
+            # Any other exception - log and don't retry (could be programming error)
+            logger.error("Validation non-retryable error: {} {}", type(e).__name__, e)
+            raise
+
+    logger.error("Validation exhausted all retries: {}", last_error)
+    raise last_error
 
 
 def _find_similar_models(full_model: str, max_results: int = 5) -> list[str]:
@@ -86,7 +137,7 @@ async def validate_model_exists(model: str) -> bool:
     full_model = resolve_model_name(model)
     logger.info("SWAPPER_VALIDATE: checking model '{}' resolved to '{}'", model, full_model)
 
-    try:
+    async def _check():
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(NVIDIA_MODELS_URL)
             resp.raise_for_status()
@@ -97,8 +148,16 @@ async def validate_model_exists(model: str) -> bool:
             found = any(m.get("id") == full_model for m in models)
             logger.info("SWAPPER_VALIDATE: model '{}' exists={} (catalog has {} models)", full_model, found, len(models))
             return found
+
+    try:
+        return await _execute_with_retry(_check)
+    except httpx.HTTPStatusError as e:
+        logger.error("SWAPPER_VALIDATE: HTTP error after retries: {} {}", e.response.status_code, e)
+        return False
+    except (httpx.RequestError, httpx.TimeoutException, asyncio.TimeoutError) as e:
+        logger.error("SWAPPER_VALIDATE: network/timeout error after retries: {}", e)
+        return False
     except Exception as e:
-        # On any error (network, parse, etc.), assume we can't validate
         logger.error("SWAPPER_VALIDATE: exception type={} error={}", type(e).__name__, e)
         return False
 
@@ -118,7 +177,7 @@ async def test_model(model: str, settings: Settings, api_key: str) -> bool:
     # Resolve short name to full NIM ID
     full_model = resolve_model_name(model)
 
-    try:
+    async def _test():
         # Create a minimal OpenAI-format request body
         # NOTE: No thinking/reasoning params - this is a connectivity test only.
         test_prompt = settings.swapper_test_prompt
@@ -144,7 +203,19 @@ async def test_model(model: str, settings: Settings, api_key: str) -> bool:
             logger.info("SWAPPER_TEST: status={} body_length={}", resp.status_code, len(resp.content))
             if not resp.is_success:
                 logger.warning("SWAPPER_TEST: failed status={} body={}", resp.status_code, resp.text[:500])
+                # Raise HTTPStatusError for retryable status codes
+                if resp.status_code in _RETRYABLE_STATUS:
+                    resp.raise_for_status()
             return resp.is_success
+
+    try:
+        return await _execute_with_retry(_test)
+    except httpx.HTTPStatusError as e:
+        logger.error("SWAPPER_TEST: HTTP error after retries: {} {}", e.response.status_code, e)
+        return False
+    except (httpx.RequestError, httpx.TimeoutException, asyncio.TimeoutError) as e:
+        logger.error("SWAPPER_TEST: network/timeout error after retries: {}", e)
+        return False
     except Exception as e:
         logger.error("SWAPPER_TEST: exception type={} error={}", type(e).__name__, e)
         return False
