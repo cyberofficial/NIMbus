@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Streaming 429 Retry Logic** - Streaming requests now honor `PROVIDER_RETRY_ON_TRUNCATION` setting (was hardcoded to 3 retries). Buffered mode already respected this setting.
 - **Swapper Model Validation Resilience** - Added exponential backoff retry logic to model swapper validation (`api/swapper/validator.py`). Transient failures (rate limits, network errors, 5xx) during model catalog fetch or test request are now retried up to 3 times before reporting failure.
 - **Error Mapping** - Updated httpx error handling for better error messages.
+- **MCP Server Entry Point** - `server.py --mcp` now correctly starts MCP server (stdio transport) instead of proxy server.
 
 ### Changed
 - **Single-File Portable Build** - Browsers extracted to `_MEIPASS` temp dir at runtime via updated `runtime-playwright.py` hook; source runs use system Playwright install
@@ -38,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `providers/provider.py` - Pass `max_retries=config.retry_on_truncation` to streaming `execute_with_retry` calls
 - `api/swapper/validator.py` - Added `_execute_with_retry` helper with exponential backoff for catalog validation and model test requests
 - `providers/error_mapping.py` - Updated httpx error handling
+- `server.py` - Handle `--mcp`/`--mcpwebsearch` flag to start MCP server
 
 ---
 
