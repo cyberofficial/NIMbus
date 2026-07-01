@@ -16,11 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **MCP Server Headless Mode** - `start_server.py` now loads `.env` before starting MCP server, so `MCP_BROWSER_HEADLESS=false` and `DISCORD_BROWSER_HEADLESS=false` are properly applied
 - **Tool Choice Conversion** - Anthropic `tool_choice` (any/auto/none/tool) correctly converted to OpenAI format in `message_converter.py`
+- **Streaming 429 Retry Logic** - Streaming requests now honor `PROVIDER_RETRY_ON_TRUNCATION` setting (was hardcoded to 3 retries). Buffered mode already respected this setting.
+- **Swapper Model Validation Resilience** - Added exponential backoff retry logic to model swapper validation (`api/swapper/validator.py`). Transient failures (rate limits, network errors, 5xx) during model catalog fetch or test request are now retried up to 3 times before reporting failure.
+- **Error Mapping** - Updated httpx error handling for better error messages.
 
 ### Changed
 - **Single-File Portable Build** - Browsers extracted to `_MEIPASS` temp dir at runtime via updated `runtime-playwright.py` hook; source runs use system Playwright install
 - **DuckDuckGo Search Robustness** - Uses only `lite.duckduckgo.com` endpoint via Playwright for reliable results; removes fragile HTML endpoint parsing
 - **Debug Logging** - Final buffered response logged for Discord web search troubleshooting
+- **Documentation** - Fixed Request Queue version reference in README (was v2.1, now correctly v2.0.7).
 
 ### Files Touched
 - `build_exe.bat` - Pre-download browsers, copy to build_resources, bundle via --add-data
@@ -31,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `providers/message_converter.py` - tool_choice conversion logic
 - `requirements.txt` - Added playwright, playwright-stealth, pywin32, dotenv
 - `nimbus.spec` - Full PyInstaller spec with browser datas and hidden imports
+- `providers/provider.py` - Pass `max_retries=config.retry_on_truncation` to streaming `execute_with_retry` calls
+- `api/swapper/validator.py` - Added `_execute_with_retry` helper with exponential backoff for catalog validation and model test requests
+- `providers/error_mapping.py` - Updated httpx error handling
 
 ---
 
