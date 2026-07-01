@@ -1169,8 +1169,11 @@ class NvidiaNimProvider(BaseProvider):
             try:
                 try:
                     stream = await self._global_rate_limiter.execute_with_retry(
-                        self._client.chat.completions.create, **body, stream=True,
+                        self._client.chat.completions.create,
+                        **body,
+                        stream=True,
                         use_worker_slot=False,
+                        max_retries=self._config.retry_on_truncation,
                     )
                 except (
                     BadRequestError,
@@ -1193,6 +1196,7 @@ class NvidiaNimProvider(BaseProvider):
                             **body,
                             stream=True,
                             use_worker_slot=False,
+                            max_retries=self._config.retry_on_truncation,
                         )
                     elif _is_thinking_param_error(e):
                         model = body.get("model", "")
@@ -1209,6 +1213,7 @@ class NvidiaNimProvider(BaseProvider):
                             **body,
                             stream=True,
                             use_worker_slot=False,
+                            max_retries=self._config.retry_on_truncation,
                         )
                     else:
                         raise
