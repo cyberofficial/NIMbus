@@ -576,8 +576,11 @@ NIMbus can also run as an MCP (Model Context Protocol) server, exposing web sear
 # Add to Claude Code (using exe)  -  global scope (available in all projects)
 claude mcp add web_search -s user -- nimbus.exe --mcp
 
-# Or using Python (venv)  -  global scope
+# Or using Python (venv) with start_server.py  -  global scope
 claude mcp add web_search -s user -- /path/to/NIMbus/venv/bin/python /path/to/NIMbus/start_server.py --mcp
+
+# Or using Python (venv) with server.py  -  global scope
+claude mcp add web_search -s user -- /path/to/NIMbus/venv/bin/python /path/to/NIMbus/server.py --mcp
 
 # For project-scoped installation (stored in .mcp.json, shareable via git)
 # claude mcp add web_search -s project -- nimbus.exe --mcp
@@ -604,8 +607,11 @@ After adding, verify with `claude mcp list` to confirm it shows under user scope
 ### Running MCP Server Manually
 
 ```bash
-# Development mode
+# Development mode (using start_server.py)
 python start_server.py --mcp
+
+# Development mode (using server.py directly)
+python server.py --mcp
 
 # Standalone exe (Windows)
 nimbus.exe --mcp
