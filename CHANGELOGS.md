@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## v2.0.10 - Date: 2026-07-11
+
+### Fixed
+- **Expired/Invalid API Keys** - 403 Forbidden errors now show a clear message with a direct link to verify the NVIDIA API key: `"Invalid or expired API key. Verify your key at https://build.nvidia.com/settings/api-keys"`
+- **<nimrpm:reset> False Positives** - The adaptive rate limit reset tag now only triggers when it's the entire message content (optional whitespace allowed), preventing false positives from embedded content in file outputs, system prompts, or documentation
+- **Thinking Parameter Compatibility** - Models that don't support thinking/reasoning parameters (e.g., `z-ai/glm-5.2`) now automatically retry without thinking parameters on 500 errors; the model is cached as unsupported to skip thinking params on subsequent requests
+- **Log Rotation on Windows** - Fixed `PermissionError: [WinError 32] The process cannot access the file because it is being used by another process` during log rotation by switching to timestamped log files per session (no mid-session rotation). Each server start creates a new `server.YYYY-MM-DD_HH-MM-SS_XXXXXX.log` file; no `server.log` file is created anymore.
+- **Windows Log Rotation TypeError** - Fixed `TypeError: argument should be a str or os.PathLike object, not 'TextIOWrapper'` during log rotation by removing custom rotator that received file object instead of path
+
+### Added
+- **Fable Model Support (FABLE Model Override)** - New `FABLE_OVERRIDE` environment variable to configure the NIM model for the new Claude "Fable" model tier. Defaults to the Opus NIM model but can be overridden with any NIM model ID (supports `[1m]` context suffix like other models)
+
+### Changed
+- **execute_with_retry Retry Logic** - `max_retries=0` now correctly means "infinite retries" (previously was treated as 1 retry); useful for critical background operations that should never give up
+- **Logging Configuration** - Moved logging initialization to entry points (`server.py`, `packaged_entry.py`, `start_server.py`) before importing `api.app` so log file path is set correctly for each run
+
+### Files Touched
+- `api/swapper/parser.py` - Fixed `<nimrpm:reset>` regex to require exact message match
+- `config/logging_config.py` - Timestamped log files per session, no rotation during runtime; removed custom rotator
+- `config/settings.py` - Added Fable model detection in `get_model_for_claude()`; added FABLE_OVERRIDE field with `[1m]` suffix stripping
+- `providers/error_mapping.py` - Added PermissionDeniedError handling with NVIDIA key URL
+- `providers/provider.py` - Added thinking parameter fallback on 500 errors; model caching for unsupported models
+- `providers/rate_limit.py` - Fixed `max_retries=0` to mean infinite retries
+- `server.py` - Configure logging at entry point before importing app
+- `.env.example` - Added FABLE_OVERRIDE documentation and example
+
+---
+
 ## v2.0.9 - Date: 2026-06-28
 
 ### Added

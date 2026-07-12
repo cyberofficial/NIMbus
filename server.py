@@ -7,6 +7,13 @@ Run with: uv run uvicorn server:app --host 0.0.0.0 --port 8082 --timeout-gracefu
 
 import sys
 
+from config.logging_config import configure_logging
+from config.settings import get_settings
+
+# Configure logging BEFORE importing app so log file path is set correctly
+settings = get_settings()
+configure_logging(settings.log_file)
+
 from api.app import app, create_app
 
 __all__ = ["app", "create_app"]

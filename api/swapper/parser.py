@@ -12,14 +12,20 @@ NIMSERVER_PATTERN = re.compile(
 )
 NIMSERVER_CLEAR_PATTERN = re.compile(r"<nimserver:\s*clear\s*>", re.IGNORECASE)
 
-NIMRPM_RESET_PATTERN = re.compile(r"<nimrpm:\s*reset\s*>", re.IGNORECASE)
+# Match <nimrpm:reset> ONLY when it's the ENTIRE message (after optional leading/trailing whitespace)
+# This avoids false positives from embedded content in file outputs, system prompts, docs, etc.
+NIMRPM_RESET_PATTERN = re.compile(r"^[ \t]*<nimrpm:\s*reset\s*>[ \t]*$", re.IGNORECASE)
 
 
 def is_nimrpm_reset_tag(text: str) -> bool:
-    """Check if message contains <nimrpm:reset> tag.
+    """Check if message IS exactly the <nimrpm:reset> tag (plus optional whitespace).
 
     This resets the adaptive rate limiting backoff state,
     restoring original RPM and clearing any hold delay.
+
+    Only matches when the tag is the complete message (after optional
+    leading/trailing whitespace) to avoid false positives from embedded
+    content like file outputs or documentation snippets.
     """
     return bool(NIMRPM_RESET_PATTERN.search(text))
 

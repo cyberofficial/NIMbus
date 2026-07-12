@@ -522,6 +522,7 @@ class GlobalRateLimiter:
         Args:
             fn: Async callable to execute.
             max_retries: Maximum number of retry attempts after the first failure.
+                         Use 0 for infinite retries (retry forever).
             base_delay: Base delay in seconds for exponential backoff.
             max_delay: Maximum delay cap in seconds.
             jitter: Maximum random jitter in seconds added to each delay.
@@ -534,8 +535,10 @@ class GlobalRateLimiter:
             The last exception if all retries are exhausted.
         """
         last_exc: Exception | None = None
+        attempt = 0
 
-        for attempt in range(1 + max_retries):
+        # max_retries=0 means infinite retries
+        while max_retries == 0 or attempt <= max_retries:
             await self.wait_if_blocked()
 
             # Acquire worker slot for the actual API call
@@ -547,7 +550,7 @@ class GlobalRateLimiter:
                     # Fire adaptive backoff
                     self.on_rate_limit_hit()
 
-                    if attempt >= max_retries:
+                    if max_retries > 0 and attempt >= max_retries:
                         logger.warning(
                             f"Rate limit retry exhausted after {max_retries} retries"
                         )
@@ -555,12 +558,15 @@ class GlobalRateLimiter:
 
                     delay = min(base_delay * (2**attempt), max_delay)
                     delay += random.uniform(0, jitter)
+                    total_attempts = max_retries + 1 if max_retries > 0 else "∞"
                     logger.warning(
-                        f"Rate limited (429), attempt {attempt + 1}/{max_retries + 1}. "
+                        f"Rate limited (429), attempt {attempt + 1}/{total_attempts}. "
                         f"Retrying in {delay:.1f}s..."
                     )
                     self.set_blocked(delay)
                     await asyncio.sleep(delay)
+                    attempt += 1
+                    continue
 
         assert last_exc is not None
         raise last_exc

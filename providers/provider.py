@@ -139,6 +139,20 @@ def mark_thinking_unsupported(model: str) -> None:
         _thinking_unsupported_cache.add(model)
 
 
+def _has_thinking_params(body: dict) -> bool:
+    """Check if the request body contains thinking/reasoning parameters."""
+    extra_body = body.get("extra_body", {})
+    thinking_keys = {
+        "thinking",
+        "reasoning_split",
+        "include_reasoning",
+        "return_tokens_as_token_ids",
+        "reasoning_effort",
+        "chat_template_kwargs",
+    }
+    return any(key in extra_body for key in thinking_keys)
+
+
 def _is_thinking_param_error(e: Exception) -> bool:
     """Check if a 400 error is about unsupported thinking/reasoning parameters.
 
@@ -180,6 +194,20 @@ def _is_thinking_param_error(e: Exception) -> bool:
     except Exception:
         pass
     return False
+
+
+def _has_thinking_params(body: dict) -> bool:
+    """Check if request body contains thinking/reasoning parameters."""
+    extra_body = body.get("extra_body", {})
+    thinking_keys = {
+        "thinking",
+        "reasoning_split",
+        "chat_template_kwargs",
+        "return_tokens_as_token_ids",
+        "reasoning_effort",
+        "include_reasoning",
+    }
+    return any(key in extra_body for key in thinking_keys)
 
 
 def _is_retryable_server_error(e: Exception) -> bool:
@@ -791,6 +819,21 @@ class NvidiaNimProvider(BaseProvider):
                             **body,
                             stream=False,
                         )
+                    elif _has_thinking_params(body) and isinstance(e, InternalServerError):
+                        # Model doesn't support thinking params but returns 500 instead of 400
+                        model = body.get("model", "")
+                        logger.warning(
+                            "{}_BUFFERED: Internal server error with thinking params on model ({}) - "
+                            "retrying without thinking parameters",
+                            tag,
+                            model,
+                        )
+                        mark_thinking_unsupported(model)
+                        body = _rebuild_without_thinking(body)
+                        response = await self._client.chat.completions.create(
+                            **body,
+                            stream=False,
+                        )
                     else:
                         raise
         finally:
@@ -1366,7 +1409,28 @@ class NvidiaNimProvider(BaseProvider):
                         detail,
                     )
                 else:
-                    # Non-retryable error - raise immediately without counting as a retry attempt
+                    # Non-retryable error - check if it might be caused by thinking params
+                    is_thinking_related = _has_thinking_params(body) and (
+                        "internal server error" in detail.lower()
+                        or "internal error" in detail.lower()
+                        or "server error" in detail.lower()
+                    )
+                    if is_thinking_related:
+                        model = body.get("model", "")
+                        logger.warning(
+                            "{}_STREAM: Non-retryable error with thinking params enabled ({}) - "
+                            "retrying without thinking parameters",
+                            tag,
+                            model,
+                        )
+                        mark_thinking_unsupported(model)
+                        # Rebuild body in-place without thinking params
+                        new_body = _rebuild_without_thinking(body)
+                        body.clear()
+                        body.update(new_body)
+                        attempt += 1
+                        raise  # Will be caught by outer retry loop
+
                     logger.error(
                         "{}_STREAM: Non-retryable {} on attempt {}/{}: {}",
                         tag,

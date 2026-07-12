@@ -41,7 +41,7 @@ def get_user_facing_error_message(
     if isinstance(e, (RateLimitError, openai.RateLimitError)):
         return "Provider rate limit reached. Please retry shortly."
     if isinstance(e, (AuthenticationError, openai.AuthenticationError)):
-        return "Provider authentication failed. Check API key."
+        return "Invalid or expired API key. Verify your key at https://build.nvidia.com/settings/api-keys"
     if isinstance(e, (InvalidRequestError, openai.BadRequestError)):
         return "Invalid request sent to provider."
     if isinstance(e, OverloadedError):
@@ -69,6 +69,11 @@ def map_error(e: Exception) -> Exception:
     message = get_user_facing_error_message(e)
     if isinstance(e, openai.AuthenticationError):
         return AuthenticationError(message, raw_error=str(e))
+    if isinstance(e, openai.PermissionDeniedError):
+        return AuthenticationError(
+            "Invalid or expired API key. Verify your key at https://build.nvidia.com/settings/api-keys",
+            raw_error=str(e),
+        )
     if isinstance(e, openai.RateLimitError):
         # Parse rate limit headers and set accurate cooldown
         retry_seconds = 60  # Default fallback

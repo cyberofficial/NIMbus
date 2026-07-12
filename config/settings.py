@@ -293,6 +293,13 @@ class Settings(BaseSettings):
     # Allows using a different model for Discord bot vs API proxy
     discord_model_raw: str = Field(default="", validation_alias="DISCORD_MODEL")
 
+    # Fable model override (optional)
+    # Claude Code's new "fable" model has no settings.json env key (hard-coded).
+    # By default, fable maps to the Opus NIM model. Set FABLE_OVERRIDE to a specific
+    # NIM model (owner/model-name) to override that default. The "[1m]" context suffix
+    # is supported and stripped automatically (e.g., "deepseek-ai/deepseek-v4-pro[1m]").
+    fable_override_raw: str = Field(default="", validation_alias="FABLE_OVERRIDE")
+
     # Prefix command support
     discord_command_prefix: str = Field(
         default="!!", validation_alias="DISCORD_COMMAND_PREFIX"
@@ -398,6 +405,24 @@ class Settings(BaseSettings):
 
         # No model available
         return None
+
+    @property
+    def fable_model(self) -> str:
+        """Get the resolved fable model.
+
+        Resolution order:
+        1. If FABLE_OVERRIDE explicitly set in env, use it (strip [1m] if present)
+        2. Otherwise, default to whatever the Opus model resolves to
+        """
+        # 1. Explicit FABLE_OVERRIDE
+        if self.fable_override_raw:
+            val = self.fable_override_raw.strip()
+            if val.endswith("[1m]"):
+                val = val[:-4]
+            return _to_full_nim_model(val)
+
+        # 2. Default to Opus model
+        return self.get_model_for_claude("claude-opus-4-7")
 
     def is_conversation_channel(
         self, channel_id: int, category_id: int | None = None
@@ -586,20 +611,24 @@ class Settings(BaseSettings):
             return self.model
         claude_lower = claude_id.lower()
 
-        # 1. Try Claude tier keyword matching (e.g. "claude-opus-4-7" → "opus")
+        # 1. Check for fable FIRST (new model, hard-coded in Cline, defaults to Opus)
+        if "fable" in claude_lower:
+            return self.fable_model
+
+        # 2. Try Claude tier keyword matching (e.g. "claude-opus-4-7" → "opus")
         for keyword, position in self._CLAUDE_MODEL_MAP.items():
             if keyword in claude_lower:
                 target = min(position, len(models) - 1)
                 return models[target]
 
-        # 2. Check if the incoming name is already a model in our list
+        # 3. Check if the incoming name is already a model in our list
         #    (handles windows:settings.json where Claude Code sends NIM names
         #    like "kimi-k2.6" directly from ANTHROPIC_DEFAULT_OPUS_MODEL)
         for m in models:
             if claude_id in m or m in claude_id:
                 return m
 
-        # 3. Unknown model → fall back to first NIM model
+        # 4. Unknown model → fall back to first NIM model
         return models[0]
 
     @property
@@ -651,6 +680,7 @@ class Settings(BaseSettings):
             "discord_cmd_prefix_ask", "discord_cmd_prefix_compact", "discord_cmd_prefix_new", "discord_cmd_prefix_status",
             "discord_enable_web_search", "discord_web_search_max_results", "discord_web_search_max_iterations",
             "provider_resource_exhausted_retries",
+            "fable_override",
         }
 
         if field_name in no_alias:

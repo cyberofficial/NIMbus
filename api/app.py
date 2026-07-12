@@ -20,9 +20,8 @@ from .routes import router
 # Opt-in to future behavior for python-telegram-bot (kept for compatibility)
 os.environ["PTB_TIMEDELTA"] = "1"
 
-# Configure logging first (before any module logs)
-_settings = get_settings()
-configure_logging(_settings.log_file)
+# Logging is configured by entry points (server.py, packaged_entry.py, start_server.py)
+# Module-level import is avoided to allow entry points to set custom log file paths
 
 
 _SHUTDOWN_TIMEOUT_S = 5.0
