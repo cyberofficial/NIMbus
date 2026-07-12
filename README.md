@@ -131,6 +131,19 @@ ANTHROPIC_AUTH_TOKEN="<replaceme>" ANTHROPIC_BASE_URL="http://localhost:8082" cl
 
 Browse all: [build.nvidia.com/explore/discover](https://build.nvidia.com/explore/discover)
 
+## Model Mapping (Claude Tiers → NIM Models)
+
+Claude Code sends requests with model identifiers like `claude-sonnet-4-6`, `claude-opus-4-7`, `claude-haiku-4-5`, `claude-fable-1-0`. NIMbus maps these to NIM models by position in the `MODEL` list (comma-separated):
+
+| MODEL Count | Position 1 (Sonnet/Default) | Position 2 (Opus) | Position 3 (Haiku) | Position 4 (Fable) |
+|-------------|-----------------------------|-------------------|---------------------|---------------------|
+| 1 model | All tiers → model[0] | All tiers → model[0] | All tiers → model[0] | All tiers → model[0] |
+| 2 models | Sonnet + Opus → model[0] | Sonnet + Opus → model[0] | Haiku → model[1] | Haiku → model[1] |
+| 3 models | Sonnet → model[0] | Opus → model[1] | Haiku → model[2] | Haiku → model[2] |
+| 4 models | Sonnet → model[0] | Opus → model[1] | Haiku → model[2] | Fable → model[3] |
+
+**Fable:** The new `claude-fable-1-0` model defaults to the Opus position (model[1] or model[3] if 4 models). Override with `FABLE_OVERRIDE=owner/model-name` in `.env` (supports `[1m]` suffix for 1M context).
+
 ## Configuration
 
 | Variable | Description | Default |
@@ -142,6 +155,7 @@ Browse all: [build.nvidia.com/explore/discover](https://build.nvidia.com/explore
 | `NIM_THINKING` | Enable thinking/reasoning content | `true` |
 | `NIM_REASONING_EFFORT` | Reasoning effort: `low`, `medium`, or `high` | `high` |
 | `NIM_REASONING_EFFORT_MAPPINGS` | JSON string mapping Claude effort levels to model-specific values | `` (empty) |
+| `FABLE_OVERRIDE` | Override NIM model for Fable tier (supports `[1m]` suffix). Defaults to Opus model | `` (empty) |
 | `PROVIDER_RATE_LIMIT` | Requests per window | `40` |
 | `PROVIDER_RATE_WINDOW` | Rate window in seconds | `60` |
 | `PROVIDER_MAX_CONCURRENCY` | Max concurrent streams | `5` |
@@ -165,6 +179,24 @@ Browse all: [build.nvidia.com/explore/discover](https://build.nvidia.com/explore
 | `WEB_SEARCH_FETCH_TIMEOUT` | MCP `fetch_page` HTTP timeout (s) | `10.0` |
 | `MCP_CACHE_TTL` | MCP cache TTL (s), max 3600, 0=disabled | `600` |
 | `WEB_SEARCH_DEBUG` | Enable verbose web search SSE logging | `false` |
+
+### Log Files
+
+Each server run creates a new timestamped log file in the format `server.YYYY-MM-DD_HH-MM-SS_XXXXXX.log` (e.g., `server.2026-07-11_20-33-47_529858.log`). There is no persistent `server.log` file and no log rotation during a session — one log file per server start. This avoids Windows file locking issues during rotation.
+
+### Adaptive Rate Limiting & Reset Tag
+
+NIMbus implements adaptive rate limiting that automatically backs off when NVIDIA returns 429 errors. Configuration:
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `NIM_RPM_INITIAL` | Starting requests per minute | `40` |
+| `NIM_RPM_DROP` | RPM reduction per 429 hit | `10` |
+| `NIM_RPM_MIN` | Floor RPM before hold delays | `20` |
+| `NIM_RPM_HOLD_INITIAL` | First hold delay in seconds | `5` |
+| `NIM_RPM_HOLD_MAX` | Maximum hold delay in seconds | `10` |
+
+**Reset Tag:** Include `<nimrpm:reset>` in any chat message (must be the **entire** message content, optional surrounding whitespace allowed) to reset adaptive backoff state — restores initial RPM and clears hold delays. Useful after changing models or when rate limits recover.
 
 ### Discord Bot (Optional)
 
@@ -263,6 +295,10 @@ The proxy waits for NVIDIA to finish generating the **complete** response before
 - **Retries count against the rate limit** to prevent exceeding your quota when the backend is unstable
 - If all retries are exhausted, raises `StreamTruncatedError` (mapped to an HTTP 500 error)
 - **Best for** long-generation tasks where losing the response is worse than waiting
+
+> **Note:** NVIDIA's free tier occasionally drops connections mid-response. Stream mode will produce a partial answer; buffer mode will retry up to `PROVIDER_RETRY_ON_TRUNCATION` times to get a complete response.
+>
+> **Note:** The underlying `execute_with_retry` helper (used by both stream and buffer modes) treats `max_retries=0` as "infinite retries" — it will retry forever until the request succeeds or a non-retryable error occurs.
 
 ```
 Claude Code ──── JSON response ──── NIMbus ──── (wait + retry if needed) ──── NVIDIA NIM
@@ -454,7 +490,7 @@ The override is stored per-API-key in the same in-memory pattern as the Model Sw
 
 ### Logs
 
-Logs are written to the console. For verbose output, check the terminal where the proxy is running.
+Each server run creates a new timestamped log file: `server.YYYY-MM-DD_HH-MM-SS_XXXXXX.log` (e.g., `server.2026-07-11_20-33-47_529858.log`). No persistent `server.log` and no log rotation during a session — one log file per server start. This avoids Windows file locking issues during rotation.
 
 ## Contributing
 
