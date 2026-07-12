@@ -30,6 +30,18 @@ def is_nimrpm_reset_tag(text: str) -> bool:
     return bool(NIMRPM_RESET_PATTERN.search(text))
 
 
+# Match <nimhelp> ONLY when the message is the literal tag, nothing else — no
+# surrounding whitespace, no prose. Tighter than NIMRPM_RESET_PATTERN (which
+# tolerates outer whitespace) per user spec: fires on exactly "<nimhelp>",
+# byte for byte. Case-insensitive for convenience.
+NIMHELP_PATTERN = re.compile(r"^<nimhelp>$", re.IGNORECASE)
+
+
+def is_nimhelp_tag(text: str) -> bool:
+    """True iff the message is exactly the literal <nimhelp> (no surrounding text)."""
+    return bool(NIMHELP_PATTERN.search(text))
+
+
 def extract_modelswap_tag(text: str) -> str | None:
     """
     Extract model name from <modelswap:model-name> tag.

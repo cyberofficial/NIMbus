@@ -15,6 +15,7 @@ from api.swapper.parser import (
     get_nimserver_type,
     is_modelswap_clear_tag,
     is_modelswap_message,
+    is_nimhelp_tag,
     is_nimserver_clear_tag,
     is_nimserver_message,
     is_nimrpm_reset_tag,

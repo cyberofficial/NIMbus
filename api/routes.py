@@ -31,6 +31,7 @@ from .swapper import (
     extract_modelswap_tag,
     extract_nimserver_tag,
     is_modelswap_clear_tag,
+    is_nimhelp_tag,
     is_nimserver_clear_tag,
     is_nimrpm_reset_tag,
     resolve_model_name,
@@ -212,6 +213,36 @@ async def _handle_nimrpm_reset(
 
 
 # =============================================================================
+# Inline Command Help (<nimhelp>)
+# =============================================================================
+
+NIMHELP_TEXT = """NIMbus inline commands — send one as your ENTIRE message:
+<modelswap:MODEL>   swap active model for this session (short name auto-resolved + validated live, or full NIM ID)
+<modelswap:clear>   clear the model swap, revert to default mapping
+<nimserver:stream>  force NIM stream mode for subsequent requests
+<nimserver:buffer>  force NIM buffer mode for subsequent requests
+<nimserver:clear>   clear server-type override, revert to .env SERVER_TYPE
+<nimrpm:reset>      reset adaptive rate-limiter backoff (restore RPM, clear hold delays)
+<nimhelp>           show this list
+modelswap/nimserver need SWAPPER_ENABLED=true; nimrpm:reset and nimhelp always work.
+"""
+
+
+async def _handle_nimhelp(request_data: MessagesRequest) -> MessagesResponse | None:
+    """Return a help-listing mock if the last user message is exactly <nimhelp>."""
+    for msg in reversed(request_data.messages):
+        if msg.role == "user":
+            if is_nimhelp_tag(extract_text_from_content(msg.content)):
+                # ponytail: near-shape of _handle_nimrpm_reset; kept separate because
+                # nimrpm mutates state, this is pure text — share when a 4th command lands
+                if _is_title_request(request_data):
+                    return None
+                return _create_nimserver_response(True, "help", NIMHELP_TEXT)
+            break
+    return None
+
+
+# =============================================================================
 # NIM Server Type Swapper Helpers (stream/buffer)
 # =============================================================================
 
@@ -312,16 +343,14 @@ async def create_message(
         if not request_data.messages:
             raise InvalidRequestError("messages cannot be empty")
 
-        # Handle model swapper
-        mock_response, model_override = await _handle_modelswap(
-            raw_request, request_data, settings
-        )
-        if mock_response is not None:
+        # ponytail: the inline-command dispatches below all stream a mock response
+        # with 0 input tokens — one helper instead of three copy-pasted blocks.
+        def _sse_response(mock: MessagesResponse) -> StreamingResponse:
             request_id = f"req_{uuid.uuid4().hex[:12]}"
             log_request_compact(logger, request_id, request_data)
 
             async def sse_generator():
-                for event in optimization_response_to_sse(mock_response, 0):
+                for event in optimization_response_to_sse(mock, 0):
                     yield event
 
             return StreamingResponse(
@@ -333,48 +362,30 @@ async def create_message(
                     "Connection": "keep-alive",
                 },
             )
+
+        # Handle model swapper
+        mock_response, model_override = await _handle_modelswap(
+            raw_request, request_data, settings
+        )
+        if mock_response is not None:
+            return _sse_response(mock_response)
 
         # Handle NIM server type swapper
         nimserver_mock, server_type_override = await _handle_nimserver(
             raw_request, request_data, settings
         )
         if nimserver_mock is not None:
-            request_id = f"req_{uuid.uuid4().hex[:12]}"
-            log_request_compact(logger, request_id, request_data)
-
-            async def sse_generator():
-                for event in optimization_response_to_sse(nimserver_mock, 0):
-                    yield event
-
-            return StreamingResponse(
-                sse_generator(),
-                media_type="text/event-stream",
-                headers={
-                    "X-Accel-Buffering": "no",
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                },
-            )
+            return _sse_response(nimserver_mock)
 
         # Handle adaptive rate limit reset (<nimrpm:reset>)
         rpmreset_mock = await _handle_nimrpm_reset(request_data)
         if rpmreset_mock is not None:
-            request_id = f"req_{uuid.uuid4().hex[:12]}"
-            log_request_compact(logger, request_id, request_data)
+            return _sse_response(rpmreset_mock)
 
-            async def sse_generator():
-                for event in optimization_response_to_sse(rpmreset_mock, 0):
-                    yield event
-
-            return StreamingResponse(
-                sse_generator(),
-                media_type="text/event-stream",
-                headers={
-                    "X-Accel-Buffering": "no",
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                },
-            )
+        # Handle inline command help (<nimhelp>)
+        nimhelp_mock = await _handle_nimhelp(request_data)
+        if nimhelp_mock is not None:
+            return _sse_response(nimhelp_mock)
 
         optimized = try_optimizations(request_data, settings)
         if optimized is not None:
