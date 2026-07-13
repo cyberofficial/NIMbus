@@ -687,12 +687,9 @@ class NimbusDiscordBot(commands.Bot):
                         }
 
                         if tool_name == "web_search":
-                            if result and "No results found" not in result:
-                                consecutive_web_search_failures = 0  # Reset only on actual results
-                            else:
-                                consecutive_web_search_failures += 1
-                                if consecutive_web_search_failures >= 2:
-                                    logger.warning(f"[DISCORD-WEB] {consecutive_web_search_failures} consecutive empty/failed web_searches - will remove web_search tool")
+                            # "No results found" is a VALID successful result - query just matched nothing
+                            # Only exceptions (caught in except block) should increment failures
+                            consecutive_web_search_failures = 0
                         tool_result_messages.append({
                             "role": "user",
                             "content": [
@@ -759,7 +756,8 @@ class NimbusDiscordBot(commands.Bot):
             # send one final buffered request (no tools) to get the model's response
             if not full_text and tools_used:
                 logger.info("[DISCORD-WEB] Hit max_iterations with tool calls but no text - sending final buffered request")
-                for attempt in range(3):  # Try up to 3 times
+                fallback_text = ""  # Will hold synthesized response from tool results
+                for attempt in range(5):  # Try up to 5 times
                     try:
                         # Truncate to last 15 messages to prevent context overflow
                         final_messages = current_request.messages[-15:] if len(current_request.messages) > 15 else current_request.messages
@@ -803,9 +801,20 @@ class NimbusDiscordBot(commands.Bot):
 
                     except Exception as e:
                         logger.error(f"[DISCORD-WEB] Final buffered request attempt {attempt+1} failed: {e}")
-                        if attempt == 2:
+                        if attempt == 4:
                             logger.error("[DISCORD-WEB] All final request attempts failed")
                         continue
+
+                # Fallback: if all retries failed but we have tool results, synthesize a response
+                if not full_text and captured_tool_results:
+                    logger.info("[DISCORD-WEB] All retries exhausted, synthesizing response from tool results")
+                    parts = ["-# This response used online resources, please make sure to verify the information"]
+                    for tool_name, data in captured_tool_results.items():
+                        result = data.get("result", "")
+                        if result and result != "No results found.":
+                            parts.append(result[:3000])  # Limit each result
+                    fallback_text = "\n\n".join(parts)
+                    full_text = fallback_text
 
         finally:
             # Stop typing indicator
