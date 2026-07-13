@@ -519,7 +519,7 @@ class NvidiaNimProvider(BaseProvider):
             timeout=httpx.Timeout(
                 config.http_read_timeout,
                 connect=config.http_connect_timeout,
-                read=config.http_read_timeout,
+                read=None,  # Disable idle read timeout for streaming; chunks may be far apart
                 write=config.http_write_timeout,
             ),
             http_client=http_client,
