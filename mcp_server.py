@@ -19,6 +19,9 @@ WEB_SEARCH_FETCH_TIMEOUT = float(os.getenv("WEB_SEARCH_FETCH_TIMEOUT", "10.0"))
 MCP_CACHE_TTL = min(int(os.getenv("MCP_CACHE_TTL", "600")), 3600)
 # Cache directory: hardcoded to NIMBUS_FETCH_CACHE folder next to mcp_server.py
 MCP_CACHE_DIR = str(Path(__file__).parent / "NIMBUS_FETCH_CACHE")
+# Browser settings: MCP_BROWSER_HEADLESS=true means use fast HTTP; false means always use browser
+MCP_BROWSER_HEADLESS = os.getenv("MCP_BROWSER_HEADLESS", "true").lower() == "true"
+DEFAULT_USE_BROWSER = not MCP_BROWSER_HEADLESS  # Use browser by default if not headless
 
 mcp = FastMCP("nimbus", json_response=True)
 
@@ -122,6 +125,30 @@ def _extract_text(html: str) -> str:
     text = re.sub(r'<[^>]+>', ' ', text)
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
+
+
+async def _fetch_via_playwright(url: str, timeout: float = 30.0) -> str:
+    """Fetch page using Playwright browser (JS rendering, handles SPAs/anti-bot)."""
+    from websearch.duckduckgo_html import get_ddg_instance
+
+    ddg = get_ddg_instance()
+    browser = await ddg._get_browser()
+
+    # Reuse persistent context (cookies, stealth)
+    if ddg._context is None:
+        ddg._context = await browser.new_context(
+            user_agent=ddg.USER_AGENT,
+            viewport={"width": 1280, "height": 720},
+            locale="en-US",
+        )
+
+    page = await ddg._context.new_page()
+    try:
+        await page.goto(url, wait_until="networkidle", timeout=int(timeout * 1000))
+        html_content = await page.content()
+        return _extract_text(html_content)
+    finally:
+        await page.close()
 
 
 # ============================================================================
@@ -367,7 +394,8 @@ async def web_search(query: str) -> str:
 
 @mcp.tool()
 async def fetch_page(url: str, offset: int = 0, limit: int = 10000,
-                      refresh: bool = False, search: Optional[str] = None) -> str:
+                      refresh: bool = False, search: Optional[str] = None,
+                      use_browser: bool = DEFAULT_USE_BROWSER) -> str:
     """Fetch and extract text content from a webpage with chunked reading support.
 
     Uses file-based caching (TTL: MCP_CACHE_TTL seconds, default 600s) to avoid
@@ -377,18 +405,26 @@ async def fetch_page(url: str, offset: int = 0, limit: int = 10000,
     If `search` is provided, returns matches for that term within the page
     with line numbers and character positions instead of a chunk.
 
-    Returns JSON with content chunk and metadata.
+    When MCP_BROWSER_HEADLESS=false, a visible browser is used for all fetches.
+    When MCP_BROWSER_HEADLESS=true, fast HTTP (httpx) is used by default;
+    set use_browser=true to enable Playwright for JS-rendered content.
 
     Args:
         url: URL to fetch
-        offset: Character offset to start reading from (default: 0)
-        limit: Maximum characters to return (default: 10000)
+        offset: Character offset to start reading from (for chunked reading)
+        limit: Max characters to return (use with offset for chunks)
+        search: Optional search term (capped at 5 matches, 200 chars context each)
         refresh: Force fresh fetch, bypassing cache (default: False)
-        search: Optional search term to find within page content
+        use_browser: Use Playwright browser for JS-rendered content. Ignored when
+                     MCP_BROWSER_HEADLESS=false (always uses browser).
     """
     import datetime
+    from loguru import logger
     timeout = float(os.getenv("WEB_SEARCH_FETCH_TIMEOUT", "10.0"))
     cache_key = _get_cache_key(url)
+
+    # Force browser when headless is disabled - no override allowed
+    effective_use_browser = True if not MCP_BROWSER_HEADLESS else use_browser
 
     # Try cache first (unless refresh requested or caching disabled)
     cached = False
@@ -403,10 +439,14 @@ async def fetch_page(url: str, offset: int = 0, limit: int = 10000,
 
     if full_content is None:
         # Cache miss or refresh - fetch fresh
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.get(url, timeout=timeout)
-            resp.raise_for_status()
-            full_content = _extract_text(resp.text)
+        logger.info(f"[MCP FETCH] url={url} | cache=MISS | fetching... (browser={effective_use_browser})")
+        if effective_use_browser:
+            full_content = await _fetch_via_playwright(url, timeout=30.0)
+        else:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.get(url, timeout=timeout)
+                resp.raise_for_status()
+                full_content = _extract_text(resp.text)
 
         # Write to cache (if caching enabled)
         if MCP_CACHE_TTL > 0:
