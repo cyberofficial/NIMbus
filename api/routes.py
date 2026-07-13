@@ -559,6 +559,32 @@ async def create_message_buffered(
                 },
             )
 
+        # Handle adaptive rate limit reset (<nimrpm:reset>)
+        rpmreset_mock = await _handle_nimrpm_reset(request_data)
+        if rpmreset_mock is not None:
+            request_id = f"req_{uuid.uuid4().hex[:12]}"
+            log_request_compact(logger, request_id, request_data)
+            return JSONResponse(
+                content=rpmreset_mock,
+                headers={
+                    "X-Buffered": "true",
+                    "X-Request-ID": request_id,
+                },
+            )
+
+        # Handle inline command help (<nimhelp>)
+        nimhelp_mock = await _handle_nimhelp(request_data)
+        if nimhelp_mock is not None:
+            request_id = f"req_{uuid.uuid4().hex[:12]}"
+            log_request_compact(logger, request_id, request_data)
+            return JSONResponse(
+                content=nimhelp_mock,
+                headers={
+                    "X-Buffered": "true",
+                    "X-Request-ID": request_id,
+                },
+            )
+
         optimized = try_optimizations(request_data, settings)
         if optimized is not None:
             return optimized
