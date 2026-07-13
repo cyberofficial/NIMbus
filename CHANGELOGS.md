@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## v2.0.11 - Date: 2026-07-13
+
+### Added
+- **MCP Server Browser Support** - `fetch_page` tool now supports Playwright browser for JavaScript-rendered content, SPAs, and anti-bot pages. New `MCP_BROWSER_HEADLESS` environment variable (default: `true` = HTTP only). When `false`, always uses visible browser. Tool accepts `use_browser` parameter (ignored when headless=false). Reuses DuckDuckGo search browser instance for persistent cookies/stealth.
+
+### Fixed
+- **Failed Web Search Not Disabling Tool** - Discord bot no longer treats "No results found" as a failure. Only actual exceptions increment the failure counter. `web_search` tool stays available even after queries that return 0 results.
+- **Empty Bot Replies After Tool Calls** - Increased final buffered fallback retries from 3 to 5 with explicit "no tools" instruction. If all retries fail but tool results exist, synthesizes response from tool results instead of returning empty.
+- **Message Splitting at Mid-URL/Lines** - Discord bot now prefers line boundaries when splitting long messages (prevents cutting URLs mid-sentence).
+- **Streaming Idle Timeout** - Disabled idle read timeout for streaming (`None`) to prevent timeout errors when chunks arrive sporadically.
+- **Inline Commands Bypass Rate Limiting** - Inline commands (`<nimhelp>`, `<modelswap:>`, `<nimserver:>`, `<nimrpm:reset>`) now processed before concurrency slot acquisition in buffered endpoint so they bypass rate limiting.
+
+### Changed
+- **SSE Dispatch Consolidation** - Four copy-pasted SSE streaming blocks in `create_message` consolidated into single `_sse_response()` helper (~30 lines removed).
+- **Logging Cleanup** - Removed emoji print statement from `providers/provider.py`.
+
+### Files Touched
+- `.env.example` - Added `MCP_BROWSER_HEADLESS`, `DISCORD_BROWSER_HEADLESS`
+- `api/routes.py` - Inline commands before `wait_if_blocked()`; `_sse_response()` helper
+- `api/swapper/parser.py` - `<nimhelp>` command detection
+- `config/settings.py` - Browser headless config fields
+- `discord_bot/bot.py` - Tool result persistence, fallback retries, smart splitting, text-stream tool parsing
+- `discord_bot/conversation.py` - `tool_results` field, `get_history_with_tool_results()`
+- `discord_bot/persistence.py` - Serialize/deserialize `tool_results`
+- `discord_bot/tools/web_search.py` - `use_browser` param, forced browser when headless=false
+- `mcp_server.py` - `MCP_BROWSER_HEADLESS`, `use_browser` param, `_fetch_via_playwright()`, logging
+- `providers/provider.py` - Removed emoji print, streaming idle timeout fix
+- `config/settings.py` - Headless browser config fields
+
+---
+
 ## v2.0.10 - Date: 2026-07-11
 
 ### Fixed
