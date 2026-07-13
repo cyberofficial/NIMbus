@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import time
 import uuid
 
 import discord
@@ -99,6 +100,70 @@ class NimbusDiscordBot(commands.Bot):
                     if role.id in bot_role_ids:
                         return True
         return False
+
+    def _try_parse_tool_call_from_text(self, text: str) -> dict | None:
+        """Try to parse tool calls embedded in text stream.
+
+        Some models output tool calls as plain JSON in the text stream like:
+        {"tool": "search", "query": "..."} or {"name": "web_search", "input": {...}}
+
+        Args:
+            text: The accumulated text stream
+
+        Returns:
+            Parsed tool call dict with 'id', 'name', 'input' or None if not found
+        """
+        import re
+        import uuid
+
+        # Look for JSON-like patterns that could be tool calls
+        # Pattern 1: {"tool": "search", "query": "..."}
+        # Pattern 2: {"name": "web_search", "input": {...}}
+        # Pattern 3: {"name": "fetch_page", "input": {"url": "..."}}
+
+        # Find potential JSON objects in the text (greedy match for last complete JSON)
+        json_pattern = r'\{[^{}]*(?:"tool"|"name"|"query"|"url")[^{}]*\}'
+        matches = re.findall(json_pattern, text)
+
+        if not matches:
+            return None
+
+        # Try the last match (most recent)
+        for match in reversed(matches):
+            try:
+                candidate = json.loads(match)
+
+                # Check for various tool call formats
+                tool_name = None
+                tool_input = None
+
+                if "tool" in candidate and "query" in candidate:
+                    # Format: {"tool": "search", "query": "..."}
+                    tool_name = "web_search" if candidate["tool"] == "search" else candidate["tool"]
+                    tool_input = {"query": candidate["query"]}
+                elif "name" in candidate and "input" in candidate:
+                    # Format: {"name": "web_search", "input": {...}}
+                    tool_name = candidate["name"]
+                    tool_input = candidate["input"]
+                    # Normalize tool names
+                    if tool_name == "search":
+                        tool_name = "web_search"
+                elif "tool" in candidate:
+                    # Generic: {"tool": "fetch_page", ...} - not supported format
+                    continue
+                else:
+                    continue
+
+                if tool_name and tool_input is not None:
+                    return {
+                        "id": f"toolu_{uuid.uuid4().hex[:8]}",
+                        "name": tool_name,
+                        "input": tool_input
+                    }
+            except (json.JSONDecodeError, KeyError):
+                continue
+
+        return None
 
     async def setup_hook(self) -> None:
         """Set up bot - called before login."""
@@ -498,6 +563,9 @@ class NimbusDiscordBot(commands.Bot):
         consecutive_web_search_failures = 0  # Track failures to disable web_search tool
         iteration = 0
 
+        # For capturing tool results for conversation persistence
+        captured_tool_results = {}  # tool_name -> {input, result, timestamp, full_length}
+
         # Current request data (will be updated in loop with tool results)
         current_request = request_data
         current_input_tokens = input_tokens
@@ -559,7 +627,17 @@ class NimbusDiscordBot(commands.Bot):
                                 elif data.get("type") == "content_block_delta":
                                     delta = data.get("delta", {})
                                     if delta.get("type") == "text_delta":
-                                        full_text += delta.get("text", "")
+                                        text_delta = delta.get("text", "")
+                                        full_text += text_delta
+
+                                        # Detect raw JSON tool calls in text stream (model outputs {"tool": "search", "query": "..."} as text)
+                                        if current_tool_use is None and not current_tool_input:
+                                            # Try to detect and parse tool calls embedded in text
+                                            tool_call = self._try_parse_tool_call_from_text(full_text)
+                                            if tool_call:
+                                                logger.info(f"[DISCORD_TOOL] Detected tool call in text stream: {tool_call.get('name')}")
+                                                current_tool_use = tool_call
+                                                current_tool_input = json.dumps(tool_call.get("input", {}))
 
                             except Exception:
                                 continue
@@ -592,11 +670,22 @@ class NimbusDiscordBot(commands.Bot):
                             offset = tool_input.get("offset", 0)
                             limit = tool_input.get("limit", 10000)
                             search = tool_input.get("search")
-                            result = await execute_fetch_page(url, offset, limit, search)
+                            use_browser = tool_input.get("use_browser", False)
+                            result = await execute_fetch_page(url, offset, limit, search, use_browser=use_browser)
                         else:
                             result = f"Unknown tool: {tool_name}"
 
                         logger.info(f"[WEB SEARCH] tool={tool_name} | result_len={len(result)}")
+
+                        # Capture tool result for conversation persistence (truncated to 5KB)
+                        max_result_size = getattr(self.settings, 'discord_web_search_max_result_size', 5000)
+                        captured_tool_results[tool_name] = {
+                            "input": tool_input,
+                            "result": result[:max_result_size],
+                            "full_result_length": len(result),
+                            "timestamp": time.time(),
+                        }
+
                         if tool_name == "web_search":
                             if result and "No results found" not in result:
                                 consecutive_web_search_failures = 0  # Reset only on actual results
@@ -670,34 +759,53 @@ class NimbusDiscordBot(commands.Bot):
             # send one final buffered request (no tools) to get the model's response
             if not full_text and tools_used:
                 logger.info("[DISCORD-WEB] Hit max_iterations with tool calls but no text - sending final buffered request")
-                try:
-                    # Truncate to last 15 messages to prevent context overflow
-                    final_messages = current_request.messages[-15:] if len(current_request.messages) > 15 else current_request.messages
-                    final_request = MessagesRequest(
-                        model=discord_model,
-                        messages=final_messages,
-                        max_tokens=self.settings.discord_max_tokens,
-                        system=system_prompt,
-                        tools=None,  # No tools - force text response
-                    )
-                    final_input_tokens = get_token_count(
-                        final_request.messages, system_prompt, final_request.tools
-                    )
-                    async with global_limiter.concurrency_slot():
-                        response = await self.provider.buffered_request(
-                            final_request, final_input_tokens,
-                            request_id=f"discord_final_{uuid.uuid4().hex[:8]}",
-                            priority=RequestPriority.HIGH
+                for attempt in range(3):  # Try up to 3 times
+                    try:
+                        # Truncate to last 15 messages to prevent context overflow
+                        final_messages = current_request.messages[-15:] if len(current_request.messages) > 15 else current_request.messages
+
+                        # Add explicit instruction to provide final text answer
+                        final_system_prompt = system_prompt + "\n\nIMPORTANT: You have already used all necessary tools. Provide a comprehensive text answer now. Do NOT use any tools - provide your final answer as plain text only."
+
+                        final_request = MessagesRequest(
+                            model=discord_model,
+                            messages=final_messages,
+                            max_tokens=self.settings.discord_max_tokens,
+                            system=final_system_prompt,
+                            tools=None,  # No tools - force text response
                         )
-                    # DEBUG: log full response
-                    logger.info(f"[DISCORD-WEB] Final response raw: {response}")
-                    full_text = extract_text_from_content(response.get("content", ""))
-                    if full_text:
-                        logger.info(f"[DISCORD-WEB] Final response received: {len(full_text)} chars")
-                    else:
-                        logger.warning("[DISCORD-WEB] Final response still empty")
-                except Exception as e:
-                    logger.error(f"[DISCORD-WEB] Final buffered request failed: {e}")
+                        final_input_tokens = get_token_count(
+                            final_request.messages, final_system_prompt, final_request.tools
+                        )
+                        async with global_limiter.concurrency_slot():
+                            response = await self.provider.buffered_request(
+                                final_request, final_input_tokens,
+                                request_id=f"discord_final_{uuid.uuid4().hex[:8]}",
+                                priority=RequestPriority.HIGH
+                            )
+                        # DEBUG: log full response
+                        logger.info(f"[DISCORD-WEB] Final response raw (attempt {attempt+1}): {response}")
+                        full_text = extract_text_from_content(response.get("content", ""))
+
+                        # If response is tool_use, it's not a valid final answer - retry
+                        content = response.get("content", [])
+                        has_tool_use = any(c.get("type") == "tool_use" for c in content) if isinstance(content, list) else False
+
+                        if full_text and not has_tool_use:
+                            logger.info(f"[DISCORD-WEB] Final response received: {len(full_text)} chars")
+                            break
+                        elif has_tool_use:
+                            logger.warning(f"[DISCORD-WEB] Attempt {attempt+1}: Model still returned tool_use, retrying...")
+                            continue
+                        else:
+                            logger.warning(f"[DISCORD-WEB] Attempt {attempt+1}: Final response empty, retrying...")
+                            continue
+
+                    except Exception as e:
+                        logger.error(f"[DISCORD-WEB] Final buffered request attempt {attempt+1} failed: {e}")
+                        if attempt == 2:
+                            logger.error("[DISCORD-WEB] All final request attempts failed")
+                        continue
 
         finally:
             # Stop typing indicator
@@ -717,12 +825,13 @@ class NimbusDiscordBot(commands.Bot):
         if tools_used:
             full_text = "-# This response used online resources, please make sure to verify the information\n\n" + full_text
 
-        # Store the assistant response in conversation (with tools_used)
+        # Store the assistant response in conversation (with tools_used and tool_results)
         if full_text:
             safe_response = full_text.replace("@everyone", "@every\u200bone").replace("@here", "@her\u200be")
             self.conversation_manager.add_message_with_user(
                 channel.id, "assistant", safe_response, None, "NIM",
                 tools_used=list(tools_used),
+                tool_results=captured_tool_results,
                 auto_compact=self.settings.discord_auto_compact
             )
 
@@ -730,9 +839,11 @@ class NimbusDiscordBot(commands.Bot):
         content_out = full_text.strip() if full_text else "(No response)"
         # Strip @everyone/@here from bot's own output to prevent accidental mass-pings
         content_out = content_out.replace("@everyone", "@every\u200bone").replace("@here", "@her\u200be")
-        if len(content_out) > 1900:
-            # Split into chunks of ~1900 chars and send multiple messages
-            chunks = [content_out[i:i+1900] for i in range(0, len(content_out), 1900)]
+        # Use configured split threshold
+        split_threshold = self.settings.discord_split_threshold
+        if len(content_out) > split_threshold:
+            # Split into chunks at word/line boundaries
+            chunks = self._split_at_word_boundary(content_out, split_threshold)
             for i, chunk in enumerate(chunks):
                 if i == 0:
                     # First chunk: reply to the user's message
@@ -744,7 +855,7 @@ class NimbusDiscordBot(commands.Bot):
             await message.reply(content_out)
 
     def _split_at_word_boundary(self, text: str, threshold: int) -> list[str]:
-        """Split text at word boundaries, not mid-word."""
+        """Split text at word or line boundaries, not mid-word/URL."""
         chunks = []
         start = 0
         while start < len(text):
@@ -753,18 +864,30 @@ class NimbusDiscordBot(commands.Bot):
                 chunks.append(text[start:])
                 break
 
-            # Find the last space before threshold
+            # Find the best split point - prefer newlines, then spaces
             chunk = text[start:start + threshold]
+
+            # Find last newline first (to keep entire lines/URLs together)
+            last_newline = chunk.rfind('\n')
+            # Find last space
             last_space = chunk.rfind(' ')
 
-            if last_space == -1:
-                # No space found, have to cut mid-word
+            # Prefer newline if it's in the last 40% of the chunk (to avoid too-short chunks)
+            # Otherwise prefer space
+            split_pos = -1
+            if last_newline != -1 and last_newline >= int(threshold * 0.6):
+                split_pos = last_newline
+            elif last_space != -1:
+                split_pos = last_space
+
+            if split_pos == -1:
+                # No space or suitable newline found, have to cut mid-word
                 chunks.append(text[start:start + threshold])
                 start += threshold
             else:
-                # Cut at word boundary
-                chunks.append(text[start:start + last_space])
-                start += last_space + 1  # Skip the space
+                # Cut at boundary (newline or space)
+                chunks.append(text[start:start + split_pos])
+                start += split_pos + 1  # Skip the boundary character
 
         return chunks
 

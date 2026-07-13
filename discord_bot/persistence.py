@@ -34,6 +34,7 @@ def save_conversations(conversations: dict) -> None:
                 "username": msg.username,
                 "reply_message": msg.reply_message,
                 "tools_used": msg.tools_used,
+                "tool_results": msg.tool_results,
             })
         data[str(channel_id)] = {
             "messages": messages,
@@ -79,6 +80,7 @@ def load_conversations() -> Optional[dict]:
                     username=msg_data.get("username", ""),
                     reply_message=msg_data.get("reply_message", ""),
                     tools_used=msg_data.get("tools_used", []),
+                    tool_results=msg_data.get("tool_results"),
                 )
                 session.messages.append(msg)
             sessions[channel_id] = session

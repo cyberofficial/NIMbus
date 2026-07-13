@@ -356,6 +356,12 @@ class Settings(BaseSettings):
     discord_web_search_max_iterations: int = Field(
         default=10, validation_alias="DISCORD_WEB_SEARCH_MAX_ITERATIONS"
     )
+    discord_web_search_max_result_size: int = Field(
+        default=5000, validation_alias="DISCORD_WEB_SEARCH_MAX_RESULT_SIZE"
+    )
+    discord_web_search_include_in_history: bool = Field(
+        default=True, validation_alias="DISCORD_WEB_SEARCH_INCLUDE_IN_HISTORY"
+    )
 
     @property
     def discord_enabled(self) -> bool:
@@ -679,6 +685,7 @@ class Settings(BaseSettings):
             "discord_cmd_newchannel", "discord_command_prefix", "discord_require_mention",
             "discord_cmd_prefix_ask", "discord_cmd_prefix_compact", "discord_cmd_prefix_new", "discord_cmd_prefix_status",
             "discord_enable_web_search", "discord_web_search_max_results", "discord_web_search_max_iterations",
+            "discord_web_search_max_result_size", "discord_web_search_include_in_history",
             "provider_resource_exhausted_retries",
             "fable_override",
         }

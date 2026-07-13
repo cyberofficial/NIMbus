@@ -29,6 +29,11 @@ WEB_SEARCH_FETCH_TIMEOUT = float(os.getenv("WEB_SEARCH_FETCH_TIMEOUT", "10.0"))
 MCP_CACHE_TTL = min(int(os.getenv("MCP_CACHE_TTL", "600")), 3600)
 MCP_CACHE_DIR = str(Path(__file__).parent.parent.parent / "NIMBUS_FETCH_CACHE")
 
+# Use browser for fetch_page if DISCORD_BROWSER_HEADLESS=false (non-headless mode)
+# This means user wants visible browser, so we should use it for fetching too
+DISCORD_BROWSER_HEADLESS = os.getenv("DISCORD_BROWSER_HEADLESS", "true").lower() == "true"
+DEFAULT_USE_BROWSER = not DISCORD_BROWSER_HEADLESS  # Use browser by default if not headless
+
 
 # ============================================================================
 # Tool Definitions
@@ -60,7 +65,8 @@ FETCH_PAGE_TOOL = Tool(
         "content of important results. For large pages (>10000 chars), use offset/limit to "
         "read in chunks (e.g., offset=0 limit=5000, then offset=5000 limit=5000). "
         "Use the 'search' parameter to find specific information within long pages. "
-        "Verify claims by fetching primary sources."
+        "When DISCORD_BROWSER_HEADLESS=false, a visible browser is used for all fetches. "
+        "When DISCORD_BROWSER_HEADLESS=true, fast HTTP (httpx) is used by default."
     ),
     input_schema={
         "type": "object",
@@ -68,7 +74,8 @@ FETCH_PAGE_TOOL = Tool(
             "url": {"type": "string", "description": "URL to fetch"},
             "offset": {"type": "integer", "default": 0, "description": "Character offset to start reading from (for chunked reading)"},
             "limit": {"type": "integer", "default": 10000, "description": "Max characters to return (use with offset for chunks)"},
-            "search": {"type": "string", "description": "Optional search term (capped at 5 matches, 200 chars context each)"}
+            "search": {"type": "string", "description": "Optional search term (capped at 5 matches, 200 chars context each)"},
+            "use_browser": {"type": "boolean", "default": DEFAULT_USE_BROWSER, "description": "Use Playwright browser for JS-rendered content. Ignored when DISCORD_BROWSER_HEADLESS=false (always uses browser)."},
         },
         "required": ["url"]
     }
@@ -205,12 +212,38 @@ async def execute_web_search(query: str, max_results: int = 5) -> str:
     return "\n".join(lines)
 
 
+async def _fetch_via_playwright(url: str, timeout: float = 30.0) -> str:
+    """Fetch page using Playwright browser (JS rendering, handles SPAs/anti-bot)."""
+
+    from websearch.duckduckgo_html import get_ddg_instance
+
+    ddg = get_ddg_instance()
+    browser = await ddg._get_browser()
+
+    # Reuse persistent context (cookies, stealth)
+    if ddg._context is None:
+        ddg._context = await browser.new_context(
+            user_agent=ddg.USER_AGENT,
+            viewport={"width": 1280, "height": 720},
+            locale="en-US",
+        )
+
+    page = await ddg._context.new_page()
+    try:
+        await page.goto(url, wait_until="networkidle", timeout=int(timeout * 1000))
+        html_content = await page.content()
+        return _extract_text(html_content)
+    finally:
+        await page.close()
+
+
 async def execute_fetch_page(
     url: str,
     offset: int = 0,
     limit: int = 10000,
     search: Optional[str] = None,
     refresh: bool = False,
+    use_browser: bool = DEFAULT_USE_BROWSER,
 ) -> str:
     """Fetch and extract text content from a webpage with caching.
 
@@ -220,16 +253,19 @@ async def execute_fetch_page(
         limit: Maximum characters to return
         search: Optional search term to find within page content
         refresh: Force fresh fetch, bypassing cache
-
-    Returns:
-        JSON string with content chunk and metadata (or search matches)
+        use_browser: Use Playwright browser for JS-rendered content (slower but handles SPAs/anti-bot).
+                     Defaults to True if DISCORD_BROWSER_HEADLESS=false (non-headless mode).
+                     When DISCORD_BROWSER_HEADLESS=false, browser is ALWAYS used regardless of this parameter.
     """
     import datetime
+
+    # Force browser when headless is disabled - no override allowed
+    effective_use_browser = True if not DISCORD_BROWSER_HEADLESS else use_browser
 
     timeout = WEB_SEARCH_FETCH_TIMEOUT
     cache_key = _get_cache_key(url)
 
-    logger.info(f"[WEB FETCH] url={url} offset={offset} limit={limit} search={search!r} refresh={refresh}")
+    logger.info(f"[WEB FETCH] url={url} offset={offset} limit={limit} search={search!r} refresh={refresh} use_browser={effective_use_browser} (headless={DISCORD_BROWSER_HEADLESS})")
 
     cached = False
     full_content = None
@@ -243,11 +279,14 @@ async def execute_fetch_page(
             logger.info(f"[WEB FETCH] url={url} | cache=HIT | length={len(full_content)}")
 
     if full_content is None:
-        logger.info(f"[WEB FETCH] url={url} | cache=MISS | fetching...")
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.get(url, timeout=timeout)
-            resp.raise_for_status()
-            full_content = _extract_text(resp.text)
+        logger.info(f"[WEB FETCH] url={url} | cache=MISS | fetching... (browser={effective_use_browser})")
+        if effective_use_browser:
+            full_content = await _fetch_via_playwright(url, timeout=30.0)
+        else:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.get(url, timeout=timeout)
+                resp.raise_for_status()
+                full_content = _extract_text(resp.text)
 
         if MCP_CACHE_TTL > 0:
             meta = _write_cache(cache_key, url, full_content)
@@ -259,7 +298,7 @@ async def execute_fetch_page(
                 "cached_at": time.time(),
                 "expires_at": time.time(),
             }
-        logger.info(f"[WEB FETCH] url={url} | fetched | length={len(full_content)}")
+        logger.info(f"[WEB FETCH] url={url} | fetched | length={len(full_content)} (browser={use_browser})")
 
     if meta is None:
         meta = {}

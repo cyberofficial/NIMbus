@@ -507,7 +507,7 @@ class NvidiaNimProvider(BaseProvider):
         # Create header-capturing transport for rate limit parsing
         capture_store = CapturedHeaders.get_instance()
         custom_transport = HeaderCapturingTransport(capture_store)
-        print("🔧 HeaderCapturingTransport initialized for NIM provider", flush=True)
+        logger.info("HeaderCapturingTransport initialized for NIM provider")
 
         # Configure HTTP client with custom transport
         http_client = httpx.AsyncClient(transport=custom_transport)

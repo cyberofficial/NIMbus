@@ -17,6 +17,7 @@ class ConversationMessage:
     username: str = ""  # Display name for context
     reply_message: str = ""  # Content of the bot message this user message is replying to
     tools_used: list[str] = field(default_factory=list)  # List of tool names used in this response
+    tool_results: dict | None = None  # Optional: captured tool results for context persistence
 
 
 @dataclass
@@ -145,7 +146,8 @@ class ConversationManager:
     def add_message_with_user(
         self, channel_id: int, role: str, content: str,
         user_id: Optional[int] = None, username: str = "", reply_message: str = "",
-        tools_used: list[str] | None = None, auto_compact: bool = True
+        tools_used: list[str] | None = None, tool_results: dict | None = None,
+        auto_compact: bool = True
     ) -> dict:
         """
         Add message with user context and return status.
@@ -182,7 +184,8 @@ class ConversationManager:
 
         msg = ConversationMessage(
             role=role, content=content, user_id=user_id, username=username,
-            reply_message=reply_message, tools_used=tools_used or []
+            reply_message=reply_message, tools_used=tools_used or [],
+            tool_results=tool_results
         )
         session.messages.append(msg)
         session.token_count += msg_tokens
@@ -227,12 +230,53 @@ class ConversationManager:
         summary_tokens = self._count_tokens(summary)
         self._sessions[channel_id] = ConversationSession(
             channel_id=channel_id,
-            messages=[ConversationMessage(role="assistant", content=summary, username="Summary", reply_message="", tools_used=[])],
+            messages=[ConversationMessage(role="assistant", content=summary, username="Summary", reply_message="", tools_used=[], tool_results=None)],
             token_count=summary_tokens,
         )
         # Persist after compaction and reset warning flag
         from .persistence import save_conversations
         save_conversations(self._sessions)
+
+    def get_history_with_tool_results(self, channel_id: int, max_tool_result_size: int = 5000) -> List[dict]:
+        """
+        Get conversation history with tool results injected as context for NIM API.
+
+        Tool results are formatted as system messages or embedded in assistant messages
+        to provide context for subsequent turns.
+
+        Args:
+            channel_id: The Discord channel ID
+            max_tool_result_size: Max characters per tool result to include
+
+        Returns:
+            List of message dicts for NIM API with tool results embedded
+        """
+        from .user_blocking import is_blocked
+        session = self.get_session(channel_id)
+        if not session:
+            return []
+
+        results = []
+        for m in session.messages:
+            if m.user_id is not None and is_blocked(m.user_id):
+                continue
+
+            # Add the main message
+            content = f"{m.username}: {m.content}" if (m.username and m.role == "user") else m.content
+            results.append({"role": m.role, "content": content})
+
+            # Inject tool results as additional context if present
+            if m.tool_results:
+                for tool_name, tool_data in m.tool_results.items():
+                    result_text = tool_data.get("result", "")
+                    if len(result_text) > max_tool_result_size:
+                        result_text = result_text[:max_tool_result_size] + f"\n... [truncated, full length: {len(tool_data.get('result', ''))} chars]"
+
+                    # Add as a system message with tool result context
+                    tool_context = f"[Tool: {tool_name}] Query: {tool_data.get('query', tool_data.get('input', ''))}\nResult: {result_text}"
+                    results.append({"role": "system", "content": tool_context})
+
+        return results
 
     def cleanup_inactive(self, max_age_hours: float = 24.0) -> int:
         """Remove sessions inactive longer than threshold. Returns count cleaned."""
