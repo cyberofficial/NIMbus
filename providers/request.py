@@ -5,6 +5,7 @@ from typing import Any
 from loguru import logger
 
 from config.nim import NimSettings
+from config.settings import get_reasoning_config
 from providers.message_converter import build_base_request_body
 from providers.utils import set_if_not_none
 
@@ -72,20 +73,67 @@ def build_request_body(
     if request_extra:
         extra_body.update(request_extra)
 
+    # Determine model for reasoning config (use original_model if available)
+    model = getattr(request_data, "original_model", None) or body.get("model", "")
+
+    # Extract thinking params from Anthropic request (Claude 3.7+)
+    request_effort = None
+    request_budget = None
+    if hasattr(request_data, "thinking") and request_data.thinking:
+        if isinstance(request_data.thinking, dict):
+            request_effort = request_data.thinking.get("effort")
+            request_budget = request_data.thinking.get("budget_tokens")
+        else:
+            request_effort = getattr(request_data.thinking, "effort", None)
+            request_budget = getattr(request_data.thinking, "budget_tokens", None)
+
+    # Get model-specific reasoning config (for max budget, effort mapping)
+    reasoning_config = get_reasoning_config(model)
+
     # Handle thinking/reasoning mode - only when NIM_THINKING is enabled
-    if nim.thinking:
-        extra_body.setdefault("thinking", {"type": "enabled"})
-        extra_body.setdefault("reasoning_split", True)
-        extra_body.setdefault(
-            "chat_template_kwargs",
-            {
-                "thinking": True,
-                "enable_thinking": True,
-                "reasoning_split": True,
-                "clear_thinking": False,
-                "force_nonempty_content": True,  # Required for tool calling (Nemotron 3)
-            },
-        )
+    if nim.thinking and nim.enable_thinking:
+        # Map effort: request > settings > default (high)
+        effective_effort = request_effort or nim.reasoning_effort
+
+        # Get model-specific effort mapping
+        effort_map = reasoning_config.effort_mapping if reasoning_config.effort_mapping else {}
+        model_effort = effort_map.get(effective_effort, effective_effort)
+
+        # Build chat_template_kwargs using MAPPED effort
+        ctk = extra_body.setdefault("chat_template_kwargs", {})
+        ctk["enable_thinking"] = nim.chat_template_enable_thinking
+
+        # Set chat_template_kwargs effort flags using mapped effort
+        if model_effort == "low":
+            ctk["low_effort"] = True
+        elif model_effort == "medium":
+            ctk["medium_effort"] = True
+        elif model_effort == "high":
+            ctk["high_effort"] = True
+
+        # reasoning_budget: request > settings > budget_per_effort (based on effort) > model max
+        effective_budget = request_budget
+        if effective_budget is None:
+            if nim.reasoning_budget > 0:
+                effective_budget = nim.reasoning_budget
+            else:
+                # Use budget_per_effort based on original effort (before mapping)
+                effort_for_budget = effective_effort.lower()
+                effective_budget = reasoning_config.budget_per_effort.get(
+                    effort_for_budget,
+                    reasoning_config.max_reasoning_budget
+                )
+
+        # Auto-clamp to model max
+        if effective_budget > reasoning_config.max_reasoning_budget:
+            logger.warning(
+                "reasoning_budget {} exceeds model max {} for {}, clamping",
+                effective_budget, reasoning_config.max_reasoning_budget, model
+            )
+            effective_budget = reasoning_config.max_reasoning_budget
+
+        if effective_budget > 0:
+            _set_extra(extra_body, "reasoning_budget", effective_budget)
 
     req_top_k = getattr(request_data, "top_k", None)
     top_k = req_top_k if req_top_k is not None else nim.top_k
@@ -97,24 +145,10 @@ def build_request_body(
     _set_extra(extra_body, "min_tokens", nim.min_tokens, ignore_value=0)
     _set_extra(extra_body, "chat_template", nim.chat_template)
     _set_extra(extra_body, "request_id", nim.request_id)
-    if nim.thinking:
+    if nim.thinking and nim.enable_thinking:
         _set_extra(extra_body, "return_tokens_as_token_ids", nim.return_tokens_as_token_ids)
     _set_extra(extra_body, "include_stop_str_in_output", nim.include_stop_str_in_output)
     _set_extra(extra_body, "ignore_eos", nim.ignore_eos)
-    if nim.thinking:
-        # Get effort level from request (Claude Code's /effort command) or fallback to config
-        request_effort = getattr(request_data.thinking, 'effort', None) if request_data.thinking else None
-        effective_effort = request_effort or nim.reasoning_effort
-
-        # Get model-specific effort mapping
-        # Use original_model (before mapping) for pattern matching against user-defined mappings
-        original_model = getattr(request_data, "original_model", None) or body.get("model", "")
-        effort_map = nim.get_effort_map_for_model(original_model)
-
-        # Map Claude effort level to model-specific value if mapping exists
-        model_effort = effort_map.get(effective_effort, effective_effort)
-        _set_extra(extra_body, "reasoning_effort", model_effort)
-        _set_extra(extra_body, "include_reasoning", nim.include_reasoning)
 
     if extra_body:
         body["extra_body"] = extra_body

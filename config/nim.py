@@ -68,6 +68,35 @@ class NimSettings(BaseModel):
         default_factory=_load_reasoning_effort_mappings
     )
 
+    # NEW: Reasoning budget (0 = auto from model config)
+    reasoning_budget: int = Field(
+        default_factory=lambda: int(os.environ.get("NIM_REASONING_BUDGET", "0")), ge=0
+    )
+
+    # NEW: Enable thinking globally (overrides model config if false)
+    enable_thinking: bool = Field(
+        default_factory=lambda: os.environ.get("NIM_ENABLE_THINKING", "true").lower()
+        not in ("false", "0", "no", "off")
+    )
+
+    # NEW: Chat template kwargs effort flags
+    chat_template_enable_thinking: bool = Field(
+        default_factory=lambda: os.environ.get("NIM_CHAT_TEMPLATE_ENABLE_THINKING", "true").lower()
+        not in ("false", "0", "no", "off")
+    )
+    chat_template_low_effort: bool = Field(
+        default_factory=lambda: os.environ.get("NIM_CHAT_TEMPLATE_LOW_EFFORT", "false").lower()
+        in ("true", "1", "yes", "on")
+    )
+    chat_template_medium_effort: bool = Field(
+        default_factory=lambda: os.environ.get("NIM_CHAT_TEMPLATE_MEDIUM_EFFORT", "false").lower()
+        in ("true", "1", "yes", "on")
+    )
+    chat_template_high_effort: bool = Field(
+        default_factory=lambda: os.environ.get("NIM_CHAT_TEMPLATE_HIGH_EFFORT", "false").lower()
+        in ("true", "1", "yes", "on")
+    )
+
     def get_effort_map_for_model(self, model: str) -> dict[str, str]:
         """Get effort level mapping for a specific model."""
         model_lower = model.lower()

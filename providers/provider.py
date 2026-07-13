@@ -127,6 +127,11 @@ _thinking_unsupported_cache: set[str] = set()
 Populated on first 400 error with "Unsupported parameter" and used by
 subsequent retry attempts to avoid sending thinking params again."""
 
+# New: Model-specific budget overrides for dynamic reduction on budget_exceeded errors
+_thinking_budget_override: dict[str, int] = {}
+"""Runtime cache of models with dynamically reduced reasoning budgets.
+When a budget_exceeded error occurs, we reduce the budget and retry WITH thinking."""
+
 
 def _model_rejects_thinking(model: str) -> bool:
     """Check if model is known to reject thinking/reasoning parameters."""
@@ -137,6 +142,27 @@ def mark_thinking_unsupported(model: str) -> None:
     """Mark a model as not supporting thinking parameters."""
     if model:
         _thinking_unsupported_cache.add(model)
+
+
+def get_thinking_budget_override(model: str) -> int | None:
+    """Get dynamically reduced budget for a model (if any)."""
+    return _thinking_budget_override.get(model)
+
+
+def set_thinking_budget_override(model: str, budget: int) -> None:
+    """Set a dynamically reduced budget for a model."""
+    if budget > 0:
+        _thinking_budget_override[model] = max(1024, budget)  # floor at 1k
+
+
+def clear_thinking_caches(model: str | None = None) -> None:
+    """Clear thinking-related caches for a specific model or all models."""
+    if model:
+        _thinking_unsupported_cache.discard(model)
+        _thinking_budget_override.pop(model, None)
+    else:
+        _thinking_unsupported_cache.clear()
+        _thinking_budget_override.clear()
 
 
 def _has_thinking_params(body: dict) -> bool:
@@ -153,10 +179,18 @@ def _has_thinking_params(body: dict) -> bool:
     return any(key in extra_body for key in thinking_keys)
 
 
-def _is_thinking_param_error(e: Exception) -> bool:
+def _is_thinking_param_error(e: Exception) -> tuple[bool, str | None, str | None]:
     """Check if a 400 error is about unsupported thinking/reasoning parameters.
 
-    Matches errors like: "Validation: Unsupported parameter(s): `thinking`, `reasoning_split`, `include_reasoning`, `return_tokens_as_token_ids`"
+    Returns:
+        (is_thinking_error, error_type, detail)
+        error_type: "unsupported" | "budget_exceeded" | "invalid_param"
+        detail: param name (for invalid_param) or budget value (for budget_exceeded)
+
+    Matches errors like:
+    - "Validation: Unsupported parameter(s): `thinking`, `reasoning_split`" -> unsupported
+    - "reasoning_budget 50000 exceeds maximum allowed 32768" -> budget_exceeded
+    - "Invalid value for `reasoning_budget`" -> invalid_param
     """
     try:
         # Check for standard OpenAI error format (BadRequestError, etc.)
@@ -175,7 +209,19 @@ def _is_thinking_param_error(e: Exception) -> bool:
                 }
                 for param in thinking_params:
                     if param in msg:
-                        return True
+                        return True, "unsupported", param
+            # Check for budget exceeded
+            if "reasoning_budget" in msg and "exceed" in msg.lower():
+                # Try to extract the max allowed budget from error
+                import re
+                match = re.search(r"maximum\s+(?:allowed\s+)?(\d+)", msg, re.IGNORECASE)
+                if not match:
+                    match = re.search(r"must be.*?(\d+)", msg, re.IGNORECASE)
+                detail = match.group(1) if match else "budget_exceeded"
+                return True, "budget_exceeded", detail
+            # Check for invalid value
+            if "Invalid value" in msg and "reasoning_budget" in msg:
+                return True, "invalid_param", "reasoning_budget"
         # Check for alternative error format
         body = getattr(e, "body", None)
         if body:
@@ -190,10 +236,17 @@ def _is_thinking_param_error(e: Exception) -> bool:
                 }
                 for param in thinking_params:
                     if param in msg:
-                        return True
+                        return True, "unsupported", param
+            if "reasoning_budget" in msg and "exceed" in msg.lower():
+                import re
+                match = re.search(r"maximum\s+(?:allowed\s+)?(\d+)", msg, re.IGNORECASE)
+                detail = match.group(1) if match else "budget_exceeded"
+                return True, "budget_exceeded", detail
+            if "Invalid value" in msg and "reasoning_budget" in msg:
+                return True, "invalid_param", "reasoning_budget"
     except Exception:
         pass
-    return False
+    return False, None, None
 
 
 def _has_thinking_params(body: dict) -> bool:
@@ -429,7 +482,30 @@ def _rebuild_without_thinking(body: dict) -> dict:
     return new_body
 
 
-def _system_to_user(msg: dict) -> dict:
+def _rebuild_with_reduced_budget(body: dict, new_budget: int) -> dict:
+    """Clone request body, updating reasoning_budget in extra_body to a reduced value.
+
+    Keeps all other thinking/reasoning parameters intact.
+    """
+    new_body = dict(body)
+    if "extra_body" in new_body:
+        extra_body = dict(new_body["extra_body"])
+        extra_body["reasoning_budget"] = max(1024, new_budget)  # floor at 1k
+        new_body["extra_body"] = extra_body
+    return new_body
+
+
+def _rebuild_without_key(body: dict, key_to_remove: str) -> dict:
+    """Clone request body, removing a specific key from extra_body."""
+    new_body = dict(body)
+    if "extra_body" in new_body:
+        extra_body = dict(new_body["extra_body"])
+        extra_body.pop(key_to_remove, None)
+        if extra_body:
+            new_body["extra_body"] = extra_body
+        else:
+            new_body.pop("extra_body", None)
+    return new_body
     """Convert a system message to a user message with a prefix."""
     return {
         "role": "user",
@@ -805,37 +881,72 @@ class NvidiaNimProvider(BaseProvider):
                             **body,
                             stream=False,
                         )
-                    elif _is_thinking_param_error(e):
-                        model = body.get("model", "")
-                        logger.warning(
-                            "{}_BUFFERED: Thinking parameters rejected by model ({}) - "
-                            "retrying without thinking parameters",
-                            tag,
-                            model,
-                        )
-                        mark_thinking_unsupported(model)
-                        body = _rebuild_without_thinking(body)
-                        response = await self._client.chat.completions.create(
-                            **body,
-                            stream=False,
-                        )
-                    elif _has_thinking_params(body) and isinstance(e, InternalServerError):
-                        # Model doesn't support thinking params but returns 500 instead of 400
-                        model = body.get("model", "")
-                        logger.warning(
-                            "{}_BUFFERED: Internal server error with thinking params on model ({}) - "
-                            "retrying without thinking parameters",
-                            tag,
-                            model,
-                        )
-                        mark_thinking_unsupported(model)
-                        body = _rebuild_without_thinking(body)
-                        response = await self._client.chat.completions.create(
-                            **body,
-                            stream=False,
-                        )
                     else:
-                        raise
+                        # Smart thinking param error handling
+                        is_thinking, error_type, detail = _is_thinking_param_error(e)
+                        if is_thinking:
+                            model = body.get("model", "")
+                            if error_type == "budget_exceeded":
+                                # Reduce budget and retry WITH thinking
+                                new_budget = int(detail) if detail.isdigit() else detail
+                                set_thinking_budget_override(model, new_budget)
+                                logger.warning(
+                                    "{}_BUFFERED: Budget exceeded for model ({}) - "
+                                    "reducing reasoning_budget to {} and retrying WITH thinking",
+                                    tag,
+                                    model,
+                                    new_budget,
+                                )
+                                body = _rebuild_with_reduced_budget(body, new_budget)
+                                response = await self._client.chat.completions.create(
+                                    **body,
+                                    stream=False,
+                                )
+                            elif error_type == "invalid_param":
+                                # Remove just the invalid param and retry WITH thinking
+                                logger.warning(
+                                    "{}_BUFFERED: Invalid param {} for model ({}) - "
+                                    "removing param and retrying WITH thinking",
+                                    tag,
+                                    detail,
+                                    model,
+                                )
+                                body = _rebuild_without_key(body, detail)
+                                response = await self._client.chat.completions.create(
+                                    **body,
+                                    stream=False,
+                                )
+                            else:
+                                # Generic "thinking not supported" → full fallback
+                                logger.warning(
+                                    "{}_BUFFERED: Thinking parameters rejected by model ({}) - "
+                                    "retrying WITHOUT thinking parameters",
+                                    tag,
+                                    model,
+                                )
+                                mark_thinking_unsupported(model)
+                                body = _rebuild_without_thinking(body)
+                                response = await self._client.chat.completions.create(
+                                    **body,
+                                    stream=False,
+                                )
+                        elif _has_thinking_params(body) and isinstance(e, InternalServerError):
+                            # Model doesn't support thinking params but returns 500 instead of 400
+                            model = body.get("model", "")
+                            logger.warning(
+                                "{}_BUFFERED: Internal server error with thinking params on model ({}) - "
+                                "retrying WITHOUT thinking parameters",
+                                tag,
+                                model,
+                            )
+                            mark_thinking_unsupported(model)
+                            body = _rebuild_without_thinking(body)
+                            response = await self._client.chat.completions.create(
+                                **body,
+                                stream=False,
+                            )
+                        else:
+                            raise
         finally:
             request_id_var.reset(req_token)
 
@@ -1241,25 +1352,66 @@ class NvidiaNimProvider(BaseProvider):
                             use_worker_slot=False,
                             max_retries=self._config.retry_on_truncation,
                         )
-                    elif _is_thinking_param_error(e):
-                        model = body.get("model", "")
-                        logger.warning(
-                            "{}_STREAM: Thinking parameters rejected by model ({}) - "
-                            "retrying without thinking parameters",
-                            tag,
-                            model,
-                        )
-                        mark_thinking_unsupported(model)
-                        body = _rebuild_without_thinking(body)
-                        stream = await self._global_rate_limiter.execute_with_retry(
-                            self._client.chat.completions.create,
-                            **body,
-                            stream=True,
-                            use_worker_slot=False,
-                            max_retries=self._config.retry_on_truncation,
-                        )
                     else:
-                        raise
+                        # Smart thinking param error handling
+                        is_thinking, error_type, detail = _is_thinking_param_error(e)
+                        if is_thinking:
+                            model = body.get("model", "")
+                            if error_type == "budget_exceeded":
+                                # Reduce budget and retry WITH thinking
+                                new_budget = int(detail) if detail.isdigit() else detail
+                                set_thinking_budget_override(model, new_budget)
+                                logger.warning(
+                                    "{}_STREAM: Budget exceeded for model ({}) - "
+                                    "reducing reasoning_budget to {} and retrying WITH thinking",
+                                    tag,
+                                    model,
+                                    new_budget,
+                                )
+                                body = _rebuild_with_reduced_budget(body, new_budget)
+                                stream = await self._global_rate_limiter.execute_with_retry(
+                                    self._client.chat.completions.create,
+                                    **body,
+                                    stream=True,
+                                    use_worker_slot=False,
+                                    max_retries=self._config.retry_on_truncation,
+                                )
+                            elif error_type == "invalid_param":
+                                # Remove just the invalid param and retry WITH thinking
+                                logger.warning(
+                                    "{}_STREAM: Invalid param {} for model ({}) - "
+                                    "removing param and retrying WITH thinking",
+                                    tag,
+                                    detail,
+                                    model,
+                                )
+                                body = _rebuild_without_key(body, detail)
+                                stream = await self._global_rate_limiter.execute_with_retry(
+                                    self._client.chat.completions.create,
+                                    **body,
+                                    stream=True,
+                                    use_worker_slot=False,
+                                    max_retries=self._config.retry_on_truncation,
+                                )
+                            else:
+                                # Generic "thinking not supported" → full fallback
+                                logger.warning(
+                                    "{}_STREAM: Thinking parameters rejected by model ({}) - "
+                                    "retrying WITHOUT thinking parameters",
+                                    tag,
+                                    model,
+                                )
+                                mark_thinking_unsupported(model)
+                                body = _rebuild_without_thinking(body)
+                                stream = await self._global_rate_limiter.execute_with_retry(
+                                    self._client.chat.completions.create,
+                                    **body,
+                                    stream=True,
+                                    use_worker_slot=False,
+                                    max_retries=self._config.retry_on_truncation,
+                                )
+                        else:
+                            raise
                 finally:
                     request_id_var.reset(req_token)
 

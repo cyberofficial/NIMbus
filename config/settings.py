@@ -9,6 +9,7 @@ import string
 from functools import lru_cache
 from pathlib import Path
 
+import yaml
 from dotenv import load_dotenv
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -765,3 +766,113 @@ def _to_full_nim_model(name: str) -> str:
         return mapping[name]
     # Last resort: return as-is and let NVIDIA reject it clearly
     return name
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Reasoning Budgets Config
+# ──────────────────────────────────────────────────────────────────────
+
+from dataclasses import dataclass
+from fnmatch import fnmatch
+
+
+@dataclass
+class ReasoningConfig:
+    """Model-specific reasoning configuration."""
+    max_reasoning_budget: int = 16384
+    supports_thinking: bool = False
+    effort_mapping: dict[str, str] = None
+    budget_per_effort: dict[str, int] = None
+
+    def __post_init__(self):
+        if self.effort_mapping is None:
+            self.effort_mapping = {"low": "low", "medium": "medium", "high": "high"}
+        if self.budget_per_effort is None:
+            self.budget_per_effort = {"high": 16384, "medium": 8192, "low": 2048}
+
+
+_REASONING_CONFIG_CACHE: dict[str, ReasoningConfig] = {}
+_REASONING_CONFIG_LOADED = False
+_REASONING_CONFIG_RAW: dict | None = None
+
+
+def _load_reasoning_config() -> dict:
+    """Load reasoning_budgets.yaml from config directory."""
+    global _REASONING_CONFIG_RAW
+    if _REASONING_CONFIG_RAW is not None:
+        return _REASONING_CONFIG_RAW
+
+    config_path = Path(__file__).parent / "reasoning_budgets.yaml"
+    if not config_path.exists():
+        _REASONING_CONFIG_RAW = {"models": {}, "defaults": {}}
+        return _REASONING_CONFIG_RAW
+
+    with config_path.open("r", encoding="utf-8") as f:
+        _REASONING_CONFIG_RAW = yaml.safe_load(f) or {"models": {}, "defaults": {}}
+    return _REASONING_CONFIG_RAW
+
+
+def _match_model_config(model: str, config: dict) -> tuple[int, bool, dict[str, str], dict[str, int]]:
+    """Match model against config patterns (supports glob), return (max_budget, supports_thinking, effort_mapping, budget_per_effort)."""
+    # Check exact match first
+    if model in config.get("models", {}):
+        m = config["models"][model]
+        return (
+            m.get("max_reasoning_budget", 16384),
+            m.get("supports_thinking", False),
+            m.get("effort_mapping", {"low": "low", "medium": "medium", "high": "high"}),
+            m.get("budget_per_effort", {"high": 16384, "medium": 8192, "low": 2048})
+        )
+
+    # Check glob patterns
+    for pattern, m in config.get("models", {}).items():
+        if "*" in pattern or "?" in pattern:
+            if fnmatch(model, pattern):
+                return (
+                    m.get("max_reasoning_budget", 16384),
+                    m.get("supports_thinking", False),
+                    m.get("effort_mapping", {"low": "low", "medium": "medium", "high": "high"}),
+                    m.get("budget_per_effort", {"high": 16384, "medium": 8192, "low": 2048})
+                )
+
+    # Fallback to defaults
+    defaults = config.get("defaults", {})
+    return (
+        defaults.get("max_reasoning_budget", 16384),
+        defaults.get("supports_thinking", False),
+        defaults.get("effort_mapping", {"low": "low", "medium": "medium", "high": "high"}),
+        defaults.get("budget_per_effort", {"high": 16384, "medium": 8192, "low": 2048})
+    )
+
+
+def get_reasoning_config(model: str) -> ReasoningConfig:
+    """Get ReasoningConfig for a model (supports glob patterns like 'deepseek-*').
+
+    Thread-safe and caches results. Loads config from reasoning_budgets.yaml
+    on first call.
+
+    Args:
+        model: Full NIM model ID (e.g., "nvidia/nemotron-3-ultra-550b-a55b")
+
+    Returns:
+        ReasoningConfig with max_reasoning_budget, supports_thinking, effort_mapping
+    """
+    if model in _REASONING_CONFIG_CACHE:
+        return _REASONING_CONFIG_CACHE[model]
+
+    config = _load_reasoning_config()
+    max_budget, supports_thinking, effort_mapping, budget_per_effort = _match_model_config(model, config)
+
+    result = ReasoningConfig(
+        max_reasoning_budget=max_budget,
+        supports_thinking=supports_thinking,
+        effort_mapping=effort_mapping,
+        budget_per_effort=budget_per_effort,
+    )
+    _REASONING_CONFIG_CACHE[model] = result
+    return result
+
+
+def clear_reasoning_config_cache() -> None:
+    """Clear the reasoning config cache (useful for testing/config reload)."""
+    _REASONING_CONFIG_CACHE.clear()

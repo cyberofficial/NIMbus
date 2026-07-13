@@ -8,10 +8,10 @@
         "medium": "512",
         "high": "1024",
         "xhigh": "2048",
-        "max": "4096",
-        "ultracode": "8192"
+        "max": "32768",
+        "ultracode": "32768"
       },
-      "notes": "Nemotron 3 Ultra supports reasoning budget control via max_thinking_tokens parameter. Values represent thinking budget in tokens."
+      "notes": "Nemotron 3 Ultra supports reasoning budget control via reasoning_budget parameter. Values represent thinking budget in tokens. Max budget is 32768."
     },
     "nemotron-3-super-120b-a12b": {
       "description": "User's Sonnet model: Nemotron 3 Super 120B",
@@ -20,10 +20,10 @@
         "medium": "512",
         "high": "1024",
         "xhigh": "2048",
-        "max": "4096",
-        "ultracode": "8192"
+        "max": "32768",
+        "ultracode": "32768"
       },
-      "notes": "Nemotron 3 Super supports reasoning budget control via max_thinking_tokens parameter. Values represent thinking budget in tokens."
+      "notes": "Nemotron 3 Super supports reasoning budget control via reasoning_budget parameter. Values represent thinking budget in tokens. Max budget is 32768."
     },
     "step-3.5-flash": {
       "description": "User's Haiku model: Step 3.5 Flash",
