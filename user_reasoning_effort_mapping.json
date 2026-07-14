@@ -36,6 +36,18 @@
         "ultracode": "8192"
       },
       "notes": "Step 3.5 Flash is a reasoning model likely supporting thinking budget control. Values represent thinking budget in tokens."
+    },
+    "nemotron-3-nano-omni-30b-a3b-reasoning": {
+      "description": "User's model: Nemotron 3 Nano Omni 30B A3B Reasoning",
+      "mapping": {
+        "low": "2048",
+        "medium": "4096",
+        "high": "8192",
+        "xhigh": "16384",
+        "max": "32768",
+        "ultracode": "32768"
+      },
+      "notes": "Nemotron 3 Nano Omni supports reasoning budget control. Max budget is 32768. Values represent reasoning budget in tokens."
     }
   },
   "global_defaults": {
