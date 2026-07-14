@@ -29,8 +29,10 @@ from .swapper import (
     ModelSwapManager,
     NimServerManager,
     extract_modelswap_tag,
+    extract_nimeffort_tag,
     extract_nimserver_tag,
     is_modelswap_clear_tag,
+    is_nimeffort_tag,
     is_nimhelp_tag,
     is_nimserver_clear_tag,
     is_nimrpm_reset_tag,
@@ -223,8 +225,9 @@ NIMHELP_TEXT = """NIMbus inline commands — send one as your ENTIRE message:
 <nimserver:buffer>  force NIM buffer mode for subsequent requests
 <nimserver:clear>   clear server-type override, revert to .env SERVER_TYPE
 <nimrpm:reset>      reset adaptive rate-limiter backoff (restore RPM, clear hold delays)
+<nimeffort:level>   set reasoning effort: low, medium, high, xhigh, max, ultracode
 <nimhelp>           show this list
-modelswap/nimserver need SWAPPER_ENABLED=true; nimrpm:reset and nimhelp always work.
+modelswap/nimserver need SWAPPER_ENABLED=true; nimrpm:reset, nimeffort, nimhelp always work.
 """
 
 
@@ -238,6 +241,59 @@ async def _handle_nimhelp(request_data: MessagesRequest) -> MessagesResponse | N
                 if _is_title_request(request_data):
                     return None
                 return _create_nimserver_response(True, "help", NIMHELP_TEXT)
+            break
+    return None
+
+
+# =============================================================================
+# Reasoning Effort Helper (<nimeffort:level>)
+# =============================================================================
+
+
+async def _handle_nimeffort(
+    request: Request,
+    request_data: MessagesRequest,
+    settings: Settings,
+) -> MessagesResponse | None:
+    """
+    Check for <nimeffort:level> tag in the last user message.
+    If found, store the effort level for the session.
+
+    Returns:
+        A mock response if effort tag was triggered, None otherwise.
+    """
+    for msg in reversed(request_data.messages):
+        if msg.role == "user":
+            text_content = extract_text_from_content(msg.content)
+            if is_nimeffort_tag(text_content):
+                # Skip for title generation requests (false positives)
+                if _is_title_request(request_data):
+                    return None
+
+                effort_level = extract_nimeffort_tag(text_content)
+                if not effort_level:
+                    return None
+
+                # Store the effort level per session (using session ID from headers)
+                api_key = _extract_api_key(request, settings)
+                session_id = getattr(request_data, 'session_id', None) or api_key
+
+                # Store in a simple in-memory dict (same pattern as ModelSwapManager)
+                from api.swapper.manager import ModelSwapManager
+
+                # Use the existing manager's storage approach
+                # We'll add a separate storage for effort levels
+                if not hasattr(ModelSwapManager, '_effort_levels'):
+                    ModelSwapManager._effort_levels = {}
+
+                ModelSwapManager._effort_levels[session_id] = effort_level
+
+                return _create_nimserver_response(
+                    True,
+                    f"effort-{effort_level}",
+                    f"✅ Reasoning effort set to: **{effort_level}**\n\n"
+                    f"This applies to the current session.",
+                )
             break
     return None
 
@@ -389,6 +445,11 @@ async def create_message(
         nimhelp_mock = await _handle_nimhelp(request_data)
         if nimhelp_mock is not None:
             return _sse_response(nimhelp_mock)
+
+        # Handle reasoning effort (<nimeffort:level>)
+        nimeffort_mock = await _handle_nimeffort(raw_request, request_data, settings)
+        if nimeffort_mock is not None:
+            return _sse_response(nimeffort_mock)
 
         optimized = try_optimizations(request_data, settings)
         if optimized is not None:
@@ -585,6 +646,19 @@ async def create_message_buffered(
             log_request_compact(logger, request_id, request_data)
             return JSONResponse(
                 content=nimhelp_mock,
+                headers={
+                    "X-Buffered": "true",
+                    "X-Request-ID": request_id,
+                },
+            )
+
+        # Handle reasoning effort (<nimeffort:level>)
+        nimeffort_mock = await _handle_nimeffort(raw_request, request_data, settings)
+        if nimeffort_mock is not None:
+            request_id = f"req_{uuid.uuid4().hex[:12]}"
+            log_request_compact(logger, request_id, request_data)
+            return JSONResponse(
+                content=nimeffort_mock,
                 headers={
                     "X-Buffered": "true",
                     "X-Request-ID": request_id,

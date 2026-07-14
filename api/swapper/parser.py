@@ -31,14 +31,14 @@ def is_nimrpm_reset_tag(text: str) -> bool:
 
 
 # Match <nimhelp> ONLY when the message is the literal tag, nothing else — no
-# surrounding whitespace, no prose. Tighter than NIMRPM_RESET_PATTERN (which
-# tolerates outer whitespace) per user spec: fires on exactly "<nimhelp>",
-# byte for byte. Case-insensitive for convenience.
-NIMHELP_PATTERN = re.compile(r"^<nimhelp>$", re.IGNORECASE)
+# surrounding whitespace, no prose. Consistent with NIMRPM_RESET_PATTERN (which
+# tolerates outer whitespace) to avoid false negatives from trailing newlines.
+# Case-insensitive for convenience.
+NIMHELP_PATTERN = re.compile(r"^[ \t]*<nimhelp>[ \t]*$", re.IGNORECASE)
 
 
 def is_nimhelp_tag(text: str) -> bool:
-    """True iff the message is exactly the literal <nimhelp> (no surrounding text)."""
+    """True iff the message is exactly the literal <nimhelp> (optional surrounding whitespace)."""
     return bool(NIMHELP_PATTERN.search(text))
 
 
