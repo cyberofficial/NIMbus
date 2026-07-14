@@ -170,7 +170,7 @@ def build_request_body(
             )
             effective_budget = reasoning_config.max_reasoning_budget
 
-        if effective_budget > 0:
+        if effective_budget > 0 and reasoning_config.supports_thinking:
             _set_extra(extra_body, "reasoning_budget", effective_budget)
 
     req_top_k = getattr(request_data, "top_k", None)
