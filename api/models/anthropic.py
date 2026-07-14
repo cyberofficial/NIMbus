@@ -104,6 +104,7 @@ class MessagesRequest(BaseModel):
     thinking: ThinkingConfig | None = None
     extra_body: dict[str, Any] | None = None
     original_model: str | None = None
+    session_id: str | None = None
 
     @model_validator(mode="after")
     def map_model(self) -> MessagesRequest:

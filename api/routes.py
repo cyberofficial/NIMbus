@@ -343,6 +343,9 @@ async def create_message(
         if not request_data.messages:
             raise InvalidRequestError("messages cannot be empty")
 
+        # Extract session ID from x-claude-code-session-id header for per-session effort tracking
+        request_data.session_id = raw_request.headers.get("x-claude-code-session-id")
+
         # ponytail: the inline-command dispatches below all stream a mock response
         # with 0 input tokens — one helper instead of three copy-pasted blocks.
         def _sse_response(mock: MessagesResponse) -> StreamingResponse:
@@ -528,6 +531,9 @@ async def create_message_buffered(
     try:
         if not request_data.messages:
             raise InvalidRequestError("messages cannot be empty")
+
+        # Extract session ID from x-claude-code-session-id header for per-session effort tracking
+        request_data.session_id = raw_request.headers.get("x-claude-code-session-id")
 
         # Handle model swapper
         mock_response, model_override = await _handle_modelswap(

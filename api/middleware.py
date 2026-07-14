@@ -31,6 +31,9 @@ async def verify_api_key(request: Request, call_next):
         or request.query_params.get("api_key")
     )
 
+    # Extract session ID for per-session effort tracking
+    request.state.session_id = request.headers.get("x-claude-code-session-id")
+
     # Check bot protection first (but skip if valid API key is provided)
     # Valid API key users bypass bot protection
     if not api_key or provided_key != api_key:

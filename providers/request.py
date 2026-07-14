@@ -10,6 +10,30 @@ from providers.message_converter import build_base_request_body
 from providers.utils import set_if_not_none
 
 
+# Session effort cache: session_id -> effort_level
+_SESSION_EFFORT_CACHE: dict[str, str] = {}
+
+
+def _get_session_effort(session_id: str | None) -> str | None:
+    """Get cached effort level for a session."""
+    if not session_id:
+        return None
+    return _SESSION_EFFORT_CACHE.get(session_id)
+
+
+def _set_session_effort(session_id: str | None, effort: str | None) -> None:
+    """Cache effort level for a session."""
+    if not session_id or not effort:
+        return
+    _SESSION_EFFORT_CACHE[session_id] = effort
+
+
+def _clear_session_effort(session_id: str | None) -> None:
+    """Clear cached effort for a session (e.g., on /new or /clear)."""
+    if session_id and session_id in _SESSION_EFFORT_CACHE:
+        del _SESSION_EFFORT_CACHE[session_id]
+
+
 def _set_extra(
     extra_body: dict[str, Any], key: str, value: Any, ignore_value: Any = None
 ) -> None:
@@ -92,8 +116,14 @@ def build_request_body(
 
     # Handle thinking/reasoning mode - only when NIM_THINKING is enabled
     if nim.thinking and nim.enable_thinking:
-        # Map effort: request > settings > default (high)
-        effective_effort = request_effort or nim.reasoning_effort
+        # Map effort: request > session cache > settings > default (high)
+        session_id = getattr(request_data, "session_id", None)
+        session_effort = _get_session_effort(session_id)
+        effective_effort = request_effort or session_effort or nim.reasoning_effort
+
+        # Cache explicit effort for this session
+        if request_effort:
+            _set_session_effort(session_id, request_effort)
 
         # Get model-specific effort mapping
         effort_map = reasoning_config.effort_mapping if reasoning_config.effort_mapping else {}
