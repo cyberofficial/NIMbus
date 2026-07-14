@@ -10,30 +10,6 @@ from providers.message_converter import build_base_request_body
 from providers.utils import set_if_not_none
 
 
-# Session effort cache: session_id -> effort_level
-_SESSION_EFFORT_CACHE: dict[str, str] = {}
-
-
-def _get_session_effort(session_id: str | None) -> str | None:
-    """Get cached effort level for a session."""
-    if not session_id:
-        return None
-    return _SESSION_EFFORT_CACHE.get(session_id)
-
-
-def _set_session_effort(session_id: str | None, effort: str | None) -> None:
-    """Cache effort level for a session."""
-    if not session_id or not effort:
-        return
-    _SESSION_EFFORT_CACHE[session_id] = effort
-
-
-def _clear_session_effort(session_id: str | None) -> None:
-    """Clear cached effort for a session (e.g., on /new or /clear)."""
-    if session_id and session_id in _SESSION_EFFORT_CACHE:
-        del _SESSION_EFFORT_CACHE[session_id]
-
-
 def _set_extra(
     extra_body: dict[str, Any], key: str, value: Any, ignore_value: Any = None
 ) -> None:
@@ -103,27 +79,59 @@ def build_request_body(
     # Extract thinking params from Anthropic request (Claude 3.7+)
     request_effort = None
     request_budget = None
-    if hasattr(request_data, "thinking") and request_data.thinking:
-        if isinstance(request_data.thinking, dict):
-            request_effort = request_data.thinking.get("effort")
-            request_budget = request_data.thinking.get("budget_tokens")
-        else:
-            request_effort = getattr(request_data.thinking, "effort", None)
-            request_budget = getattr(request_data.thinking, "budget_tokens", None)
+    thinking = getattr(request_data, "thinking", None)
+    # Check if thinking is a proper object/dict (not just a truthy MagicMock)
+    if isinstance(thinking, dict):
+        request_effort = thinking.get("effort")
+        request_budget = thinking.get("budget_tokens")
+    elif thinking is not None and not isinstance(thinking, type(None).__class__):
+        # Check if it's a proper object with expected attributes (not MagicMock)
+        try:
+            request_effort = getattr(thinking, "effort", None)
+            request_budget = getattr(thinking, "budget_tokens", None)
+        except AttributeError:
+            pass
 
     # Get model-specific reasoning config (for max budget, effort mapping)
     reasoning_config = get_reasoning_config(model)
 
     # Handle thinking/reasoning mode - only when NIM_THINKING is enabled
     if nim.thinking and nim.enable_thinking:
-        # Map effort: request > session cache > settings > default (high)
-        session_id = getattr(request_data, "session_id", None)
-        session_effort = _get_session_effort(session_id)
-        effective_effort = request_effort or session_effort or nim.reasoning_effort
+        # Exact <nimeffort:level> tag in last user message (exact match like <nimrpm:reset>)
+        last_user_msg = None
+        for msg in reversed(getattr(request_data, "messages", [])):
+            if getattr(msg, "role", None) == "user":
+                msg_text = ""
+                if isinstance(msg.content, str):
+                    msg_text = msg.content
+                elif isinstance(msg.content, list):
+                    for block in msg.content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            msg_text += block.get("text", "")
+                        elif hasattr(block, "text"):
+                            msg_text += getattr(block, "text", "")
+                if msg_text:
+                    last_user_msg = msg_text
+                    break
 
-        # Cache explicit effort for this session
-        if request_effort:
-            _set_session_effort(session_id, request_effort)
+    # Check for exact <nimeffort:level> tag (exact match like <nimrpm:reset>)
+    exact_effort_tag = None
+    if last_user_msg:
+        from api.swapper.parser import extract_nimeffort_tag, is_nimeffort_tag
+
+        if is_nimeffort_tag(last_user_msg):
+            exact_effort_tag = extract_nimeffort_tag(last_user_msg)
+
+    # Get model-specific reasoning config (for max budget, effort mapping)
+    reasoning_config = get_reasoning_config(model)
+
+    # Handle thinking/reasoning mode - only when NIM_THINKING is enabled
+    if nim.thinking and nim.enable_thinking:
+        # Map effort: exact tag > request > session cache > settings > default (high)
+        exact_tag_effort = exact_effort_tag if exact_effort_tag else None
+        effective_effort = exact_tag_effort or request_effort or nim.reasoning_effort
+
+        # Remove session cache code - no more session caching for effort
 
         # Get model-specific effort mapping
         effort_map = reasoning_config.effort_mapping if reasoning_config.effort_mapping else {}

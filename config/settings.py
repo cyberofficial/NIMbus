@@ -6,10 +6,10 @@ This configuration is exclusively for NVIDIA NIM API endpoints.
 import json
 import random
 import string
+from dataclasses import field
 from functools import lru_cache
 from pathlib import Path
 
-import yaml
 from dotenv import load_dotenv
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -781,14 +781,8 @@ class ReasoningConfig:
     """Model-specific reasoning configuration."""
     max_reasoning_budget: int = 16384
     supports_thinking: bool = False
-    effort_mapping: dict[str, str] = None
-    budget_per_effort: dict[str, int] = None
-
-    def __post_init__(self):
-        if self.effort_mapping is None:
-            self.effort_mapping = {"low": "low", "medium": "medium", "high": "high"}
-        if self.budget_per_effort is None:
-            self.budget_per_effort = {"high": 16384, "medium": 8192, "low": 2048}
+    effort_mapping: dict[str, str] = field(default_factory=lambda: {"low": "low", "medium": "medium", "high": "high"})
+    budget_per_effort: dict[str, int] = field(default_factory=lambda: {"high": 16384, "medium": 8192, "low": 2048})
 
 
 _REASONING_CONFIG_CACHE: dict[str, ReasoningConfig] = {}
@@ -797,18 +791,18 @@ _REASONING_CONFIG_RAW: dict | None = None
 
 
 def _load_reasoning_config() -> dict:
-    """Load reasoning_budgets.yaml from config directory."""
+    """Load reasoning_config.json from project root directory."""
     global _REASONING_CONFIG_RAW
     if _REASONING_CONFIG_RAW is not None:
         return _REASONING_CONFIG_RAW
 
-    config_path = Path(__file__).parent / "reasoning_budgets.yaml"
+    config_path = Path(__file__).parent.parent / "reasoning_config.json"
     if not config_path.exists():
         _REASONING_CONFIG_RAW = {"models": {}, "defaults": {}}
         return _REASONING_CONFIG_RAW
 
     with config_path.open("r", encoding="utf-8") as f:
-        _REASONING_CONFIG_RAW = yaml.safe_load(f) or {"models": {}, "defaults": {}}
+        _REASONING_CONFIG_RAW = json.load(f) or {"models": {}, "defaults": {}}
     return _REASONING_CONFIG_RAW
 
 
@@ -817,31 +811,67 @@ def _match_model_config(model: str, config: dict) -> tuple[int, bool, dict[str, 
     # Check exact match first
     if model in config.get("models", {}):
         m = config["models"][model]
+        effort_mapping = {}
+        budget_per_effort = {}
+        for item in m.get("efforts", []):
+            parts = item.split(":")
+            if len(parts) == 3:
+                effort_level, mapped, budget = parts
+                effort_mapping[effort_level] = mapped
+                budget_per_effort[effort_level] = int(budget)
+            elif len(parts) == 2:
+                effort_level, budget = parts
+                effort_mapping[effort_level] = effort_level
+                budget_per_effort[effort_level] = int(budget)
         return (
-            m.get("max_reasoning_budget", 16384),
+            m.get("max_budget", 16384),
             m.get("supports_thinking", False),
-            m.get("effort_mapping", {"low": "low", "medium": "medium", "high": "high"}),
-            m.get("budget_per_effort", {"high": 16384, "medium": 8192, "low": 2048})
+            effort_mapping,
+            budget_per_effort
         )
 
     # Check glob patterns
     for pattern, m in config.get("models", {}).items():
         if "*" in pattern or "?" in pattern:
             if fnmatch(model, pattern):
+                effort_mapping = {}
+                budget_per_effort = {}
+                for item in m.get("efforts", []):
+                    parts = item.split(":")
+                    if len(parts) == 3:
+                        effort_level, mapped, budget = parts
+                        effort_mapping[effort_level] = mapped
+                        budget_per_effort[effort_level] = int(budget)
+                    elif len(parts) == 2:
+                        effort_level, budget = parts
+                        effort_mapping[effort_level] = effort_level
+                        budget_per_effort[effort_level] = int(budget)
                 return (
-                    m.get("max_reasoning_budget", 16384),
+                    m.get("max_budget", 16384),
                     m.get("supports_thinking", False),
-                    m.get("effort_mapping", {"low": "low", "medium": "medium", "high": "high"}),
-                    m.get("budget_per_effort", {"high": 16384, "medium": 8192, "low": 2048})
+                    effort_mapping,
+                    budget_per_effort
                 )
 
     # Fallback to defaults
     defaults = config.get("defaults", {})
+    effort_mapping = {}
+    budget_per_effort = {}
+    for item in defaults.get("efforts", []):
+        parts = item.split(":")
+        if len(parts) == 3:
+            effort_level, mapped, budget = parts
+            effort_mapping[effort_level] = mapped
+            budget_per_effort[effort_level] = int(budget)
+        elif len(parts) == 2:
+            effort_level, budget = parts
+            effort_mapping[effort_level] = effort_level
+            budget_per_effort[effort_level] = int(budget)
     return (
-        defaults.get("max_reasoning_budget", 16384),
+        defaults.get("max_budget", 16384),
         defaults.get("supports_thinking", False),
-        defaults.get("effort_mapping", {"low": "low", "medium": "medium", "high": "high"}),
-        defaults.get("budget_per_effort", {"high": 16384, "medium": 8192, "low": 2048})
+        effort_mapping,
+        budget_per_effort
     )
 
 

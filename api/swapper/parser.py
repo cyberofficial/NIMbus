@@ -42,6 +42,29 @@ def is_nimhelp_tag(text: str) -> bool:
     return bool(NIMHELP_PATTERN.search(text))
 
 
+# Match <nimeffort:level> ONLY when it's the ENTIRE message (after optional leading/trailing whitespace)
+# This avoids false positives from embedded content in file outputs, system prompts, docs, etc.
+NIMEFFORT_PATTERN = re.compile(r"^[ \t]*<nimeffort:\s*(low|medium|high|xhigh|max|ultracode)\s*>[ \t]*$", re.IGNORECASE)
+
+
+def is_nimeffort_tag(text: str) -> bool:
+    """Check if message IS exactly the <nimeffort:level> tag (plus optional whitespace).
+    Only matches when the entire message is the tag (like <nimrpm:reset>).
+    Avoids false positives from embedded content in file outputs, docs, etc.
+    """
+    return bool(NIMEFFORT_PATTERN.search(text))
+
+
+def extract_nimeffort_tag(text: str) -> str | None:
+    """Extract effort level from <nimeffort:level> tag if exact match.
+    Returns the effort level (low|medium|high|xhigh|max|ultracode) or None if no match.
+    """
+    match = NIMEFFORT_PATTERN.search(text)
+    if match:
+        return match.group(1).lower()
+    return None
+
+
 def extract_modelswap_tag(text: str) -> str | None:
     """
     Extract model name from <modelswap:model-name> tag.
