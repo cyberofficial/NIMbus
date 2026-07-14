@@ -18,7 +18,7 @@ from providers.exceptions import (
 )
 from providers.logging_utils import build_request_summary, log_request_compact
 from providers.request_queue import RequestPriority
-from providers.text import extract_text_from_content
+from providers.text import extract_text_from_content, extract_last_text_content
 
 from .dependencies import get_provider, get_settings
 from .models.anthropic import MessagesRequest, TokenCountRequest
@@ -114,8 +114,9 @@ async def _handle_modelswap(
     # Check last user message for modelswap tag
     for msg in reversed(request_data.messages):
         if msg.role == "user":
-            # Extract text content from message (can be string or list of content blocks)
-            text_content = extract_text_from_content(msg.content)
+            # Extract ONLY the last content block's text to avoid matching
+            # tags in system prompts or earlier message context
+            text_content = extract_last_text_content(msg.content)
 
             # Check for modelswap tag
             model_name = extract_modelswap_tag(text_content)
@@ -185,7 +186,7 @@ async def _handle_nimrpm_reset(
     request_data: MessagesRequest,
 ) -> MessagesResponse | None:
     """
-    Check for <nimrpm:reset> tag in the last user message.
+    Check for <nimrpm:reset> tag in the last user message's LAST content block.
     If found, reset the adaptive rate limiter backoff state.
 
     Returns:
@@ -193,7 +194,8 @@ async def _handle_nimrpm_reset(
     """
     for msg in reversed(request_data.messages):
         if msg.role == "user":
-            text_content = extract_text_from_content(msg.content)
+            # Check only the last content block to avoid false positives
+            text_content = extract_last_text_content(msg.content)
             if is_nimrpm_reset_tag(text_content):
                 # Skip for title generation requests (false positives)
                 if _is_title_request(request_data):
@@ -232,10 +234,10 @@ modelswap/nimserver need SWAPPER_ENABLED=true; nimrpm:reset, nimeffort, nimhelp 
 
 
 async def _handle_nimhelp(request_data: MessagesRequest) -> MessagesResponse | None:
-    """Return a help-listing mock if the last user message is exactly <nimhelp>."""
+    """Return a help-listing mock if the last user message's last content block is <nimhelp>."""
     for msg in reversed(request_data.messages):
         if msg.role == "user":
-            if is_nimhelp_tag(extract_text_from_content(msg.content)):
+            if is_nimhelp_tag(extract_last_text_content(msg.content)):
                 # ponytail: near-shape of _handle_nimrpm_reset; kept separate because
                 # nimrpm mutates state, this is pure text — share when a 4th command lands
                 if _is_title_request(request_data):
@@ -256,7 +258,7 @@ async def _handle_nimeffort(
     settings: Settings,
 ) -> MessagesResponse | None:
     """
-    Check for <nimeffort:level> tag in the last user message.
+    Check for <nimeffort:level> tag in the last user message's LAST content block.
     If found, store the effort level for the session.
 
     Returns:
@@ -264,7 +266,8 @@ async def _handle_nimeffort(
     """
     for msg in reversed(request_data.messages):
         if msg.role == "user":
-            text_content = extract_text_from_content(msg.content)
+            # Check only the last content block to avoid false positives
+            text_content = extract_last_text_content(msg.content)
             if is_nimeffort_tag(text_content):
                 # Skip for title generation requests (false positives)
                 if _is_title_request(request_data):
@@ -337,7 +340,8 @@ async def _handle_nimserver(
     # Check last user message for nimserver tag
     for msg in reversed(request_data.messages):
         if msg.role == "user":
-            text_content = extract_text_from_content(msg.content)
+            # Check only the last content block to avoid false positives
+            text_content = extract_last_text_content(msg.content)
 
             server_type = extract_nimserver_tag(text_content)
             is_clear = is_nimserver_clear_tag(text_content)
@@ -604,7 +608,7 @@ async def create_message_buffered(
             request_id = f"req_{uuid.uuid4().hex[:12]}"
             log_request_compact(logger, request_id, request_data)
             return JSONResponse(
-                content=mock_response,
+                content=mock_response.model_dump(),
                 headers={
                     "X-Buffered": "true",
                     "X-Request-ID": request_id,
@@ -619,7 +623,7 @@ async def create_message_buffered(
             request_id = f"req_{uuid.uuid4().hex[:12]}"
             log_request_compact(logger, request_id, request_data)
             return JSONResponse(
-                content=nimserver_mock,
+                content=nimserver_mock.model_dump(),
                 headers={
                     "X-Buffered": "true",
                     "X-Request-ID": request_id,
@@ -632,7 +636,7 @@ async def create_message_buffered(
             request_id = f"req_{uuid.uuid4().hex[:12]}"
             log_request_compact(logger, request_id, request_data)
             return JSONResponse(
-                content=rpmreset_mock,
+                content=rpmreset_mock.model_dump(),
                 headers={
                     "X-Buffered": "true",
                     "X-Request-ID": request_id,
@@ -645,7 +649,7 @@ async def create_message_buffered(
             request_id = f"req_{uuid.uuid4().hex[:12]}"
             log_request_compact(logger, request_id, request_data)
             return JSONResponse(
-                content=nimhelp_mock,
+                content=nimhelp_mock.model_dump(),
                 headers={
                     "X-Buffered": "true",
                     "X-Request-ID": request_id,
@@ -658,7 +662,7 @@ async def create_message_buffered(
             request_id = f"req_{uuid.uuid4().hex[:12]}"
             log_request_compact(logger, request_id, request_data)
             return JSONResponse(
-                content=nimeffort_mock,
+                content=nimeffort_mock.model_dump(),
                 headers={
                     "X-Buffered": "true",
                     "X-Request-ID": request_id,
