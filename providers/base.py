@@ -23,6 +23,7 @@ class ProviderConfig(BaseModel):
     http_write_timeout: float = 10.0
     http_connect_timeout: float = 2.0
     server_type: str = "stream"
+    show_nvidia_reply: bool = False
     max_wait_time: float = 30.0
     retry_on_truncation: int = 3
     retry_delay: float = 1.0

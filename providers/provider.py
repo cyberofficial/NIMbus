@@ -952,6 +952,15 @@ class NvidiaNimProvider(BaseProvider):
         finally:
             request_id_var.reset(req_token)
 
+        if self._config.show_nvidia_reply:
+            # Mirror the raw NIM reply to the console so the operator can watch
+            # the model think in buffer mode (frozen activity = it's stuck).
+            choice = response.choices[0] if response.choices else None
+            msg = choice.message if choice else None
+            if msg is not None:
+                self._live_nim_reply(getattr(msg, "reasoning_content", None), kind="THINKING")
+                self._live_nim_reply(msg.content, kind="REPLY")
+
         result = self._build_anthropic_response(response, request, input_tokens)
         logger.info(
             "{}_BUFFERED: success attempt={}{}",
@@ -960,6 +969,15 @@ class NvidiaNimProvider(BaseProvider):
             req_tag,
         )
         return result
+
+    def _live_nim_reply(self, text: Any, *, kind: str) -> None:
+        """Echo the raw NVIDIA NIM reply to the console when SHOW_NIM_REPLY is on.
+
+        kind is "THINKING" for reasoning_content, "REPLY" for generated text.
+        No-op unless the toggle is set (or text is empty).
+        """
+        if self._config.show_nvidia_reply and text:
+            logger.info("NIM_{} | {}", kind, text)
 
     def _build_anthropic_response(
         self,
@@ -1437,12 +1455,14 @@ class NvidiaNimProvider(BaseProvider):
                         # Handle reasoning_content (OpenAI extended format)
                         reasoning = getattr(delta, "reasoning_content", None)
                         if reasoning:
+                            self._live_nim_reply(reasoning, kind="THINKING")
                             for event in sse.ensure_thinking_block():
                                 yield event
                             yield sse.emit_thinking_delta(reasoning)
 
                         # Handle text content
                         if delta.content:
+                            self._live_nim_reply(delta.content, kind="REPLY")
                             for part in think_parser.feed(delta.content):
                                 if part.type == ContentType.THINKING:
                                     for event in sse.ensure_thinking_block():

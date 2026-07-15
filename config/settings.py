@@ -102,6 +102,12 @@ class Settings(BaseSettings):
         default=10, ge=0, validation_alias="RESOURCE_EXHAUSTED_RETRIES"
     )
 
+    # Echo the raw NVIDIA NIM reply to the console live, one line per chunk.
+    # Each chunk carries a timestamp, so a frozen timestamp means the model is
+    # stuck (not thinking). THINKING = reasoning_content, REPLY = generated text.
+    # Works in both stream and buffer modes. Off by default (very chatty).
+    show_nvidia_reply: bool = Field(default=False, validation_alias="SHOW_NIM_REPLY")
+
     # ==================== HTTP Client Timeouts ====================
     http_read_timeout: float = Field(
         default=300.0, validation_alias="HTTP_READ_TIMEOUT"
@@ -612,7 +618,13 @@ class Settings(BaseSettings):
           3 models: position 0 for Sonnet, 1 for Opus, 2 for Haiku
 
         Falls back to models[0] if the Claude ID doesn't match any known tier.
+
+        Prefix "nim:" bypasses tier mapping and resolves directly via NVIDIA catalog.
         """
+        # 0. nim: prefix — direct NIM model lookup (bypasses tier mapping)
+        if claude_id.startswith("nim:"):
+            return _to_full_nim_model(claude_id[4:])
+
         models = self.model_list
         if not models:
             return self.model
