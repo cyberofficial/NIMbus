@@ -44,7 +44,17 @@ def is_nimhelp_tag(text: str) -> bool:
 
 # Match <nimeffort:level> ONLY when it's the ENTIRE message (after optional leading/trailing whitespace)
 # This avoids false positives from embedded content in file outputs, system prompts, docs, etc.
-NIMEFFORT_PATTERN = re.compile(r"^[ \t]*<nimeffort:\s*(low|medium|high|xhigh|max|ultracode)\s*>[ \t]*$", re.IGNORECASE)
+# Accepts named levels (low, medium, high, xhigh, max, ultracode) OR integers (-1 to 1000000)
+NIMEFFORT_PATTERN = re.compile(
+    r"^[ \t]*<nimeffort:\s*(-1|[1-9]\d{0,5}|1000000|low|medium|high|xhigh|max|ultracode)\s*>[ \t]*$",
+    re.IGNORECASE
+)
+
+# Match <nimeffort> or <nimeffort:status> for showing current effort level
+NIMEFFORT_STATUS_PATTERN = re.compile(
+    r"^[ \t]*<nimeffort(?::\s*status\s*)?>[ \t]*$",
+    re.IGNORECASE
+)
 
 
 def is_nimeffort_tag(text: str) -> bool:
@@ -53,6 +63,11 @@ def is_nimeffort_tag(text: str) -> bool:
     Avoids false positives from embedded content in file outputs, docs, etc.
     """
     return bool(NIMEFFORT_PATTERN.search(text))
+
+
+def is_nimeffort_status_tag(text: str) -> bool:
+    """Check if message IS exactly the <nimeffort> or <nimeffort:status> tag."""
+    return bool(NIMEFFORT_STATUS_PATTERN.search(text))
 
 
 def extract_nimeffort_tag(text: str) -> str | None:

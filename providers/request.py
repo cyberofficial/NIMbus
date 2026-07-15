@@ -23,7 +23,7 @@ def _set_extra(
 
 
 def build_request_body(
-    request_data: Any, nim: NimSettings, *, system_as_user: bool = False
+    request_data: Any, nim: NimSettings, *, system_as_user: bool = False, session_id: str | None = None
 ) -> dict:
     """Build OpenAI-format request body from Anthropic request.
 
@@ -32,6 +32,7 @@ def build_request_body(
         nim: NIM settings for parameters like max_tokens, temperature, etc.
         system_as_user: When True, system prompts are placed as user messages
             (for models that don't support the system role).
+        session_id: Optional session ID for per-session effort/budget settings.
     """
     logger.debug(
         "NIM_REQUEST: conversion start model={} msgs={}",
@@ -116,20 +117,43 @@ def build_request_body(
 
     # Check for exact <nimeffort:level> tag (exact match like <nimrpm:reset>)
     exact_effort_tag = None
+    custom_budget_from_tag = None
     if last_user_msg:
         from api.swapper.parser import extract_nimeffort_tag, is_nimeffort_tag
 
         if is_nimeffort_tag(last_user_msg):
-            exact_effort_tag = extract_nimeffort_tag(last_user_msg)
+            extracted = extract_nimeffort_tag(last_user_msg)
+            # Try to parse as integer budget (-1 to 1000000)
+            try:
+                val = int(extracted)
+                if -1 <= val <= 1000000:
+                    custom_budget_from_tag = val
+                else:
+                    logger.warning("nimeffort value %d out of range [-1, 1000000], ignoring", val)
+            except ValueError:
+                # Named level (low, medium, high, etc.)
+                exact_effort_tag = extracted
 
-    # Get model-specific reasoning config (for max budget, effort mapping)
+    # Get model-specific reasoning config (for effort mapping)
     reasoning_config = get_reasoning_config(model)
 
     # Handle thinking/reasoning mode - only when NIM_THINKING is enabled
     if nim.thinking and nim.enable_thinking:
-        # Map effort: exact tag > request > session cache > settings > default (high)
+        # Get session-stored named effort and custom budget
+        session_effort = None
+        session_custom_budget = None
+        if session_id:
+            try:
+                from api.routes import _effort_levels, _effort_budgets
+                session_effort = _effort_levels.get(session_id)
+                session_custom_budget = _effort_budgets.get(session_id)
+            except Exception:
+                pass
+
+        # Map effort: exact tag > request > session > settings > default (high)
         exact_tag_effort = exact_effort_tag if exact_effort_tag else None
-        effective_effort = exact_tag_effort or request_effort or nim.reasoning_effort
+        # For effort flags, use session effort if no exact tag or request
+        effective_effort = exact_tag_effort or request_effort or session_effort or nim.reasoning_effort
 
         # Remove session cache code - no more session caching for effort
 
@@ -149,10 +173,14 @@ def build_request_body(
         elif model_effort == "high":
             ctk["high_effort"] = True
 
-        # reasoning_budget: request > settings > budget_per_effort (based on effort) > model max
+        # reasoning_budget: request > numeric tag > session custom budget > settings > budget_per_effort
         effective_budget = request_budget
         if effective_budget is None:
-            if nim.reasoning_budget == -1:
+            if custom_budget_from_tag is not None:
+                effective_budget = custom_budget_from_tag
+            elif session_custom_budget is not None:
+                effective_budget = session_custom_budget
+            elif nim.reasoning_budget == -1:
                 effective_budget = -1  # unlimited - pass through to API
             elif nim.reasoning_budget > 0:
                 effective_budget = nim.reasoning_budget
@@ -164,14 +192,7 @@ def build_request_body(
                     reasoning_config.max_reasoning_budget
                 )
 
-        # Auto-clamp to model max (skip for -1 unlimited)
-        if effective_budget > 0 and effective_budget > reasoning_config.max_reasoning_budget:
-            logger.warning(
-                "reasoning_budget {} exceeds model max {} for {}, clamping",
-                effective_budget, reasoning_config.max_reasoning_budget, model
-            )
-            effective_budget = reasoning_config.max_reasoning_budget
-
+        # No client-side clamping - NVIDIA enforces limits server-side
         if effective_budget > 0 and reasoning_config.supports_thinking:
             _set_extra(extra_body, "reasoning_budget", effective_budget)
         elif effective_budget == -1 and reasoning_config.supports_thinking:

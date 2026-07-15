@@ -155,6 +155,12 @@ Claude Code sends requests with model identifiers like `claude-sonnet-4-6`, `cla
 | `NIM_THINKING` | Enable thinking/reasoning content | `true` |
 | `NIM_REASONING_EFFORT` | Reasoning effort: `low`, `medium`, or `high` | `high` |
 | `NIM_REASONING_EFFORT_MAPPINGS` | JSON string mapping Claude effort levels to model-specific values | `` (empty) |
+| `NIM_REASONING_BUDGET` | Max reasoning tokens (-1 = unlimited, 0 = auto) | `32768` |
+| `NIM_ENABLE_THINKING` | Enable thinking/reasoning mode | `true` |
+| `NIM_CHAT_TEMPLATE_ENABLE_THINKING` | Enable thinking in chat template | `true` |
+| `NIM_CHAT_TEMPLATE_LOW_EFFORT` | Enable low_effort flag in chat template | `true` |
+| `NIM_CHAT_TEMPLATE_MEDIUM_EFFORT` | Enable medium_effort flag in chat template | `true` |
+| `NIM_CHAT_TEMPLATE_HIGH_EFFORT` | Enable high_effort flag in chat template | `true` |
 | `FABLE_OVERRIDE` | Override NIM model for Fable tier (supports `[1m]` suffix). Defaults to Opus model | `` (empty) |
 | `PROVIDER_RATE_LIMIT` | Requests per window | `40` |
 | `PROVIDER_RATE_WINDOW` | Rate window in seconds | `60` |
@@ -441,7 +447,8 @@ A short-name (e.g. `deepseek-v4-pro`) is resolved against NVIDIA's live catalog;
 | --- | --- |
 | `<nimrpm:reset>` | Reset adaptive rate limit backoff (restore RPM, clear hold delays) |
 | `<nimhelp>` | Show list of all available inline commands |
-| `<nimeffort:level>` | Set reasoning effort: `low`, `medium`, `high`, `xhigh`, `max`, `ultracode` |
+| `<nimeffort:level>` | Set reasoning effort: `low`, `medium`, `high`, `xhigh`, `max`, `ultracode`, or int (`-1` to `1000000`) |
+| `<nimeffort>`         | Show current reasoning effort level for this session |
 
 ## NIM Server Swapper
 
@@ -463,7 +470,8 @@ In any Claude Code message include one of these tags (the proxy strips it before
 | --- | --- |
 | `<nimrpm:reset>` | Reset adaptive rate limit backoff (restore RPM, clear hold delays) |
 | `<nimhelp>` | Show list of all available inline commands |
-| `<nimeffort:level>` | Set reasoning effort: `low`, `medium`, `high`, `xhigh`, `max`, `ultracode` |
+| `<nimeffort:level>` | Set reasoning effort: `low`, `medium`, `high`, `xhigh`, `max`, `ultracode`, or int (`-1` to `1000000`) |
+| `<nimeffort>`         | Show current reasoning effort level for this session |
 
 Once set, **all subsequent requests** from that API key will use the chosen mode until you send `<nimserver:clear>` or restart the proxy.
 

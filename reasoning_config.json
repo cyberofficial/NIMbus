@@ -10,7 +10,7 @@
         "high:high:32768",
         "xhigh:high:32768",
         "max:high:32768",
-        "ultracode:high:32768"
+        "ultracode:high:-1"
       ]
     },
     "nvidia/nemotron-3-super-120b-a12b": {
@@ -22,7 +22,7 @@
         "high:high:32768",
         "xhigh:high:32768",
         "max:high:32768",
-        "ultracode:high:32768"
+        "ultracode:high:-1"
       ]
     },
     "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning": {
@@ -34,7 +34,7 @@
         "high:4096",
         "xhigh:8192",
         "max:16384",
-        "ultracode:32768"
+        "ultracode:-1"
       ]
     },
     "deepseek-*": {

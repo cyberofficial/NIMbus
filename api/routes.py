@@ -33,11 +33,21 @@ from .swapper import (
     extract_nimserver_tag,
     is_modelswap_clear_tag,
     is_nimeffort_tag,
+    is_nimeffort_status_tag,
     is_nimhelp_tag,
     is_nimserver_clear_tag,
     is_nimrpm_reset_tag,
     resolve_model_name,
     validate_and_test_model,
+)
+
+from .effort_store import (
+    clear_effort_budget,
+    clear_effort_level,
+    get_effort_budget,
+    get_effort_level,
+    set_effort_budget,
+    set_effort_level,
 )
 
 router = APIRouter()
@@ -227,7 +237,8 @@ NIMHELP_TEXT = """NIMbus inline commands — send one as your ENTIRE message:
 <nimserver:buffer>  force NIM buffer mode for subsequent requests
 <nimserver:clear>   clear server-type override, revert to .env SERVER_TYPE
 <nimrpm:reset>      reset adaptive rate-limiter backoff (restore RPM, clear hold delays)
-<nimeffort:level>   set reasoning effort: low, medium, high, xhigh, max, ultracode
+<nimeffort:level>   set reasoning effort: low, medium, high, xhigh, max, ultracode, or int (-1 to 1000000)
+<nimeffort>         show current reasoning effort level
 <nimhelp>           show this list
 modelswap/nimserver need SWAPPER_ENABLED=true; nimrpm:reset, nimeffort, nimhelp always work.
 """
@@ -277,25 +288,171 @@ async def _handle_nimeffort(
                 if not effort_level:
                     return None
 
-                # Store the effort level per session (using session ID from headers)
+                # Store the effort level per session (using API key as session identifier)
                 api_key = _extract_api_key(request, settings)
-                session_id = getattr(request_data, 'session_id', None) or api_key
+                session_id = api_key
 
-                # Store in a simple in-memory dict (same pattern as ModelSwapManager)
-                from api.swapper.manager import ModelSwapManager
-
-                # Use the existing manager's storage approach
-                # We'll add a separate storage for effort levels
-                if not hasattr(ModelSwapManager, '_effort_levels'):
-                    ModelSwapManager._effort_levels = {}
-
-                ModelSwapManager._effort_levels[session_id] = effort_level
+                # Try to parse as integer budget (-1 to 1000000)
+                try:
+                    val = int(effort_level)
+                    if -1 <= val <= 1000000:
+                        # Numeric budget - store as custom budget override
+                        # Do NOT force a named effort; let user set it separately if desired
+                        set_effort_budget(session_id, val)
+                        stored_effort = get_effort_level(session_id)
+                        effort_display = f" (effort: {stored_effort})" if stored_effort else ""
+                        display = f"custom budget: {val} tokens{effort_display}"
+                    else:
+                        logger.warning("nimeffort value %d out of range [-1, 1000000], ignoring", val)
+                        return None
+                except ValueError:
+                    # Named level - store as effort level, clear any custom budget
+                    set_effort_level(session_id, effort_level)
+                    clear_effort_budget(session_id)
+                    display = effort_level
 
                 return _create_nimserver_response(
                     True,
                     f"effort-{effort_level}",
-                    f"✅ Reasoning effort set to: **{effort_level}**\n\n"
+                    f"✅ Reasoning effort set to: **{display}**\n\n"
                     f"This applies to the current session.",
+                )
+            break
+    return None
+
+
+# =============================================================================
+# Reasoning Effort Status Helper (<nimeffort> or <nimeffort:status>)
+# =============================================================================
+
+
+async def _handle_nimeffort_status(
+    request: Request,
+    request_data: MessagesRequest,
+    settings: Settings,
+) -> MessagesResponse | None:
+    """
+    Check for <nimeffort> or <nimeffort:status> tag in the last user message's LAST content block.
+    If found, return the current effort level for the session.
+
+    Returns:
+        A mock response showing current effort level, None otherwise.
+    """
+    for msg in reversed(request_data.messages):
+        if msg.role == "user":
+            # Check only the last content block to avoid false positives
+            text_content = extract_last_text_content(msg.content)
+            if is_nimeffort_status_tag(text_content):
+                # Skip for title generation requests (false positives)
+                if _is_title_request(request_data):
+                    return None
+
+                # Get session ID
+                api_key = _extract_api_key(request, settings)
+                session_id = api_key
+
+                # Get stored effort level and custom budget
+                stored_effort = get_effort_level(session_id)
+                custom_budget = get_effort_budget(session_id)
+
+                # Also check provider logic for what would be used
+                # The provider reads: exact tag > request thinking > settings > default
+                from config.nim import NimSettings
+                nim = settings.nim
+                config_effort = nim.reasoning_effort
+                config_budget = nim.reasoning_budget
+
+                if stored_effort:
+                    # Try to determine mapped effort and int value
+                    mapped_effort = stored_effort
+
+                    # Check if there's a custom budget override
+                    if custom_budget is not None:
+                        # Custom budget override - show both named effort mapping AND custom budget
+                        try:
+                            val = int(custom_budget)
+                            # First get the mapped effort
+                            from config.settings import get_reasoning_config
+                            model = settings.model_name
+                            reasoning_config = get_reasoning_config(model)
+                            effort_map = reasoning_config.effort_mapping
+                            mapped = effort_map.get(stored_effort, stored_effort)
+                            if mapped != stored_effort:
+                                base_mapped = f"{stored_effort} → {mapped}"
+                            else:
+                                base_mapped = stored_effort
+
+                            if val == -1:
+                                mapped_effort = f"{base_mapped} (unlimited budget)"
+                            else:
+                                mapped_effort = f"{base_mapped} (custom budget: {val} tokens)"
+                        except ValueError:
+                            pass
+                    else:
+                        # Named level - map through reasoning config
+                        from config.settings import get_reasoning_config
+                        model = settings.model_name
+                        reasoning_config = get_reasoning_config(model)
+                        effort_map = reasoning_config.effort_mapping
+                        mapped = effort_map.get(stored_effort, stored_effort)
+                        if mapped != stored_effort:
+                            mapped_effort = f"{stored_effort} → {mapped}"
+                        else:
+                            mapped_effort = stored_effort
+
+                        # Show budget_per_effort value
+                        budget = reasoning_config.budget_per_effort.get(stored_effort, 0)
+                        if budget == -1:
+                            mapped_effort += " (unlimited)"
+                        elif budget > 0:
+                            mapped_effort += f" ({budget} tokens)"
+
+                    # Build and return status message when stored_effort exists
+                    message = f"\U0001f4ca **Current Reasoning Effort**\n\n"
+                    message += f"**Stored (session):** {stored_effort}\n"
+                    message += f"**Mapped effort:** {mapped_effort}\n"
+
+                    if custom_budget is not None:
+                        message += f"**Custom budget override:** {custom_budget} tokens\n"
+
+                    message += f"\n**Provider defaults (from config):**\n"
+                    message += f"  - reasoning_effort: {config_effort}\n"
+                    message += f"  - reasoning_budget: {config_budget if config_budget > 0 else 'auto'}\n"
+
+                    return _create_nimserver_response(
+                        True,
+                        "effort-status",
+                        message,
+                    )
+                elif custom_budget is not None:
+                    # No stored effort, but has custom budget
+                    mapped_effort = f"custom budget: {custom_budget} tokens"
+
+                    message = f"\U0001f4ca **Current Reasoning Effort**\n\n"
+                    message += f"**Stored (session):** *(none — custom budget only)*\n"
+                    message += f"**Mapped effort:** {mapped_effort}\n"
+                    message += f"**Custom budget override:** {custom_budget} tokens\n"
+
+                    message += f"\n**Provider defaults (from config):**\n"
+                    message += f"  - reasoning_effort: {config_effort}\n"
+                    message += f"  - reasoning_budget: {config_budget if config_budget > 0 else 'auto'}\n"
+
+                    message += f"\n*No named effort level set for this session. Using provider defaults with custom budget override.*"
+
+                    return _create_nimserver_response(
+                        True,
+                        "effort-status",
+                        message,
+                    )
+
+                return _create_nimserver_response(
+                    True,
+                    "effort-status",
+                    f"\U0001f4ca **Current Reasoning Effort**\n\n"
+                    f"*No effort level set for this session.*\n\n"
+                    f"**Provider defaults (from config):**\n"
+                    f"  - reasoning_effort: {config_effort}\n"
+                    f"  - reasoning_budget: {config_budget if config_budget > 0 else 'auto'}",
                 )
             break
     return None
@@ -454,6 +611,13 @@ async def create_message(
         nimeffort_mock = await _handle_nimeffort(raw_request, request_data, settings)
         if nimeffort_mock is not None:
             return _sse_response(nimeffort_mock)
+
+        # Handle reasoning effort status (<nimeffort> or <nimeffort:status>)
+        nimeffort_status_mock = await _handle_nimeffort_status(
+            raw_request, request_data, settings
+        )
+        if nimeffort_status_mock is not None:
+            return _sse_response(nimeffort_status_mock)
 
         optimized = try_optimizations(request_data, settings)
         if optimized is not None:

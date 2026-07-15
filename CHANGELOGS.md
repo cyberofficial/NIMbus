@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## v2.0.11 - Date: 2026-07-14
+## v2.0.11 - Date: 2026-07-15
 
 ### Added
 - **Nemotron 3 Thinking/Reasoning Support** - Full support for NVIDIA Nemotron 3 Ultra (500B) and Super (120B) thinking mode via `reasoning_budget` and `chat_template_kwargs` parameters
@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Reasoning Effort Mapping Config** - New `reasoning_config.json` consolidates all reasoning configuration (replaces YAML budgets, effort presets, and user mappings). Includes `max_budget`, `effort_mapping`, and `budget_per_effort` with glob pattern support (e.g., `deepseek-*`).
 - **Per-Session Reasoning Effort Tracking** - Captures `x-claude-code-session-id` header and tracks reasoning effort per session. Sessions can override global defaults via `<nimeffort:level>` inline tag.
 - **`<nimeffort:level>` Inline Command** - Set reasoning effort at runtime with levels: low, medium, high, xhigh, max, ultracode. Stored per session via `x-claude-code-session-id`.
+- **`<nimeffort>` / `<nimeffort:status>` Status Command** - Display current reasoning effort level, mapped effort, and custom budget for the session.
+- **Custom Reasoning Budget** - `<nimeffort:NNN>` accepts integer budget values (-1 to 1,000,000). `-1` = unlimited, positive = token limit. Works alongside named effort levels.
 - **`<nimhelp>` Whitespace Fix** - Now correctly matches `<nimhelp>` with optional surrounding whitespace (consistent with other inline commands).
 - **MCP Server Browser Support** - `fetch_page` tool now supports Playwright browser for JavaScript-rendered content, SPAs, and anti-bot pages. New `MCP_BROWSER_HEADLESS` environment variable (default: `true` = HTTP only). When `false`, always uses visible browser. Tool accepts `use_browser` parameter (ignored when headless=false). Reuses DuckDuckGo search browser instance for persistent cookies/stealth.
 - **Setup Wizard Priority & Web Search Config** - Interactive wizard now prompts for Discord/API queue priority, web search max results/iterations, and browser headless mode.
@@ -32,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Message Splitting at Mid-URL/Lines** - Discord bot now prefers line boundaries when splitting long messages (prevents cutting URLs mid-sentence).
 - **Streaming Idle Timeout** - Disabled idle read timeout for streaming (`None`) to prevent timeout errors when chunks arrive sporadically.
 - **Buffered Endpoint Mock Serialization** - Fixed JSON serialization of mock responses (Pydantic `.model_dump()`).
+- **Status Display Bug** - `<nimeffort>` now correctly shows stored effort level, mapped effort, and custom budget instead of "No effort level set".
 
 ### Changed
 - **Reasoning Config Consolidation** - Replaced `reasoning_budgets.yaml`, `reasoning_effort_presets.json`, `user_reasoning_effort_mapping.json` with single `reasoning_config.json`. Settings loaded via `get_reasoning_config()` with glob matching.
@@ -42,9 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SSE Dispatch Consolidation** - Four copy-pasted SSE streaming blocks consolidated into single `_sse_response()` helper (~30 lines removed).
 - **Logging Cleanup** - Removed emoji print statement from `providers/provider.py`.
 - **Buffered Endpoint Rate Limit Bypass** - All inline commands now bypass `wait_if_blocked()` in buffered mode.
+- **Ultracode Budget = Unlimited** - `ultracode` effort level now maps to `reasoning_budget: -1` (unlimited) for all Nemotron models in `reasoning_config.json`.
 
 ### Files Touched
-- `reasoning_config.json` (new) - Consolidated reasoning configuration (max_budget, effort_mapping, budget_per_effort)
+- `reasoning_config.json` (updated) - Consolidated reasoning configuration (max_budget, effort_mapping, budget_per_effort); ultracode budget = -1
 - `reasoning_effort_presets.json` (removed) - Legacy presets removed
 - `user_reasoning_effort_mapping.json` (removed) - Legacy user mappings removed
 - `config/nim.py` - New env vars: `NIM_REASONING_BUDGET`, `NIM_ENABLE_THINKING`, `NIM_CHAT_TEMPLATE_*_EFFORT`, `NIMEFFORT_LEVEL_MAPPING`
@@ -53,9 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `providers/provider.py` - Smart error handling with `_rebuild_with_reduced_budget()`, `_rebuild_without_key()`, `_sse_response()` helper
 - `.env.example` - New vars documented; `MCP_BROWSER_HEADLESS`, `DISCORD_BROWSER_HEADLESS`
 - `test_nim_thinking.py` (new) - Verification script for NIM thinking params
-- `api/routes.py` - Inline commands before `wait_if_blocked()`; `extract_last_text_content()` for command detection; `_sse_response()` helper; buffered endpoint `.model_dump()` serialization
-- `api/swapper/__init__.py` - Exports `is_nimeffort_tag`, `extract_nimeffort_tag`
-- `api/swapper/parser.py` - `<nimeffort:level>` tag support; `<nimhelp>` whitespace fix; patterns now match anywhere in last block
+- `api/routes.py` - Inline commands before `wait_if_blocked()`; `extract_last_text_content()` for command detection; `_sse_response()` helper; buffered endpoint `.model_dump()` serialization; `<nimeffort>` status command; custom budget support
+- `api/swapper/__init__.py` - Exports `is_nimeffort_tag`, `extract_nimeffort_tag`, `is_nimeffort_status_tag`
+- `api/swapper/parser.py` - `<nimeffort:level>` tag support with integer budget; `<nimhelp>` whitespace fix; `<nimeffort>`/`<nimeffort:status>` patterns
+- `api/effort_store.py` (new) - Per-session effort level and custom budget storage
 - `providers/text.py` - New `extract_last_text_content()` for inline command detection
 - `config/settings.py` - Browser headless config fields, `mcp_browser_headless`, `discord_browser_headless`
 - `discord_bot/bot.py` - Tool result persistence, fallback retries, smart splitting, text-stream tool parsing, duplicate inline command bypass

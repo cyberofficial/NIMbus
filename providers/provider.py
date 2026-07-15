@@ -648,7 +648,9 @@ class NvidiaNimProvider(BaseProvider):
             model_override: Optional model name to override the request's model
         """
         assert self._nim_settings is not None
-        body = build_request_body(request, self._nim_settings)
+        # Extract session_id from request if available
+        session_id = getattr(request, 'session_id', None)
+        body = build_request_body(request, self._nim_settings, session_id=session_id)
 
         # Apply model override if provided
         if model_override:
