@@ -138,11 +138,11 @@ Claude Code sends requests with model identifiers like `claude-sonnet-4-6`, `cla
 | MODEL Count | Position 1 (Sonnet/Default) | Position 2 (Opus) | Position 3 (Haiku) | Position 4 (Fable) |
 |-------------|-----------------------------|-------------------|---------------------|---------------------|
 | 1 model | All tiers → model[0] | All tiers → model[0] | All tiers → model[0] | All tiers → model[0] |
-| 2 models | Sonnet + Opus → model[0] | Sonnet + Opus → model[0] | Haiku → model[1] (last) | Fable → Opus model (model[1] or model[0] if 1 model) |
+| 2 models | Sonnet → model[0] | Opus → model[1] | Haiku → model[1] (last) | Fable → Opus model (model[1] or model[0] if 1 model) |
 | 3 models | Sonnet → model[0] | Opus → model[1] | Haiku → model[2] (last) | Fable → Opus model (model[1]) |
-| 4 models | Sonnet → model[0] | Opus → model[1] | Haiku → model[2] | Fable → model[3] |
+| 4 models | Sonnet → model[0] | Opus → model[1] | Haiku → model[2] | Fable → model[1] |
 
-**Fable:** The new `claude-fable-1-0` model defaults to the Opus position (model[1] or model[2] if 3 models, model[3] if 4 models, or the single model if only 1). Override with `FABLE_OVERRIDE=owner/model-name` in `.env` (supports `[1m]` suffix for 1M context).
+**Fable:** The new `claude-fable-1-0` model defaults to the Opus position (model[1], or model[0] if only one model is configured). Override with `FABLE_OVERRIDE=owner/model-name` in `.env` (supports `[1m]` suffix for 1M context).
 
 ## Configuration
 
@@ -155,12 +155,12 @@ Claude Code sends requests with model identifiers like `claude-sonnet-4-6`, `cla
 | `NIM_THINKING` | Enable thinking/reasoning content | `true` |
 | `NIM_REASONING_EFFORT` | Reasoning effort: `low`, `medium`, or `high` | `high` |
 | `NIM_REASONING_EFFORT_MAPPINGS` | JSON string mapping Claude effort levels to model-specific values | `` (empty) |
-| `NIM_REASONING_BUDGET` | Max reasoning tokens (-1 = unlimited, 0 = auto) | `32768` |
+| `NIM_REASONING_BUDGET` | Max reasoning tokens (-1 = unlimited, 0 = auto) | `0` |
 | `NIM_ENABLE_THINKING` | Enable thinking/reasoning mode | `true` |
 | `NIM_CHAT_TEMPLATE_ENABLE_THINKING` | Enable thinking in chat template | `true` |
-| `NIM_CHAT_TEMPLATE_LOW_EFFORT` | Enable low_effort flag in chat template | `true` |
-| `NIM_CHAT_TEMPLATE_MEDIUM_EFFORT` | Enable medium_effort flag in chat template | `true` |
-| `NIM_CHAT_TEMPLATE_HIGH_EFFORT` | Enable high_effort flag in chat template | `true` |
+| `NIM_CHAT_TEMPLATE_LOW_EFFORT` | Enable low_effort flag in chat template | `false` |
+| `NIM_CHAT_TEMPLATE_MEDIUM_EFFORT` | Enable medium_effort flag in chat template | `false` |
+| `NIM_CHAT_TEMPLATE_HIGH_EFFORT` | Enable high_effort flag in chat template | `false` |
 | `FABLE_OVERRIDE` | Override NIM model for Fable tier (supports `[1m]` suffix). Defaults to Opus model | `` (empty) |
 | `PROVIDER_RATE_LIMIT` | Requests per window | `40` |
 | `PROVIDER_RATE_WINDOW` | Rate window in seconds | `60` |
@@ -405,7 +405,7 @@ A comprehensive set of preset mappings is available in `reasoning_config.json`. 
 4. If no mapping exists for a model, the effort level is used as-is (fallback behavior)
 
 **Example mappings (from reasoning_config.json):**
-- Nemotron 3 Ultra: `low` → `medium:2048`, `medium` → `medium:8192`, `high/xhigh/max/ultracode` → `high:32768`
+- Nemotron 3 Ultra: `low` → `medium:2048`, `medium` → `medium:8192`, `high/xhigh/max` → `high:32768`, `ultracode` → `high:-1`
 - DeepSeek models: `low` → `low:2048`, `medium` → `medium:8192`, `high` → `high:16384`, `xhigh/max/ultracode` → `max:32768`
 - All levels to high: `{"deepseek": {"low": "high", "medium": "high", "high": "high", "xhigh": "high", "max": "high", "ultracode": "high"}}`
 - Custom mapping: `{"deepseek": {"low": "xhigh", "medium": "high", "high": "high"}}` (low → xhigh, medium/high → high)
