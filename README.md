@@ -138,11 +138,11 @@ Claude Code sends requests with model identifiers like `claude-sonnet-4-6`, `cla
 | MODEL Count | Position 1 (Sonnet/Default) | Position 2 (Opus) | Position 3 (Haiku) | Position 4 (Fable) |
 |-------------|-----------------------------|-------------------|---------------------|---------------------|
 | 1 model | All tiers → model[0] | All tiers → model[0] | All tiers → model[0] | All tiers → model[0] |
-| 2 models | Sonnet + Opus → model[0] | Sonnet + Opus → model[0] | Haiku → model[1] | Haiku → model[1] |
-| 3 models | Sonnet → model[0] | Opus → model[1] | Haiku → model[2] | Haiku → model[2] |
+| 2 models | Sonnet + Opus → model[0] | Sonnet + Opus → model[0] | Haiku → model[1] (last) | Fable → Opus model (model[1] or model[0] if 1 model) |
+| 3 models | Sonnet → model[0] | Opus → model[1] | Haiku → model[2] (last) | Fable → Opus model (model[1]) |
 | 4 models | Sonnet → model[0] | Opus → model[1] | Haiku → model[2] | Fable → model[3] |
 
-**Fable:** The new `claude-fable-1-0` model defaults to the Opus position (model[1] or model[3] if 4 models). Override with `FABLE_OVERRIDE=owner/model-name` in `.env` (supports `[1m]` suffix for 1M context).
+**Fable:** The new `claude-fable-1-0` model defaults to the Opus position (model[1] or model[2] if 3 models, model[3] if 4 models, or the single model if only 1). Override with `FABLE_OVERRIDE=owner/model-name` in `.env` (supports `[1m]` suffix for 1M context).
 
 ## Configuration
 
@@ -159,15 +159,15 @@ Claude Code sends requests with model identifiers like `claude-sonnet-4-6`, `cla
 | `PROVIDER_RATE_LIMIT` | Requests per window | `40` |
 | `PROVIDER_RATE_WINDOW` | Rate window in seconds | `60` |
 | `PROVIDER_MAX_CONCURRENCY` | Max concurrent streams | `5` |
+| `RESOURCE_EXHAUSTED_RETRIES` | Max retries for ResourceExhausted (worker limit) errors (0 = endless) | `10` |
 | `NIM_RPM_INITIAL` | Starting requests per minute (adaptive rate limiting) | `40` |
 | `NIM_RPM_DROP` | RPM reduction per 429 hit | `10` |
 | `NIM_RPM_MIN` | Floor RPM before hold delays | `20` |
 | `NIM_RPM_HOLD_INITIAL` | First hold delay in seconds | `5` |
 | `NIM_RPM_HOLD_MAX` | Maximum hold delay in seconds | `10` |
+| `PROVIDER_MAX_WAIT_TIME` | Buffer mode max wait (s) | `30` |
 | `PROVIDER_RETRY_ON_TRUNCATION` | Buffer mode retry count | `3` |
 | `PROVIDER_RETRY_DELAY` | Buffer mode retry base delay (s) | `1.0` |
-| `PROVIDER_MAX_WAIT_TIME` | Buffer mode max wait (s) | `30` |
-| `RESOURCE_EXHAUSTED_RETRIES` | Max retries for ResourceExhausted (worker limit) errors (0 = endless) | `10` |
 | `HTTP_READ_TIMEOUT` | Read timeout in seconds | `300` |
 | `HTTP_WRITE_TIMEOUT` | Write timeout in seconds | `10` |
 | `HTTP_CONNECT_TIMEOUT` | Connect timeout in seconds | `2` |
@@ -178,7 +178,8 @@ Claude Code sends requests with model identifiers like `claude-sonnet-4-6`, `cla
 | `SWAPPER_TEST_TIMEOUT` | Model swapper test timeout (s) | `120.0` |
 | `WEB_SEARCH_FETCH_TIMEOUT` | MCP `fetch_page` HTTP timeout (s) | `10.0` |
 | `MCP_CACHE_TTL` | MCP cache TTL (s), max 3600, 0=disabled | `600` |
-| `WEB_SEARCH_DEBUG` | Enable verbose web search SSE logging | `false` |
+| `MCP_BROWSER_HEADLESS` | Use headless browser for MCP fetch_page (true/false) | `true` |
+| `DISCORD_BROWSER_HEADLESS` | Use headless browser for Discord web search (true/false) | `true` |
 
 ### Log Files
 
@@ -369,12 +370,12 @@ These settings speed up Claude Code by mocking/skipping unnecessary requests. Th
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `FAST_PREFIX_DETECTION` | Fast command prefix detection | `true` |
+| `ENABLE_RECAP_SKIP` | Block recap requests (stepped away/return) | `false` **disabled** |
 | `ENABLE_NETWORK_PROBE_MOCK` | Mock quota probe requests | `true` |
+| `FAST_PREFIX_DETECTION` | Fast command prefix detection | `true` |
 | `ENABLE_TITLE_GENERATION_SKIP` | Skip title generation requests | `true` |
 | `ENABLE_SUGGESTION_MODE_SKIP` | Skip suggestion mode requests | `false` **disabled** |
 | `ENABLE_FILEPATH_EXTRACTION_MOCK` | Mock filepath extraction | `true` |
-| `ENABLE_RECAP_SKIP` | Block recap requests (stepped away/return) | `false` **disabled** |
 
 > **Note:** `ENABLE_SUGGESTION_MODE_SKIP` and `ENABLE_RECAP_SKIP` are currently no-ops. The handlers exist in the optimization chain but return `None` immediately, with their detection logic (and the call to `is_suggestion_mode_request` / `is_recap_request`) kept as commented-out reference code in `api/optimization_handlers.py`. They are disabled because their current detection produces false positives; the helpers can be re-enabled (in code) once better detection is implemented.
 
@@ -389,14 +390,7 @@ NIM_REASONING_EFFORT_MAPPINGS='{"deepseek": {"xhigh": "max", "high": "high"}}'
 ```
 
 **Preset Mappings:**
-A comprehensive set of preset mappings is available in `reasoning_effort_presets.json`. To use a preset:
-```bash
-# Use DeepSeek preset
-NIM_REASONING_EFFORT_MAPPINGS=$(cat reasoning_effort_presets.json | jq -r '.models.deepseek.mapping | tojson')
-
-# Use global defaults  
-NIM_REASONING_EFFORT_MAPPINGS=$(cat reasoning_effort_presets.json | jq -r '.global_defaults.mapping | tojson')
-```
+A comprehensive set of preset mappings is available in `reasoning_config.json`. The file uses a 2/3-part format: `"low:medium:2048"` (level:mapped:budget) or `"low:2048"` (level:budget with identity mapping).
 
 **How it works:**
 1. When Claude Code sends an `/effort` command, it includes the effort level in the request's `thinking.effort` field
@@ -404,13 +398,14 @@ NIM_REASONING_EFFORT_MAPPINGS=$(cat reasoning_effort_presets.json | jq -r '.glob
 3. The mapped value is sent to the NIM model as the `reasoning_effort` parameter
 4. If no mapping exists for a model, the effort level is used as-is (fallback behavior)
 
-**Example mappings:**
-- DeepSeek models: `xhigh` → `max`, `high` → `high`
+**Example mappings (from reasoning_config.json):**
+- Nemotron 3 Ultra: `low` → `medium:2048`, `medium` → `medium:8192`, `high/xhigh/max/ultracode` → `high:32768`
+- DeepSeek models: `low` → `low:2048`, `medium` → `medium:8192`, `high` → `high:16384`, `xhigh/max/ultracode` → `max:32768`
 - All levels to high: `{"deepseek": {"low": "high", "medium": "high", "high": "high", "xhigh": "high", "max": "high", "ultracode": "high"}}`
 - Custom mapping: `{"deepseek": {"low": "xhigh", "medium": "high", "high": "high"}}` (low → xhigh, medium/high → high)
 - Any combination: Users can define any mapping they want for any effort level
 
-See [reasoning_effort_presets.json](reasoning_effort_presets.json) for detailed preset mappings and usage instructions.
+See [reasoning_config.json](reasoning_config.json) for detailed preset mappings and format.
 
 See [`.env.example`](.env.example) for all options.
 
@@ -440,6 +435,14 @@ Set `SWAPPER_ENABLED=true` in `.env`, then in any Claude Code message include on
 
 A short-name (e.g. `deepseek-v4-pro`) is resolved against NVIDIA's live catalog; the full `org/name` form also works. If the model doesn't exist or fails the test prompt, the proxy responds with a short error message and a list of similar models from the same org.
 
+**Additional inline commands (always work, no config needed):**
+
+| Tag | Effect |
+| --- | --- |
+| `<nimrpm:reset>` | Reset adaptive rate limit backoff (restore RPM, clear hold delays) |
+| `<nimhelp>` | Show list of all available inline commands |
+| `<nimeffort:level>` | Set reasoning effort: `low`, `medium`, `high`, `xhigh`, `max`, `ultracode` |
+
 ## NIM Server Swapper
 
 Mid-session switching between `stream` and `buffer` server modes via a chat tag, no proxy restart needed. Works independently of the Model Swapper  -  you can swap both model and server type in the same session.
@@ -453,6 +456,14 @@ In any Claude Code message include one of these tags (the proxy strips it before
 | `<nimserver:stream>` | Switch to streaming mode for the rest of the session |
 | `<nimserver:buffer>` | Switch to buffered mode (with retry on failure) for the rest of the session |
 | `<nimserver:clear>` | Revert to the default `SERVER_TYPE` from `.env` |
+
+**Additional inline commands (always work, no config needed):**
+
+| Tag | Effect |
+| --- | --- |
+| `<nimrpm:reset>` | Reset adaptive rate limit backoff (restore RPM, clear hold delays) |
+| `<nimhelp>` | Show list of all available inline commands |
+| `<nimeffort:level>` | Set reasoning effort: `low`, `medium`, `high`, `xhigh`, `max`, `ultracode` |
 
 Once set, **all subsequent requests** from that API key will use the chosen mode until you send `<nimserver:clear>` or restart the proxy.
 
@@ -600,7 +611,7 @@ The bot also responds to every message in conversation channels (when `DISCORD_R
 - **Message splitting**: Automatically splits long responses for Discord's 2000 char limit
 - **Command toggles**: Disable individual slash commands via `DISCORD_CMD_*` settings; disable individual prefix commands via `DISCORD_CMD_PREFIX_*` settings
 - **Setup wizard**: `nimbus.exe --init` walks through every Discord setting interactively
-- **Web Search Integration**: The Bot can search the web and fetch pages using DuckDuckGo. When enabled (default), the model automatically detects when a search is needed (e.g., "what's the latest version of...", "search for...") and performs searches, fetches pages, and cross-references sources until confident. Results are incorporated into the final answer with a disclaimer: `-# This response used online resources, please make sure to verify the information`. Search activity is logged to console (`[WEB SEARCH] tool=web_search input="..." | result_len=...`). Configure with `DISCORD_ENABLE_WEB_SEARCH=true`, `DISCORD_WEB_SEARCH_MAX_RESULTS=5`, `DISCORD_WEB_SEARCH_MAX_ITERATIONS=10`.
+- **Web Search Integration**: The Bot can search the web and fetch pages using DuckDuckGo. When enabled (default), the model automatically detects when a search is needed (e.g., "what's the latest version of...", "search for...") and performs searches, fetches pages, and cross-references sources until confident. Results are incorporated into the final answer with a disclaimer: `-# This response used online resources, please make sure to verify the information`. Search activity is logged to console (`[WEB SEARCH] tool=web_search input="..." | result_len=...`). Configure with `DISCORD_ENABLE_WEB_SEARCH=true`, `DISCORD_WEB_SEARCH_MAX_RESULTS=5`, `DISCORD_WEB_SEARCH_MAX_ITERATIONS=10`, `DISCORD_WEB_SEARCH_MAX_RESULT_SIZE=5000`, `DISCORD_WEB_SEARCH_INCLUDE_IN_HISTORY=true`, `DISCORD_BROWSER_HEADLESS=true`.
 
 ## MCP Server Mode (Web Search Tools)
 
@@ -663,6 +674,7 @@ NVIDIA_NIM_API_KEY="nvapi-your-key-here"  # Not required for MCP mode but kept f
 
 # Web Search Configuration
 WEB_SEARCH_FETCH_TIMEOUT=10.0     # HTTP timeout for fetch_page in seconds (default: 10.0)
+MCP_BROWSER_HEADLESS=true         # Use headless browser for fetch_page (true = fast HTTP, false = visible browser)
 
 # Cache Configuration
 MCP_CACHE_TTL=600                 # Cache TTL in seconds (default: 600 = 10 minutes, max 3600, 0 = disabled)
