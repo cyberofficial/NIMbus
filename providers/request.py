@@ -152,7 +152,9 @@ def build_request_body(
         # reasoning_budget: request > settings > budget_per_effort (based on effort) > model max
         effective_budget = request_budget
         if effective_budget is None:
-            if nim.reasoning_budget > 0:
+            if nim.reasoning_budget == -1:
+                effective_budget = -1  # unlimited - pass through to API
+            elif nim.reasoning_budget > 0:
                 effective_budget = nim.reasoning_budget
             else:
                 # Use budget_per_effort based on original effort (before mapping)
@@ -162,8 +164,8 @@ def build_request_body(
                     reasoning_config.max_reasoning_budget
                 )
 
-        # Auto-clamp to model max
-        if effective_budget > reasoning_config.max_reasoning_budget:
+        # Auto-clamp to model max (skip for -1 unlimited)
+        if effective_budget > 0 and effective_budget > reasoning_config.max_reasoning_budget:
             logger.warning(
                 "reasoning_budget {} exceeds model max {} for {}, clamping",
                 effective_budget, reasoning_config.max_reasoning_budget, model
@@ -172,6 +174,8 @@ def build_request_body(
 
         if effective_budget > 0 and reasoning_config.supports_thinking:
             _set_extra(extra_body, "reasoning_budget", effective_budget)
+        elif effective_budget == -1 and reasoning_config.supports_thinking:
+            _set_extra(extra_body, "reasoning_budget", -1)  # unlimited
 
     req_top_k = getattr(request_data, "top_k", None)
     top_k = req_top_k if req_top_k is not None else nim.top_k

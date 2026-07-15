@@ -68,9 +68,9 @@ class NimSettings(BaseModel):
         default_factory=_load_reasoning_effort_mappings
     )
 
-    # NEW: Reasoning budget (0 = auto from model config)
+    # NEW: Reasoning budget (0 = auto from model config, -1 = unlimited)
     reasoning_budget: int = Field(
-        default_factory=lambda: int(os.environ.get("NIM_REASONING_BUDGET", "0")), ge=0
+        default_factory=lambda: int(os.environ.get("NIM_REASONING_BUDGET", "0"))
     )
 
     # NEW: Enable thinking globally (overrides model config if false)
@@ -109,11 +109,18 @@ class NimSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    @field_validator("top_k")
+    @field_validator("top_k", mode="after")
     @classmethod
     def validate_top_k(cls, v):
         if v < -1:
             raise ValueError("top_k must be -1 or >= 0")
+        return v
+
+    @field_validator("reasoning_budget", mode="after")
+    @classmethod
+    def validate_reasoning_budget(cls, v):
+        if v < -1:
+            raise ValueError("reasoning_budget must be -1 (unlimited) or >= 0")
         return v
 
     @field_validator("seed", mode="before")
