@@ -151,6 +151,7 @@ Claude Code sends requests with model identifiers like `claude-sonnet-4-6`, `cla
 | `MODEL` | Model identifier (`owner/model-name`, comma-separated for multi-model) | `deepseek-ai/deepseek-v4-flash` |
 | `NVIDIA_NIM_API_KEY` | NVIDIA API key | **required** |
 | `SERVER_TYPE` | Server mode: `stream` or `buffer` | `stream` |
+| `SHOW_NIM_REPLY` | Mirror the raw NVIDIA reply to the console live (one timestamped line per chunk; THINKING/REPLY tags) — diagnose "thinking vs stuck" in stream and buffer mode | `false` |
 | `NIM_MAX_TOKENS` | Max output tokens for responses | `202000` |
 | `NIM_THINKING` | Enable thinking/reasoning content | `true` |
 | `NIM_REASONING_EFFORT` | Reasoning effort: `low`, `medium`, or `high` | `high` |
@@ -406,7 +407,7 @@ A comprehensive set of preset mappings is available in `reasoning_config.json`. 
 
 **Example mappings (from reasoning_config.json):**
 - Nemotron 3 Ultra: `low` → `medium:2048`, `medium` → `medium:8192`, `high/xhigh/max` → `high:32768`, `ultracode` → `high:-1`
-- DeepSeek models: `low` → `low:2048`, `medium` → `medium:8192`, `high` → `high:16384`, `xhigh/max/ultracode` → `max:32768`
+- DeepSeek V4 Pro: `low` → `high`, `medium` → `high`, `high` → `high`, `xhigh`/`max`/`ultracode` → `max` (2-part format — no budget)
 - All levels to high: `{"deepseek": {"low": "high", "medium": "high", "high": "high", "xhigh": "high", "max": "high", "ultracode": "high"}}`
 - Custom mapping: `{"deepseek": {"low": "xhigh", "medium": "high", "high": "high"}}` (low → xhigh, medium/high → high)
 - Any combination: Users can define any mapping they want for any effort level

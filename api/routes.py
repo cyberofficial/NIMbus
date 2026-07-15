@@ -240,7 +240,7 @@ NIMHELP_TEXT = """NIMbus inline commands — send one as your ENTIRE message:
 <nimeffort:level>   set reasoning effort: low, medium, high, xhigh, max, ultracode, or int (-1 to 1000000)
 <nimeffort>         show current reasoning effort level
 <nimhelp>           show this list
-modelswap/nimserver need SWAPPER_ENABLED=true; nimrpm:reset, nimeffort, nimhelp always work.
+<modelswap:...> requires SWAPPER_ENABLED=true; <nimserver:...>, <nimrpm:reset>, <nimeffort:...>, <nimeffort>, <nimhelp> always work.
 """
 
 
