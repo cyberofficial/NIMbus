@@ -97,7 +97,7 @@ def build_request_body(
     reasoning_config = get_reasoning_config(model)
 
     # Handle thinking/reasoning mode - only when NIM_THINKING is enabled
-    if nim.thinking and nim.enable_thinking:
+    if nim.thinking:
         # Exact <nimeffort:level> tag in last user message (exact match like <nimrpm:reset>)
         last_user_msg = None
         for msg in reversed(getattr(request_data, "messages", [])):
@@ -138,7 +138,7 @@ def build_request_body(
     reasoning_config = get_reasoning_config(model)
 
     # Handle thinking/reasoning mode - only when NIM_THINKING is enabled
-    if nim.thinking and nim.enable_thinking:
+    if nim.thinking:
         # Get session-stored named effort and custom budget
         session_effort = None
         session_custom_budget = None
@@ -208,7 +208,7 @@ def build_request_body(
     _set_extra(extra_body, "min_tokens", nim.min_tokens, ignore_value=0)
     _set_extra(extra_body, "chat_template", nim.chat_template)
     _set_extra(extra_body, "request_id", nim.request_id)
-    if nim.thinking and nim.enable_thinking:
+    if nim.thinking:
         _set_extra(extra_body, "return_tokens_as_token_ids", nim.return_tokens_as_token_ids)
     _set_extra(extra_body, "include_stop_str_in_output", nim.include_stop_str_in_output)
     _set_extra(extra_body, "ignore_eos", nim.ignore_eos)

@@ -59,7 +59,7 @@ Edit `.env`:
 
 ```dotenv
 NVIDIA_NIM_API_KEY="nvapi-your-key-here"
-MODEL="deepseek-ai/deepseek-v4-flash"
+MODEL="nvidia/nemotron-3-super-120b-a12b"
 ```
 
 ### Running the Server
@@ -148,16 +148,15 @@ Claude Code sends requests with model identifiers like `claude-sonnet-4-6`, `cla
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `MODEL` | Model identifier (`owner/model-name`, comma-separated for multi-model) | `deepseek-ai/deepseek-v4-flash` |
+| `MODEL` | Model identifier (`owner/model-name`, comma-separated for multi-model) | `nvidia/nemotron-3-super-120b-a12b` |
 | `NVIDIA_NIM_API_KEY` | NVIDIA API key | **required** |
 | `SERVER_TYPE` | Server mode: `stream` or `buffer` | `stream` |
 | `SHOW_NIM_REPLY` | Mirror the raw NVIDIA reply to the console live (one timestamped line per chunk; THINKING/REPLY tags) — diagnose "thinking vs stuck" in stream and buffer mode | `false` |
 | `NIM_MAX_TOKENS` | Max output tokens for responses | `202000` |
 | `NIM_THINKING` | Enable thinking/reasoning content | `true` |
-| `NIM_REASONING_EFFORT` | Reasoning effort: `low`, `medium`, or `high` | `high` |
-| `NIM_REASONING_EFFORT_MAPPINGS` | JSON string mapping Claude effort levels to model-specific values | `` (empty) |
+| `NIM_REASONING_EFFORT` | Reasoning effort level: `low`, `medium`, `high` | `high` |
+| `NIM_REASONING_EFFORT_MAPPINGS` | JSON string mapping Claude effort levels to model-specific values | (empty) |
 | `NIM_REASONING_BUDGET` | Max reasoning tokens (-1 = unlimited, 0 = auto) | `0` |
-| `NIM_ENABLE_THINKING` | Enable thinking/reasoning mode | `true` |
 | `NIM_CHAT_TEMPLATE_ENABLE_THINKING` | Enable thinking in chat template | `true` |
 | `NIM_CHAT_TEMPLATE_LOW_EFFORT` | Enable low_effort flag in chat template | `false` |
 | `NIM_CHAT_TEMPLATE_MEDIUM_EFFORT` | Enable medium_effort flag in chat template | `false` |
