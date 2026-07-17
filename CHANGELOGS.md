@@ -8,21 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 ## v2.0.12 - Date: 2026-07-17
 
-### Changed
+### Added
 
-#### Rate Limiter Redesign
-- **Removed local adaptive backoff** - No longer drops RPM locally or adds hold delays on 429. Was causing cross-model pollution (one model's rate limit penalized all models).
-- **Server-header driven** - Now trusts NVIDIA's response headers:
-  - `x-ratelimit-limit` → proactive sliding window limit
-  - `retry-after` → reactive block duration
-  - `x-ratelimit-reset` → rate window duration
-- **Message-based auto-restore** - `NIM_RPM_RESET` (default: 5) now counts successful requests without 429, not seconds. After N successes, restores to initial RPM.
-- **Removed config vars**: `NIM_RPM_INITIAL`, `NIM_RPM_DROP`, `NIM_RPM_MIN`, `NIM_RPM_HOLD_INITIAL`, `NIM_RPM_HOLD_MAX`
-- **Simplified config**: `NIM_RPM_RESET` (default: 5) - number of successful requests before auto-restore
-- **Reset tag** - `<nimrpm:reset>` now only clears reactive block (retry-after), not local RPM state
+#### Adaptive Rate Limit Cap
+- **Local adaptive cap on 429** - When rate limited, caps effective RPM to the current limit. After `NIM_RPM_RESET` (default 5) successful requests, restores to initial RPM.
+- **Progressive decrement** - If rate limited again at the capped RPM, decrements RPM by 1 (minimum 1). After N successes, restores to initial.
+- **Continues until floor** - Repeats decrement on each 429 at capped level until RPM = 1, then restores after N successes.
+- **Respects server headers when not capped** - `x-ratelimit-limit` still updates proactive limit when not locally capped.
+- **Manual reset** - `<nimrpm:reset>` clears both reactive block and local cap, restoring initial RPM.
+
+### Changed
+- **Rate limiter state** - Added `_capped_rpm` tracking for progressive adaptive limiting
 
 ### Fixed
-- Cross-model rate limit pollution - switching models after one model got 429 no longer has artificial delays
+- Persistent rate limiting when NVIDIA's server headers don't reflect true limits
 
 ### Added
 

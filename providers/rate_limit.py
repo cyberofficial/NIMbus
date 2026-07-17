@@ -79,6 +79,9 @@ class GlobalRateLimiter:
         # ---- Auto-restore state ----
         self._success_count = 0
 
+        # ---- Adaptive cap state ----
+        self._capped_rpm: int | None = None  # Track capped RPM level (None = not capped)
+
         self._initialized = True
 
         logger.info(
@@ -177,27 +180,70 @@ class GlobalRateLimiter:
         self._worker_sem.release()
 
     def reset_reactive_block(self) -> None:
-        """Clear reactive block (e.g. via <nimrpm:reset>)."""
+        """Clear reactive block and adaptive cap (e.g. via <nimrpm:reset>)."""
         self._blocked_until = 0
-        logger.info("↺ Reactive rate limit block cleared via <nimrpm:reset>")
+        if self._capped_rpm is not None:
+            old = self._current_rpm
+            self._current_rpm = self._initial_rpm
+            self._capped_rpm = None
+            logger.info(f"↺ Manual reset: {old} → {self._initial_rpm} rpm via <nimrpm:reset>")
+        else:
+            logger.info("↺ Reactive rate limit block cleared via <nimrpm:reset>")
 
     def on_success(self) -> None:
         """Call after a successful request (no 429).
 
-        Increments success counter and auto-restores RPM after rpm_reset successes.
+        Increments success counter. When capped, gradually recovers RPM by +1
+        per rpm_reset successful requests until reaching initial_rpm.
         """
         if self._rpm_reset <= 0:
             return
         self._success_count += 1
-        if self._success_count >= self._rpm_reset and self._current_rpm < self._initial_rpm:
-            old = self._current_rpm
-            self._current_rpm = self._initial_rpm
-            self._success_count = 0  # Reset counter after restore
-            logger.info(f"↺ Auto-restore: {old} → {self._initial_rpm} rpm after {self._rpm_reset} successful requests")
+        if self._success_count >= self._rpm_reset:
+            self._success_count = 0
+            # Gradual recovery when capped
+            if self._capped_rpm is not None:
+                if self._current_rpm < self._initial_rpm:
+                    old = self._current_rpm
+                    self._current_rpm = min(self._initial_rpm, self._current_rpm + 1)
+                    self._capped_rpm = self._current_rpm
+                    logger.info(f"↺ Gradual recovery: {old} → {self._current_rpm} rpm after {self._rpm_reset} successful requests")
+                else:
+                    # Reached initial_rpm, clear cap
+                    logger.info(f"↺ Full recovery: {self._current_rpm} → {self._initial_rpm} rpm")
+                    self._capped_rpm = None
 
     def on_rate_limited(self) -> None:
-        """Call when a 429 is received. Resets success counter."""
+        """Call when a 429 is received. Resets success counter and applies adaptive cap.
+
+        Caps to the current effective rate (sliding window count) rather than the
+        configured/server limit, since the 429 indicates the true limit is lower.
+        """
         self._success_count = 0
+
+        # Calculate effective RPM from sliding window (requests in current window)
+        now = time.monotonic()
+        cutoff = now - self._rate_window
+        # Count requests still in window
+        effective_count = sum(1 for t in self._request_times if t > cutoff)
+        # Use at least 1, at most current_rpm
+        effective_rpm = max(1, min(effective_count, self._current_rpm))
+
+        if self._capped_rpm is None:
+            # First 429 at this level - cap to effective RPM
+            self._capped_rpm = effective_rpm
+            self._current_rpm = effective_rpm
+            logger.warning(f"⚠️ Rate limited - capping RPM to effective rate: {self._capped_rpm}")
+        elif self._current_rpm == self._capped_rpm:
+            # 429 at capped RPM - decrement by 1 (floor at 1)
+            if self._capped_rpm > 1:
+                old = self._capped_rpm
+                self._capped_rpm -= 1
+                self._current_rpm = self._capped_rpm
+                logger.warning(f"⚠️ Rate limited at cap - dropping RPM {old} → {self._capped_rpm}")
+            else:
+                logger.warning(f"⚠️ Rate limited at minimum RPM (1)")
+        # else: 429 but _current_rpm != _capped_rpm (shouldn't happen with proper sync)
 
     # ------------------------------------------------------------------
     # Wait logic (used by provider)
@@ -333,6 +379,8 @@ class GlobalRateLimiter:
             "blocked_seconds_remaining": self.remaining_wait(),
             "worker_limit": self._worker_limit,
             "worker_available": worker_available,
+            "capped_rpm": self._capped_rpm,
+            "initial_rpm": self._initial_rpm,
         }
 
     def parse_rate_limit_headers(self, headers: dict[str, str]) -> float | None:
@@ -352,9 +400,9 @@ class GlobalRateLimiter:
         """
         retry_after: float | None = None
 
-        # Parse x-ratelimit-limit → update current RPM
+        # Parse x-ratelimit-limit → update current RPM (only if not capped)
         limit = headers.get("x-ratelimit-limit")
-        if limit:
+        if limit and self._capped_rpm is None:
             try:
                 new_limit = int(limit)
                 if new_limit > 0 and new_limit != self._current_rpm:
