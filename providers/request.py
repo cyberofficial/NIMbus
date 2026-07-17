@@ -143,9 +143,9 @@ def build_request_body(
         session_custom_budget = None
         if session_id:
             try:
-                from api.routes import _effort_levels, _effort_budgets
-                session_effort = _effort_levels.get(session_id)
-                session_custom_budget = _effort_budgets.get(session_id)
+                from api.effort_store import get_effort_level, get_effort_budget
+                session_effort = get_effort_level(session_id)
+                session_custom_budget = get_effort_budget(session_id)
             except Exception:
                 pass
 

@@ -410,11 +410,7 @@ def _write_dotenv(path: Path, params: dict, is_linux: bool = False) -> None:
         f"PROVIDER_RATE_WINDOW={params.get('provider_rate_window', 60)}",
         f"PROVIDER_MAX_CONCURRENCY={params.get('provider_max_concurrency', 5)}",
         # Adaptive Rate Limiting
-        f"NIM_RPM_INITIAL={params.get('nim_rpm_initial', 40)}",
-        f"NIM_RPM_DROP={params.get('nim_rpm_drop', 10)}",
-        f"NIM_RPM_MIN={params.get('nim_rpm_min', 20)}",
-        f"NIM_RPM_HOLD_INITIAL={params.get('nim_rpm_hold_initial', 5)}",
-        f"NIM_RPM_HOLD_MAX={params.get('nim_rpm_hold_max', 10)}",
+        f"NIM_RPM_RESET={params.get('nim_rpm_reset', 5)}",
         # HTTP Client Timeouts
         f"HTTP_READ_TIMEOUT={params.get('http_read_timeout', 300)}",
         f"HTTP_WRITE_TIMEOUT={params.get('http_write_timeout', 10)}",
@@ -876,43 +872,18 @@ def _run_section(
         except ValueError:
             provider_max_concurrency = 5
         print()
-        print("  Adaptive Rate Limiting (backoff on 429 responses):")
-        print("  When a 429 is received, the limiter progressively reduces effective RPM.")
+        print("  Adaptive Rate Limiting (uses NVIDIA headers for proactive/reactive):")
         print()
-        rpm_initial_str = _prompt("  Starting RPM (NIM_RPM_INITIAL)", default=str(existing.get("NIM_RPM_INITIAL", "40")))
+        rpm_reset_str = _prompt("  Auto-restore after N successful requests (NIM_RPM_RESET, 0=disabled)", default=str(existing.get("NIM_RPM_RESET", "5")))
         try:
-            nim_rpm_initial = int(rpm_initial_str)
+            nim_rpm_reset = int(rpm_reset_str)
         except ValueError:
-            nim_rpm_initial = 40
-        rpm_drop_str = _prompt("  RPM drop per 429 hit (NIM_RPM_DROP)", default=str(existing.get("NIM_RPM_DROP", "10")))
-        try:
-            nim_rpm_drop = int(rpm_drop_str)
-        except ValueError:
-            nim_rpm_drop = 10
-        rpm_min_str = _prompt("  Floor RPM before hold delays (NIM_RPM_MIN)", default=str(existing.get("NIM_RPM_MIN", "20")))
-        try:
-            nim_rpm_min = int(rpm_min_str)
-        except ValueError:
-            nim_rpm_min = 20
-        rpm_hold_initial_str = _prompt("  First hold delay in seconds (NIM_RPM_HOLD_INITIAL)", default=str(existing.get("NIM_RPM_HOLD_INITIAL", "5")))
-        try:
-            nim_rpm_hold_initial = float(rpm_hold_initial_str)
-        except ValueError:
-            nim_rpm_hold_initial = 5.0
-        rpm_hold_max_str = _prompt("  Maximum hold delay in seconds (NIM_RPM_HOLD_MAX)", default=str(existing.get("NIM_RPM_HOLD_MAX", "10")))
-        try:
-            nim_rpm_hold_max = float(rpm_hold_max_str)
-        except ValueError:
-            nim_rpm_hold_max = 10.0
+            nim_rpm_reset = 5
         updates.update({
             "provider_rate_limit": provider_rate_limit,
             "provider_rate_window": provider_rate_window,
             "provider_max_concurrency": provider_max_concurrency,
-            "nim_rpm_initial": nim_rpm_initial,
-            "nim_rpm_drop": nim_rpm_drop,
-            "nim_rpm_min": nim_rpm_min,
-            "nim_rpm_hold_initial": nim_rpm_hold_initial,
-            "nim_rpm_hold_max": nim_rpm_hold_max,
+            "nim_rpm_reset": nim_rpm_reset,
         })
 
     elif section == "http_timeouts":
@@ -1859,11 +1830,7 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                     "provider_rate_window": int(merged.get("PROVIDER_RATE_WINDOW", 60)),
                     "provider_max_concurrency": int(merged.get("PROVIDER_MAX_CONCURRENCY", 5)),
                     # Adaptive Rate Limiting
-                    "nim_rpm_initial": int(merged.get("NIM_RPM_INITIAL", 40)),
-                    "nim_rpm_drop": int(merged.get("NIM_RPM_DROP", 10)),
-                    "nim_rpm_min": int(merged.get("NIM_RPM_MIN", 20)),
-                    "nim_rpm_hold_initial": float(merged.get("NIM_RPM_HOLD_INITIAL", 5)),
-                    "nim_rpm_hold_max": float(merged.get("NIM_RPM_HOLD_MAX", 10)),
+                    "nim_rpm_reset": int(merged.get("NIM_RPM_RESET", 5)),
                     # HTTP Client Timeouts
                     "http_read_timeout": float(merged.get("HTTP_READ_TIMEOUT", 300)),
                     "http_write_timeout": float(merged.get("HTTP_WRITE_TIMEOUT", 10)),
@@ -2231,7 +2198,7 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
         print("Step 6b: Provider Rate Limiting & Adaptive Rate Limiting")
         print("-" * 40)
         print("  NIMbus limits requests to stay within NVIDIA NIM's free tier limits.")
-        print("  The adaptive rate limiter automatically backs off on 429 responses.")
+        print("  The adaptive rate limiter uses NVIDIA headers for proactive/reactive limiting.")
         print()
         rate_limit_str = _prompt("  Max requests per window (PROVIDER_RATE_LIMIT)", default="40")
         try:
@@ -2249,34 +2216,13 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
         except ValueError:
             provider_max_concurrency = 5
         print()
-        print("  Adaptive Rate Limiting (backoff on 429 responses):")
-        print("  When a 429 is received, the limiter progressively reduces effective RPM.")
+        print("  Adaptive Rate Limiting (uses NVIDIA headers for proactive/reactive):")
         print()
-        rpm_initial_str = _prompt("  Starting RPM (NIM_RPM_INITIAL)", default="40")
+        rpm_reset_str = _prompt("  Auto-restore after N successful requests (NIM_RPM_RESET, 0=disabled)", default="5")
         try:
-            nim_rpm_initial = int(rpm_initial_str)
+            nim_rpm_reset = int(rpm_reset_str)
         except ValueError:
-            nim_rpm_initial = 40
-        rpm_drop_str = _prompt("  RPM drop per 429 hit (NIM_RPM_DROP)", default="10")
-        try:
-            nim_rpm_drop = int(rpm_drop_str)
-        except ValueError:
-            nim_rpm_drop = 10
-        rpm_min_str = _prompt("  Floor RPM before hold delays (NIM_RPM_MIN)", default="20")
-        try:
-            nim_rpm_min = int(rpm_min_str)
-        except ValueError:
-            nim_rpm_min = 20
-        rpm_hold_initial_str = _prompt("  First hold delay in seconds (NIM_RPM_HOLD_INITIAL)", default="5")
-        try:
-            nim_rpm_hold_initial = float(rpm_hold_initial_str)
-        except ValueError:
-            nim_rpm_hold_initial = 5.0
-        rpm_hold_max_str = _prompt("  Maximum hold delay in seconds (NIM_RPM_HOLD_MAX)", default="10")
-        try:
-            nim_rpm_hold_max = float(rpm_hold_max_str)
-        except ValueError:
-            nim_rpm_hold_max = 10.0
+            nim_rpm_reset = 5
 
         # ---- Step 6c: HTTP Client Timeouts ----
         print()
@@ -2694,11 +2640,7 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 "provider_rate_window": provider_rate_window,
                 "provider_max_concurrency": provider_max_concurrency,
                 # Adaptive Rate Limiting
-                "nim_rpm_initial": nim_rpm_initial,
-                "nim_rpm_drop": nim_rpm_drop,
-                "nim_rpm_min": nim_rpm_min,
-                "nim_rpm_hold_initial": nim_rpm_hold_initial,
-                "nim_rpm_hold_max": nim_rpm_hold_max,
+                "nim_rpm_reset": nim_rpm_reset,
                 # HTTP Client Timeouts
                 "http_read_timeout": http_read_timeout,
                 "http_write_timeout": http_write_timeout,

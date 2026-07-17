@@ -41,10 +41,6 @@ def _create_provider(settings: Settings) -> BaseProvider:
         rate_window=settings.provider_rate_window,
         max_concurrency=settings.provider_max_concurrency,
         worker_limit=settings.request_queue_max_concurrent,
-        rpm_drop=settings.nim_rpm_drop,
-        rpm_min=settings.nim_rpm_min,
-        hold_initial=settings.nim_rpm_hold_initial,
-        hold_max=settings.nim_rpm_hold_max,
         rpm_reset=settings.nim_rpm_reset,
     )
 
@@ -70,10 +66,6 @@ def _create_provider(settings: Settings) -> BaseProvider:
         request_queue_timeout=settings.request_queue_timeout,
         request_queue_num_workers=settings.request_queue_num_workers,
         # Adaptive rate limiting
-        rpm_drop=settings.nim_rpm_drop,
-        rpm_min=settings.nim_rpm_min,
-        hold_initial=settings.nim_rpm_hold_initial,
-        hold_max=settings.nim_rpm_hold_max,
         rpm_reset=settings.nim_rpm_reset,
     )
     provider = NvidiaNimProvider(config, nim_settings=settings.nim)

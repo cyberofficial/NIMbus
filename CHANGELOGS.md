@@ -6,7 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
-## v2.0.11 - Date: 2026-07-17
+## v2.0.12 - Date: 2026-07-17
+
+### Changed
+
+#### Rate Limiter Redesign
+- **Removed local adaptive backoff** - No longer drops RPM locally or adds hold delays on 429. Was causing cross-model pollution (one model's rate limit penalized all models).
+- **Server-header driven** - Now trusts NVIDIA's response headers:
+  - `x-ratelimit-limit` → proactive sliding window limit
+  - `retry-after` → reactive block duration
+  - `x-ratelimit-reset` → rate window duration
+- **Message-based auto-restore** - `NIM_RPM_RESET` (default: 5) now counts successful requests without 429, not seconds. After N successes, restores to initial RPM.
+- **Removed config vars**: `NIM_RPM_INITIAL`, `NIM_RPM_DROP`, `NIM_RPM_MIN`, `NIM_RPM_HOLD_INITIAL`, `NIM_RPM_HOLD_MAX`
+- **Simplified config**: `NIM_RPM_RESET` (default: 5) - number of successful requests before auto-restore
+- **Reset tag** - `<nimrpm:reset>` now only clears reactive block (retry-after), not local RPM state
+
+### Fixed
+- Cross-model rate limit pollution - switching models after one model got 429 no longer has artificial delays
 
 ### Added
 

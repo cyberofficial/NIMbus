@@ -109,10 +109,6 @@ async def lifespan(app: FastAPI):
         rate_window=settings.provider_rate_window,
         max_concurrency=settings.provider_max_concurrency,
         worker_limit=settings.request_queue_max_concurrent,
-        rpm_drop=settings.nim_rpm_drop,
-        rpm_min=settings.nim_rpm_min,
-        hold_initial=settings.nim_rpm_hold_initial,
-        hold_max=settings.nim_rpm_hold_max,
         rpm_reset=settings.nim_rpm_reset,
     )
     logger.debug("GlobalRateLimiter initialized with settings")

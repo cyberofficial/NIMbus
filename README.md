@@ -166,11 +166,7 @@ Claude Code sends requests with model identifiers like `claude-sonnet-4-6`, `cla
 | `PROVIDER_RATE_WINDOW` | Rate window in seconds | `60` |
 | `PROVIDER_MAX_CONCURRENCY` | Max concurrent streams | `5` |
 | `RESOURCE_EXHAUSTED_RETRIES` | Max retries for ResourceExhausted (worker limit) errors (0 = endless) | `10` |
-| `NIM_RPM_INITIAL` | Starting requests per minute (adaptive rate limiting) | `40` |
-| `NIM_RPM_DROP` | RPM reduction per 429 hit | `10` |
-| `NIM_RPM_MIN` | Floor RPM before hold delays | `20` |
-| `NIM_RPM_HOLD_INITIAL` | First hold delay in seconds | `5` |
-| `NIM_RPM_HOLD_MAX` | Maximum hold delay in seconds | `10` |
+| `NIM_RPM_RESET` | Auto-restore after N successful requests without 429 (0=disabled) | `5` |
 | `PROVIDER_MAX_WAIT_TIME` | Buffer mode max wait (s) | `30` |
 | `PROVIDER_RETRY_ON_TRUNCATION` | Buffer mode retry count | `3` |
 | `PROVIDER_RETRY_DELAY` | Buffer mode retry base delay (s) | `1.0` |
@@ -193,17 +189,15 @@ Each server run creates a new timestamped log file in the format `server.YYYY-MM
 
 ### Adaptive Rate Limiting & Reset Tag
 
-NIMbus implements adaptive rate limiting that automatically backs off when NVIDIA returns 429 errors. Configuration:
+NIMbus implements adaptive rate limiting that uses NVIDIA's response headers. On 429, it applies reactive blocking using the `retry-after` header. Proactive throttling uses `x-ratelimit-limit` from server responses. Configuration:
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `NIM_RPM_INITIAL` | Starting requests per minute | `40` |
-| `NIM_RPM_DROP` | RPM reduction per 429 hit | `10` |
-| `NIM_RPM_MIN` | Floor RPM before hold delays | `20` |
-| `NIM_RPM_HOLD_INITIAL` | First hold delay in seconds | `5` |
-| `NIM_RPM_HOLD_MAX` | Maximum hold delay in seconds | `10` |
+| `PROVIDER_RATE_LIMIT` | Fallback requests per minute (if no server header) | `40` |
+| `PROVIDER_RATE_WINDOW` | Rate window in seconds | `60` |
+| `NIM_RPM_RESET` | Auto-restore after N successful requests without 429 (0=disabled) | `5` |
 
-**Reset Tag:** Include `<nimrpm:reset>` in any chat message (must be the **entire** message content, optional surrounding whitespace allowed) to reset adaptive backoff state — restores initial RPM and clears hold delays. Useful after changing models or when rate limits recover.
+**Reset Tag:** Include `<nimrpm:reset>` in any chat message (must be the **entire** message content, optional surrounding whitespace allowed) to clear reactive block immediately. Useful after changing models or when rate limits recover.
 
 ### Discord Bot (Optional)
 
@@ -445,7 +439,7 @@ A short-name (e.g. `deepseek-v4-pro`) is resolved against NVIDIA's live catalog;
 
 | Tag | Effect |
 | --- | --- |
-| `<nimrpm:reset>` | Reset adaptive rate limit backoff (restore RPM, clear hold delays) |
+| `<nimrpm:reset>` | Clear reactive rate limit block immediately (clears retry-after block) |
 | `<nimhelp>` | Show list of all available inline commands |
 | `<nimeffort:level>` | Set reasoning effort: `low`, `medium`, `high`, `xhigh`, `max`, `ultracode`, or int (`-1` to `1000000`) |
 | `<nimeffort>`         | Show current reasoning effort level for this session |
@@ -468,7 +462,7 @@ In any Claude Code message include one of these tags (the proxy strips it before
 
 | Tag | Effect |
 | --- | --- |
-| `<nimrpm:reset>` | Reset adaptive rate limit backoff (restore RPM, clear hold delays) |
+| `<nimrpm:reset>` | Clear reactive rate limit block immediately (clears retry-after block) |
 | `<nimhelp>` | Show list of all available inline commands |
 | `<nimeffort:level>` | Set reasoning effort: `low`, `medium`, `high`, `xhigh`, `max`, `ultracode`, or int (`-1` to `1000000`) |
 | `<nimeffort>`         | Show current reasoning effort level for this session |

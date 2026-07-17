@@ -35,11 +35,7 @@ class ProviderConfig(BaseModel):
     request_queue_timeout: float = 300.0
     request_queue_num_workers: int = 4
     # Adaptive rate limiting
-    rpm_drop: int = 10
-    rpm_min: int = 20
-    hold_initial: float = 5.0
-    hold_max: float = 10.0
-    rpm_reset: float = 300.0
+    rpm_reset: int = 5
 
 
 class BaseProvider(ABC):

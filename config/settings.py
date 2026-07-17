@@ -81,14 +81,9 @@ class Settings(BaseSettings):
     )
 
     # ==================== Adaptive Rate Limiting ====================
-    nim_rpm_initial: int = Field(default=40, validation_alias="NIM_RPM_INITIAL")
-    nim_rpm_drop: int = Field(default=10, validation_alias="NIM_RPM_DROP")
-    nim_rpm_min: int = Field(default=20, validation_alias="NIM_RPM_MIN")
-    nim_rpm_hold_initial: float = Field(default=5.0, validation_alias="NIM_RPM_HOLD_INITIAL")
-    nim_rpm_hold_max: float = Field(default=10.0, validation_alias="NIM_RPM_HOLD_MAX")
-    # Auto-restore adaptive rate limit after N seconds without 429
-    # 0 = never auto-restore (manual <nimrpm:reset> only). Default 300s (5 min).
-    nim_rpm_reset: int = Field(default=300, ge=0, validation_alias="NIM_RPM_RESET")
+    # Auto-restore adaptive rate limit after N successful requests without 429
+    # 0 = never auto-restore (manual <nimrpm:reset> only). Default 5 requests.
+    nim_rpm_reset: int = Field(default=5, ge=0, validation_alias="NIM_RPM_RESET")
 
     # ==================== Server Type ====================
     server_type: str = Field(default="stream", validation_alias="SERVER_TYPE")
@@ -125,12 +120,12 @@ class Settings(BaseSettings):
     # ==================== Optimizations ====================
     # These speed up Claude Code by mocking/skipping unnecessary requests
     # NOTE: Suggestion mode skip and recap skip are currently disabled pending better detection logic
-    fast_prefix_detection: bool = True
-    enable_network_probe_mock: bool = True
-    enable_title_generation_skip: bool = True
-    enable_suggestion_mode_skip: bool = False  # DISABLED: Too prone to false positives
-    enable_filepath_extraction_mock: bool = True
-    enable_recap_skip: bool = False  # DISABLED: Blocks legitimate recap requests
+    fast_prefix_detection: bool = Field(default=True, validation_alias="FAST_PREFIX_DETECTION")
+    enable_network_probe_mock: bool = Field(default=True, validation_alias="ENABLE_NETWORK_PROBE_MOCK")
+    enable_title_generation_skip: bool = Field(default=True, validation_alias="ENABLE_TITLE_GENERATION_SKIP")
+    enable_suggestion_mode_skip: bool = Field(default=False, validation_alias="ENABLE_SUGGESTION_MODE_SKIP")  # DISABLED: Too prone to false positives
+    enable_filepath_extraction_mock: bool = Field(default=True, validation_alias="ENABLE_FILEPATH_EXTRACTION_MOCK")
+    enable_recap_skip: bool = Field(default=False, validation_alias="ENABLE_RECAP_SKIP")  # DISABLED: Blocks legitimate recap requests
 
     # ==================== Model Swapper ====================
     swapper_enabled: bool = Field(default=False, validation_alias="SWAPPER_ENABLED")
@@ -686,8 +681,6 @@ class Settings(BaseSettings):
         # Fields that should NOT have env aliases (constants, internal fields)
         no_alias = {
             "host", "port", "log_file", "proxy_api_key",  # server config
-            "fast_prefix_detection", "enable_network_probe_mock", "enable_title_generation_skip",
-            "enable_suggestion_mode_skip", "enable_filepath_extraction_mock", "enable_recap_skip",
             "swapper_enabled", "swapper_test_prompt", "swapper_test_timeout",
             "web_search_fetch_timeout", "mcp_cache_ttl",
             "discord_bot_token", "discord_guild_id", "discord_control_channel_id",

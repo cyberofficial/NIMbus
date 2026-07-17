@@ -339,7 +339,8 @@ async def _execute_with_retry(
     tag: str,
     is_retryable_fn: Callable[[Exception], bool],
     is_resource_exhausted_fn: Callable[[Exception], bool],
-    on_rate_limit_hit: Callable[[], None],
+    on_rate_limited: Callable[[], None],
+    on_success: Callable[[], None],
     should_fallback_system_role_fn: Callable[[Exception], tuple[bool, dict | None]] | None = None,
     should_fallback_thinking_fn: Callable[[Exception], tuple[bool, dict | None]] | None = None,
     rebuild_request_fn: Callable[[], dict] | None = None,
@@ -357,7 +358,8 @@ async def _execute_with_retry(
         tag: Logging tag (e.g., "NVIDIA")
         is_retryable_fn: Callable to determine if error is retryable
         is_resource_exhausted_fn: Callable to detect ResourceExhausted errors
-        on_rate_limit_hit: Callback when 429 hit (for adaptive backoff)
+        on_rate_limited: Callback when 429 hit
+        on_success: Callback after successful request (no 429)
         should_fallback_system_role_fn: Optional callable to detect system role errors
             Returns (should_retry, new_body) where new_body is the modified request body
         should_fallback_thinking_fn: Optional callable to detect thinking param errors
@@ -389,12 +391,17 @@ async def _execute_with_retry(
 
             # Execute the coroutine
             result = await coro_factory()
+            # Track success for auto-restore
+            try:
+                on_success()
+            except (AttributeError, TypeError):
+                pass  # on_success may not be provided
             return result
 
         except RateLimitError as e:
-            # RateLimitError (429) - trigger adaptive backoff and retry
+            # RateLimitError (429) - track rate limit hit
             max_retries_effective = max_retries
-            on_rate_limit_hit()
+            on_rate_limited()
             detail = _format_error_detail(e)
 
             if max_retries > 0 and attempt >= max_retries:
@@ -618,10 +625,6 @@ class NvidiaNimProvider(BaseProvider):
             rate_window=config.rate_window,
             max_concurrency=config.max_concurrency,
             worker_limit=config.request_queue_max_concurrent,
-            rpm_drop=config.rpm_drop,
-            rpm_min=config.rpm_min,
-            hold_initial=config.hold_initial,
-            hold_max=config.hold_max,
             rpm_reset=config.rpm_reset,
         )
 
@@ -802,15 +805,19 @@ class NvidiaNimProvider(BaseProvider):
                 # inside a queue worker (which holds the queue's worker semaphore)
                 if use_rate_limiter_concurrency:
                     async with self._global_rate_limiter.concurrency_slot():
-                        return await self._do_buffered_request(body, request, input_tokens, request_id, tag=tag, attempt=attempt, req_tag=req_tag)
+                        result = await self._do_buffered_request(body, request, input_tokens, request_id, tag=tag, attempt=attempt, req_tag=req_tag)
+                        self._global_rate_limiter.on_success()
+                        return result
 
                 # Queue already holds worker slot - just execute
-                return await self._do_buffered_request(body, request, input_tokens, request_id, tag=tag, attempt=attempt, req_tag=req_tag)
+                result = await self._do_buffered_request(body, request, input_tokens, request_id, tag=tag, attempt=attempt, req_tag=req_tag)
+                self._global_rate_limiter.on_success()
+                return result
 
             except RateLimitError as e:
-                # RateLimitError (429) – trigger adaptive backoff and retry
+                # RateLimitError (429) – track rate limit hit
                 last_error = e
-                self._global_rate_limiter.on_rate_limit_hit()
+                self._global_rate_limiter.on_rate_limited()
                 detail = _format_error_detail(e)
                 exhaustion_msg = (
                     f"after {attempt + 1} attempts"
