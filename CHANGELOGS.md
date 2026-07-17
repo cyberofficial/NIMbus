@@ -78,6 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Minimax Effort Mapping** - Efforts now map directly to `thinking_mode` values (`disabled`/`adaptive`/`enabled`) instead of budget numbers.
 - **Streaming Idle Timeout** - Disabled idle read timeout (set to `None`) to prevent timeout errors on sporadic chunk arrival.
 - **Inline Command False Positives** - Detection now checks only last content block, enabling inline commands with Claude Code's concatenated format (system reminder + user command blocks).
+- **Tiktoken Special Token Crash** - Added `_safe_encode()` helper in `providers/sse_builder.py` that catches `ValueError` from disallowed special tokens (e.g., `<|endoftext|>` from Nemotron models) and retries with `disallowed_special=()` to encode them as regular text. Prevents crash in `estimate_output_tokens()` during streaming.
 
 ---
 
@@ -93,6 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `providers/provider.py` - `SHOW_NIM_REPLY` live logging; Nemotron thinking errors; streaming timeout; Discord log cleanup
 - `providers/base.py` - Adaptive rate limit fields; `SHOW_NIM_REPLY` in config
 - `providers/rate_limit.py` - `rpm_reset`, `_last_429_time`, auto-restore; `_rate_limit` property (test compat)
+- `providers/sse_builder.py` - `_safe_encode()` helper for special tokens; `estimate_output_tokens()` uses safe encoding
 - `providers/text.py` - `extract_last_text_content()` for multi-block detection
 - `config/settings.py` - `nim_rpm_reset`, `SHOW_NIM_REPLY`, `ReasoningConfig` + `thinking_style`, glob matching, Discord web search, wizard additions
 - `config/nim.py` - `-1` budget validator; reasoning effort validation

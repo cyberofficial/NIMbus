@@ -15,6 +15,22 @@ except Exception:
     ENCODER = None
 
 
+def _safe_encode(text: str) -> int:
+    """Safely encode text, handling special tokens that may appear in model output.
+
+    Some models like Nemotron output special tokens (e.g., <|endoftext|>) in their
+    response content. This helper catches the ValueError and retries with
+    disallowed_special=() to encode them as regular text.
+    """
+    if ENCODER is None:
+        return 0
+    try:
+        return len(ENCODER.encode(text))
+    except ValueError:
+        # Model output contains special tokens - encode as regular text
+        return len(ENCODER.encode(text, disallowed_special=()))
+
+
 # Map OpenAI finish_reason to Anthropic stop_reason
 STOP_REASON_MAP = {
     "stop": "end_turn",
@@ -370,15 +386,15 @@ class SSEBuilder:
         accumulated_text = self.accumulated_text
         accumulated_reasoning = self.accumulated_reasoning
         if ENCODER:
-            text_tokens = len(ENCODER.encode(accumulated_text))
-            reasoning_tokens = len(ENCODER.encode(accumulated_reasoning))
+            text_tokens = _safe_encode(accumulated_text)
+            reasoning_tokens = _safe_encode(accumulated_reasoning)
             # Tool calls are harder to tokenize exactly without reconstruction, but we can approximate
             # by tokenizing the json dumps of tool contents
             tool_tokens = 0
             started_tool_count = 0
             for state in self.blocks.tool_states.values():
-                tool_tokens += len(ENCODER.encode(state.name))
-                tool_tokens += len(ENCODER.encode("".join(state.contents)))
+                tool_tokens += _safe_encode(state.name)
+                tool_tokens += _safe_encode("".join(state.contents))
                 tool_tokens += 15  # Control tokens overhead per tool
                 if state.started:
                     started_tool_count += 1
