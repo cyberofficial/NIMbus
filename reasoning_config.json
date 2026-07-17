@@ -72,6 +72,18 @@
         "max:enabled",
         "ultracode:enabled"
       ]
+    },
+    "poolside/laguna-xs-2.1": {
+      "supports_thinking": true,
+      "thinking_style": "default",
+      "efforts": [
+        "low:low:2048",
+        "medium:medium:8192",
+        "high:high:16384",
+        "xhigh:max:32768",
+        "max:max:32768",
+        "ultracode:max:32768"
+      ]
     }
   },
   "defaults": {

@@ -155,14 +155,32 @@ def set_thinking_budget_override(model: str, budget: int) -> None:
         _thinking_budget_override[model] = max(1024, budget)  # floor at 1k
 
 
+_thinking_effort_unsupported_cache: set[str] = set()
+"""Runtime cache of models that accept enable_thinking but reject *_effort flags.
+Populated on first 'Unsupported parameter: *_effort' error; future buildings drop the flags."""
+
+
+def _model_rejects_effort_flags(model: str) -> bool:
+    """Check if model is known to reject *_effort flags (but may support enable_thinking)."""
+    return model in _thinking_effort_unsupported_cache
+
+
+def mark_effort_flags_unsupported(model: str) -> None:
+    """Mark a model as rejecting *_effort flags."""
+    if model:
+        _thinking_effort_unsupported_cache.add(model)
+
+
 def clear_thinking_caches(model: str | None = None) -> None:
     """Clear thinking-related caches for a specific model or all models."""
     if model:
         _thinking_unsupported_cache.discard(model)
         _thinking_budget_override.pop(model, None)
+        _thinking_effort_unsupported_cache.discard(model)
     else:
         _thinking_unsupported_cache.clear()
         _thinking_budget_override.clear()
+        _thinking_effort_unsupported_cache.clear()
 
 
 def _has_thinking_params(body: dict) -> bool:
@@ -210,6 +228,11 @@ def _is_thinking_param_error(e: Exception) -> tuple[bool, str | None, str | None
                 for param in thinking_params:
                     if param in msg:
                         return True, "unsupported", param
+            # Effort flags: model rejects *_effort but may still accept enable_thinking
+            effort_params = {"low_effort", "medium_effort", "high_effort"}
+            for param in effort_params:
+                if param in msg:
+                    return True, "effort_unsupported", param
             # Check for budget exceeded
             if "reasoning_budget" in msg and "exceed" in msg.lower():
                 # Try to extract the max allowed budget from error
@@ -237,6 +260,10 @@ def _is_thinking_param_error(e: Exception) -> tuple[bool, str | None, str | None
                 for param in thinking_params:
                     if param in msg:
                         return True, "unsupported", param
+            effort_params = {"low_effort", "medium_effort", "high_effort"}
+            for param in effort_params:
+                if param in msg:
+                    return True, "effort_unsupported", param
             if "reasoning_budget" in msg and "exceed" in msg.lower():
                 import re
                 match = re.search(r"maximum\s+(?:allowed\s+)?(\d+)", msg, re.IGNORECASE)
@@ -482,6 +509,30 @@ def _rebuild_without_thinking(body: dict) -> dict:
     return new_body
 
 
+def _rebuild_without_effort_flags(body: dict) -> dict:
+    """Clone body, removing only *_effort flags from extra_body.chat_template_kwargs.
+
+    Keeps enable_thinking (and any other chat_template_kwargs keys). For models
+    that accept enable_thinking but reject low/medium/high_effort flags.
+    """
+    new_body = dict(body)
+    extra_body = dict(new_body.get("extra_body", {}))
+    ctk = extra_body.get("chat_template_kwargs")
+    if isinstance(ctk, dict):
+        ctk = dict(ctk)
+        for k in ("low_effort", "medium_effort", "high_effort"):
+            ctk.pop(k, None)
+        if ctk:
+            extra_body["chat_template_kwargs"] = ctk
+        else:
+            extra_body.pop("chat_template_kwargs", None)
+        if extra_body:
+            new_body["extra_body"] = extra_body
+        else:
+            new_body.pop("extra_body", None)
+    return new_body
+
+
 def _rebuild_with_reduced_budget(body: dict, new_budget: int) -> dict:
     """Clone request body, updating reasoning_budget in extra_body to a reduced value.
 
@@ -666,6 +717,8 @@ class NvidiaNimProvider(BaseProvider):
             body = _rebuild_with_system_as_user(body)
         if _model_rejects_thinking(model):
             body = _rebuild_without_thinking(body)
+        if _model_rejects_effort_flags(model):
+            body = _rebuild_without_effort_flags(body)
         return body
 
     async def buffered_request(
@@ -919,6 +972,22 @@ class NvidiaNimProvider(BaseProvider):
                                     model,
                                 )
                                 body = _rebuild_without_key(body, detail)
+                                response = await self._client.chat.completions.create(
+                                    **body,
+                                    stream=False,
+                                )
+                            elif error_type == "effort_unsupported":
+                                # Model rejects *_effort but accepts enable_thinking:
+                                # drop only the effort flags and retry WITH thinking
+                                logger.warning(
+                                    "{}_BUFFERED: Effort flag {} rejected by model ({}) - "
+                                    "retrying with enable_thinking only",
+                                    tag,
+                                    detail,
+                                    model,
+                                )
+                                mark_effort_flags_unsupported(model)
+                                body = _rebuild_without_effort_flags(body)
                                 response = await self._client.chat.completions.create(
                                     **body,
                                     stream=False,
@@ -1418,6 +1487,25 @@ class NvidiaNimProvider(BaseProvider):
                                     use_worker_slot=False,
                                     max_retries=self._config.retry_on_truncation,
                                 )
+                            elif error_type == "effort_unsupported":
+                                # Model rejects *_effort but accepts enable_thinking:
+                                # drop only the effort flags and retry WITH thinking
+                                logger.warning(
+                                    "{}_STREAM: Effort flag {} rejected by model ({}) - "
+                                    "retrying with enable_thinking only",
+                                    tag,
+                                    detail,
+                                    model,
+                                )
+                                mark_effort_flags_unsupported(model)
+                                body = _rebuild_without_effort_flags(body)
+                                stream = await self._global_rate_limiter.execute_with_retry(
+                                    self._client.chat.completions.create,
+                                    **body,
+                                    stream=True,
+                                    use_worker_slot=False,
+                                    max_retries=self._config.retry_on_truncation,
+                                )
                             else:
                                 # Generic "thinking not supported" → full fallback
                                 logger.warning(
@@ -1441,6 +1529,11 @@ class NvidiaNimProvider(BaseProvider):
                     request_id_var.reset(req_token)
 
                 try:
+                    # Buffer thinking/reply content to avoid logging tiny fragments under high throughput
+                    thinking_log_buffer = ""
+                    reply_log_buffer = ""
+                    LOG_FLUSH_SIZE = 120
+
                     async for chunk in stream:
                         if getattr(chunk, "usage", None):
                             usage_info = chunk.usage
@@ -1456,18 +1549,31 @@ class NvidiaNimProvider(BaseProvider):
                         if choice.finish_reason:
                             finish_reason = choice.finish_reason
                             logger.debug("{} finish_reason: {}", tag, finish_reason)
+                            # Flush log buffers on finish
+                            if thinking_log_buffer:
+                                self._live_nim_reply(thinking_log_buffer, kind="THINKING")
+                                thinking_log_buffer = ""
+                            if reply_log_buffer:
+                                self._live_nim_reply(reply_log_buffer, kind="REPLY")
+                                reply_log_buffer = ""
 
                         # Handle reasoning_content (OpenAI extended format)
                         reasoning = getattr(delta, "reasoning_content", None)
                         if reasoning:
-                            self._live_nim_reply(reasoning, kind="THINKING")
+                            thinking_log_buffer += reasoning
+                            if len(thinking_log_buffer) >= LOG_FLUSH_SIZE:
+                                self._live_nim_reply(thinking_log_buffer, kind="THINKING")
+                                thinking_log_buffer = ""
                             for event in sse.ensure_thinking_block():
                                 yield event
                             yield sse.emit_thinking_delta(reasoning)
 
                         # Handle text content
                         if delta.content:
-                            self._live_nim_reply(delta.content, kind="REPLY")
+                            reply_log_buffer += delta.content
+                            if len(reply_log_buffer) >= LOG_FLUSH_SIZE:
+                                self._live_nim_reply(reply_log_buffer, kind="REPLY")
+                                reply_log_buffer = ""
                             for part in think_parser.feed(delta.content):
                                 if part.type == ContentType.THINKING:
                                     for event in sse.ensure_thinking_block():
@@ -1524,6 +1630,14 @@ class NvidiaNimProvider(BaseProvider):
                                 }
                                 for event in self._process_tool_call(tc_info, sse):
                                     yield event
+
+                    # Flush any remaining log buffers at stream end
+                    if thinking_log_buffer:
+                        self._live_nim_reply(thinking_log_buffer, kind="THINKING")
+                        thinking_log_buffer = ""
+                    if reply_log_buffer:
+                        self._live_nim_reply(reply_log_buffer, kind="REPLY")
+                        reply_log_buffer = ""
 
                 except APIStatusError as e:
                     # Check for system role error during streaming (e.g., "System message must be at the beginning")
