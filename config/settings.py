@@ -86,6 +86,9 @@ class Settings(BaseSettings):
     nim_rpm_min: int = Field(default=20, validation_alias="NIM_RPM_MIN")
     nim_rpm_hold_initial: float = Field(default=5.0, validation_alias="NIM_RPM_HOLD_INITIAL")
     nim_rpm_hold_max: float = Field(default=10.0, validation_alias="NIM_RPM_HOLD_MAX")
+    # Auto-restore adaptive rate limit after N seconds without 429
+    # 0 = never auto-restore (manual <nimrpm:reset> only). Default 300s (5 min).
+    nim_rpm_reset: int = Field(default=300, ge=0, validation_alias="NIM_RPM_RESET")
 
     # ==================== Server Type ====================
     server_type: str = Field(default="stream", validation_alias="SERVER_TYPE")
@@ -793,8 +796,10 @@ class ReasoningConfig:
     """Model-specific reasoning configuration."""
     max_reasoning_budget: int = 16384
     supports_thinking: bool = False
+    thinking_style: str = "default"
     effort_mapping: dict[str, str] = field(default_factory=lambda: {"low": "low", "medium": "medium", "high": "high"})
     budget_per_effort: dict[str, int] = field(default_factory=lambda: {"high": 16384, "medium": 8192, "low": 2048})
+    thinking_style: str = "default"  # "nemotron", "deepseek", "minimax", "default"
 
 
 _REASONING_CONFIG_CACHE: dict[str, ReasoningConfig] = {}
@@ -818,8 +823,8 @@ def _load_reasoning_config() -> dict:
     return _REASONING_CONFIG_RAW
 
 
-def _match_model_config(model: str, config: dict) -> tuple[int, bool, dict[str, str], dict[str, int]]:
-    """Match model against config patterns (supports glob), return (max_budget, supports_thinking, effort_mapping, budget_per_effort)."""
+def _match_model_config(model: str, config: dict) -> tuple[int, bool, dict[str, str], dict[str, int], str]:
+    """Match model against config patterns (supports glob), return (max_budget, supports_thinking, effort_mapping, budget_per_effort, thinking_style)."""
     # Check exact match first
     if model in config.get("models", {}):
         m = config["models"][model]
@@ -832,14 +837,21 @@ def _match_model_config(model: str, config: dict) -> tuple[int, bool, dict[str, 
                 effort_mapping[effort_level] = mapped
                 budget_per_effort[effort_level] = int(budget)
             elif len(parts) == 2:
-                effort_level, budget = parts
-                effort_mapping[effort_level] = effort_level
-                budget_per_effort[effort_level] = int(budget)
+                effort_level, second = parts
+                # Second part could be budget (number) or mapped effort name (string)
+                try:
+                    budget_per_effort[effort_level] = int(second)
+                    effort_mapping[effort_level] = effort_level
+                except ValueError:
+                    # Not a number - it's a mapped effort name
+                    effort_mapping[effort_level] = second
+                    # No budget specified, use default later
         return (
             m.get("max_budget", 16384),
             m.get("supports_thinking", False),
             effort_mapping,
-            budget_per_effort
+            budget_per_effort,
+            m.get("thinking_style", "default")
         )
 
     # Check glob patterns
@@ -855,14 +867,18 @@ def _match_model_config(model: str, config: dict) -> tuple[int, bool, dict[str, 
                         effort_mapping[effort_level] = mapped
                         budget_per_effort[effort_level] = int(budget)
                     elif len(parts) == 2:
-                        effort_level, budget = parts
-                        effort_mapping[effort_level] = effort_level
-                        budget_per_effort[effort_level] = int(budget)
+                        effort_level, second = parts
+                        try:
+                            budget_per_effort[effort_level] = int(second)
+                            effort_mapping[effort_level] = effort_level
+                        except ValueError:
+                            effort_mapping[effort_level] = second
                 return (
                     m.get("max_budget", 16384),
                     m.get("supports_thinking", False),
                     effort_mapping,
-                    budget_per_effort
+                    budget_per_effort,
+                    m.get("thinking_style", "default")
                 )
 
     # Fallback to defaults
@@ -876,14 +892,18 @@ def _match_model_config(model: str, config: dict) -> tuple[int, bool, dict[str, 
             effort_mapping[effort_level] = mapped
             budget_per_effort[effort_level] = int(budget)
         elif len(parts) == 2:
-            effort_level, budget = parts
-            effort_mapping[effort_level] = effort_level
-            budget_per_effort[effort_level] = int(budget)
+            effort_level, second = parts
+            try:
+                budget_per_effort[effort_level] = int(second)
+                effort_mapping[effort_level] = effort_level
+            except ValueError:
+                effort_mapping[effort_level] = second
     return (
         defaults.get("max_budget", 16384),
         defaults.get("supports_thinking", False),
         effort_mapping,
-        budget_per_effort
+        budget_per_effort,
+        defaults.get("thinking_style", "default")
     )
 
 
@@ -897,19 +917,20 @@ def get_reasoning_config(model: str) -> ReasoningConfig:
         model: Full NIM model ID (e.g., "nvidia/nemotron-3-ultra-550b-a55b")
 
     Returns:
-        ReasoningConfig with max_reasoning_budget, supports_thinking, effort_mapping
+        ReasoningConfig with max_reasoning_budget, supports_thinking, effort_mapping, thinking_style
     """
     if model in _REASONING_CONFIG_CACHE:
         return _REASONING_CONFIG_CACHE[model]
 
     config = _load_reasoning_config()
-    max_budget, supports_thinking, effort_mapping, budget_per_effort = _match_model_config(model, config)
+    max_budget, supports_thinking, effort_mapping, budget_per_effort, thinking_style = _match_model_config(model, config)
 
     result = ReasoningConfig(
         max_reasoning_budget=max_budget,
         supports_thinking=supports_thinking,
         effort_mapping=effort_mapping,
         budget_per_effort=budget_per_effort,
+        thinking_style=thinking_style,
     )
     _REASONING_CONFIG_CACHE[model] = result
     return result

@@ -6,72 +6,108 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
-
-## v2.0.11 - Date: 2026-07-15
+## v2.0.11 - Date: 2026-07-17
 
 ### Added
-- **Nemotron 3 Thinking/Reasoning Support** - Full support for NVIDIA Nemotron 3 Ultra (500B) and Super (120B) thinking mode via `reasoning_budget` and `chat_template_kwargs` parameters
-  - `reasoning_budget`: Max tokens for model thinking (32768 max for both models)
-  - `chat_template_kwargs`: `enable_thinking`, `low_effort`, `medium_effort`, `high_effort` flags
-  - Per-effort budget mapping: max/high/xhigh → 32768, medium → 16384, low → 2048
-  - Model-specific effort mapping: 500B low/medium → medium_effort (no low_effort support), 120B medium → high_effort (no medium_effort support)
-- **Reasoning Effort Mapping Config** - New `reasoning_config.json` consolidates all reasoning configuration (replaces YAML budgets, effort presets, and user mappings). Includes `max_budget`, `effort_mapping`, and `budget_per_effort` with glob pattern support (e.g., `deepseek-*`).
-- **Per-Session Reasoning Effort Tracking** - Captures `x-claude-code-session-id` header and tracks reasoning effort per session. Sessions can override global defaults via `<nimeffort:level>` inline tag.
-- **`<nimeffort:level>` Inline Command** - Set reasoning effort at runtime with levels: low, medium, high, xhigh, max, ultracode. Stored per session via `x-claude-code-session-id`.
-- **`<nimeffort>` / `<nimeffort:status>` Status Command** - Display current reasoning effort level, mapped effort, and custom budget for the session.
-- **Custom Reasoning Budget** - `<nimeffort:NNN>` accepts integer budget values (-1 to 1,000,000). `-1` = unlimited, positive = token limit. Works alongside named effort levels.
-- **`<nimhelp>` Whitespace Fix** - Now correctly matches `<nimhelp>` with optional surrounding whitespace (consistent with other inline commands).
-- **MCP Server Browser Support** - `fetch_page` tool now supports Playwright browser for JavaScript-rendered content, SPAs, and anti-bot pages. New `MCP_BROWSER_HEADLESS` environment variable (default: `true` = HTTP only). When `false`, always uses visible browser. Tool accepts `use_browser` parameter (ignored when headless=false). Reuses DuckDuckGo search browser instance for persistent cookies/stealth.
-- **Setup Wizard Priority & Web Search Config** - Interactive wizard now prompts for Discord/API queue priority, web search max results/iterations, and browser headless mode.
 
-### Fixed
-- **Inline Command Detection** - Fixed false positives by checking only the LAST content block of user messages (where actual commands live), avoiding matches in system prompts or earlier context. Affects: `<modelswap:>`, `<nimserver:>`, `<nimrpm:reset>`, `<nimhelp>`, `<nimeffort:>`.
-- **Inline Commands in Buffered Endpoint** - `<nimhelp>`, `<nimrpm:reset>`, `<nimeffort:>` now bypass rate limiting in buffered endpoint (previously only streaming worked).
-- **Thinking Parameter Compatibility** - Models that don't support thinking/reasoning parameters (e.g., `z-ai/glm-5.2`) now automatically retry without thinking parameters on 500 errors; the model is cached as unsupported to skip thinking params on subsequent requests.
-- **Thinking Parameters Rejected** - Removed unsupported parameters (`thinking`, `reasoning_split`, `reasoning_effort`, `include_reasoning`) that caused 400 Bad Request errors. Now sends only `reasoning_budget` + `chat_template_kwargs` which NIM accepts.
-- **Failed Web Search Not Disabling Tool** - Discord bot no longer treats "No results found" as a failure. Only actual exceptions increment the failure counter. `web_search` tool stays available even after queries that return 0 results.
-- **Empty Bot Replies After Tool Calls** - Increased final buffered fallback retries from 3 to 5 with explicit "no tools" instruction. If all retries fail but tool results exist, synthesizes response from tool results instead of returning empty.
-- **Message Splitting at Mid-URL/Lines** - Discord bot now prefers line boundaries when splitting long messages (prevents cutting URLs mid-sentence).
-- **Streaming Idle Timeout** - Disabled idle read timeout for streaming (`None`) to prevent timeout errors when chunks arrive sporadically.
-- **Buffered Endpoint Mock Serialization** - Fixed JSON serialization of mock responses (Pydantic `.model_dump()`).
-- **Status Display Bug** - `<nimeffort>` now correctly shows stored effort level, mapped effort, and custom budget instead of "No effort level set".
+#### Inline Commands & Reasoning Control
+- **`<nimhelp>` Inline Command** - Send exactly `<nimhelp>` for a formatted list of all inline commands. Works in both streaming/buffered endpoints; not gated by `SWAPPER_ENABLED`.
+- **`<nimeffort:level>` Tag Handler** - Override reasoning effort per-message: `low`, `medium`, `high`, `xhigh`, `max`, `ultracode`. Stores per session (`x-claude-code-session-id`), returns mock response (no NVIDIA API call). Whitespace handling matches `<nimrpm:reset>`.
+- **`<nimeffort>` / `<nimeffort:status>`** - Show current session's stored effort level, mapped effort, and custom budget.
+- **Custom Reasoning Budget** - `<nimeffort:NNN>` accepts `-1` to `1,000,000` (`-1` = unlimited). New `api/effort_store.py` tracks per-session effort + budget separately. Priority: exact tag > request > session > config.
+- **`-1` Budget = Unlimited** - Validator accepts `-1`, rejects `< -1`. Passed through to NVIDIA API per spec (disables reasoning token limit).
+- **Ultracode Budget** - `reasoning_config.json` sets `ultracode` budget = `-1` (unlimited) for all Nemotron models.
+
+#### Discord Bot Enhancements
+- **Web Search Persistence** - Tool results saved in conversation history (`tool_results` field). New `get_history_with_tool_results()` injects prior results as context. Config: `DISCORD_WEB_SEARCH_MAX_RESULT_SIZE` (5000), `DISCORD_WEB_SEARCH_INCLUDE_IN_HISTORY` (true).
+- **Playwright Browser Fetch** - When `DISCORD_BROWSER_HEADLESS=false`, forces browser for ALL fetches (30s timeout vs 10s HTTP). Reuses DuckDuckGo browser/context (cookies, stealth).
+- **Embedded JSON Tool Call Parsing** - Detects `{"tool": "search", "query": "..."}` in text streams (Nemotron 3 Ultra) → converts to `tool_use` events.
+- **Empty Reply Fix** - Final fallback retries 3× when model returns `tool_use` instead of text; adds "provide text answer only" prompt each retry; rejects `tool_use` in final response.
+- **Smart Message Splitting** - `_split_at_word_boundary` prefers newlines then spaces (preserves URLs); uses `DISCORD_SPLIT_THRESHOLD` (default 1900).
+- **Web Search Resilience** - "No results found" = valid result (not failure), reducing false tool removal. Buffered retries 3→5. Fallback synthesis when retries fail but tool results exist.
+
+#### MCP Server
+- **Browser Support for `fetch_page`** - New `MCP_BROWSER_HEADLESS` (default `true` = HTTP only). `use_browser` param forces Playwright when headless=true. Reuses DuckDuckGo browser instance. Logs fetch mode.
+
+#### Setup Wizard & Configuration
+- **Extended Wizard Coverage** - New prompts: request queue priorities (Discord HIGH / API NORMAL), Fable model override (`FABLE_OVERRIDE`), browser headless modes (MCP/Discord), web search debug logging (`WEB_SEARCH_DEBUG`), Discord web search settings.
+- **Model-Specific Thinking Styles** - New `thinking_style` in `reasoning_config.json`:
+  - **Nemotron**: `chat_template_kwargs.enable_thinking` + `reasoning_budget`
+  - **DeepSeek**: `chat_template_kwargs.enable_thinking` (boolean)
+  - **Minimax**: `chat_template_kwargs.thinking_mode` = `enabled`/`adaptive`/`disabled`
+  - **Default**: effort flags + `reasoning_budget` (backward compat)
+  - Models NOT in config (or `supports_thinking: false`) send NO thinking params - NVIDIA defaults apply.
+- **`nim:` Prefix Model Lookup** - `nim:minimax-m3` bypasses tier mapping, resolves via NVIDIA catalog.
+- **`SHOW_NIM_REPLY` Toggle** - Echo raw NVIDIA reply live to console (timestamped; `THINKING` = reasoning_content, `REPLY` = generated text). Both stream/buffer modes.
+- **Discord Web Search Result Size** - `DISCORD_WEB_SEARCH_MAX_RESULT_SIZE` (5000), `DISCORD_WEB_SEARCH_INCLUDE_IN_HISTORY` (true).
+
+#### Nemotron Thinking Support
+- `reasoning_budget` - Max thinking tokens (model caps, max 32768)
+- `chat_template_kwargs` - `enable_thinking` + `low_effort`/`medium_effort`/`high_effort` flags
+- Effort→Budget: max/high/xhigh → max, medium → half, low → 2048
+- Effort→Flags: xhigh/high/max → top, medium → medium, low → low
+- Verified: Nemotron 3 Ultra (500B) & Nemotron 3 Super (120B) return reasoning content
+
+#### Per-Session Reasoning Effort Tracking
+- Captures `x-claude-code-session-id`; in-memory per-session effort cache
+- Caches explicit request efforts; helper to clear session effort
+- Added "ultracode" level + Nemotron mappings/budgets
+
+#### Rate Limiter Auto-Restore
+- New `NIM_RPM_RESET` (default `300s`, `0` = disabled). After last 429, if no new 429 for duration, auto-restores initial RPM + clears hold delay. Complements manual `<nimrpm:reset>`.
+
+#### THINKING Log Line
+- New `INFO` log: `THINKING: <model> using style=<style> effort=<raw> -> <mapped> [budget=<N>]`. Logs when thinking disabled or model not in config.
+
+---
 
 ### Changed
-- **Reasoning Config Consolidation** - Replaced `reasoning_budgets.yaml`, `reasoning_effort_presets.json`, `user_reasoning_effort_mapping.json` with single `reasoning_config.json`. Settings loaded via `get_reasoning_config()` with glob matching.
-- **Smarter Thinking Error Handling** - Distinguishes error types on 400 rejection:
-  - `budget_exceeded` → reduces budget dynamically and retries WITH thinking
-  - `invalid_param` → removes only the problematic param and retries WITH thinking
-  - `unsupported` → full fallback (removes all thinking params, current behavior)
-- **SSE Dispatch Consolidation** - Four copy-pasted SSE streaming blocks consolidated into single `_sse_response()` helper (~30 lines removed).
-- **Logging Cleanup** - Removed emoji print statement from `providers/provider.py`.
-- **Buffered Endpoint Rate Limit Bypass** - All inline commands now bypass `wait_if_blocked()` in buffered mode.
-- **Ultracode Budget = Unlimited** - `ultracode` effort level now maps to `reasoning_budget: -1` (unlimited) for all Nemotron models in `reasoning_config.json`.
+- **Reasoning Config Consolidation** - Single `reasoning_config.json` replaces 3 files (`reasoning_budgets.yaml`, `reasoning_effort_presets.json`, `user_reasoning_effort_mapping.json`). Includes `thinking_style`, `effort_mapping`, `budget_per_effort` with glob patterns. **Legacy files deleted**.
+- **Model Resolution for Config Lookup** - Uses resolved NIM model ID (from `get_model_for_claude`) for reasoning config lookup. Fixes `nim:minimax-m3` → `minimaxai/minimax-m3`.
+- **Rate Limiter Initialization** - `GlobalRateLimiter` initialized early in FastAPI lifespan with `.env` settings before sidecars trigger singleton.
+- **Removed `NIM_ENABLE_THINKING`** - Redundant flag removed; thinking now solely controlled by `NIM_THINKING`. Simplifies `build_request_body`.
+- **Inline Command Detection (Multi-Block)** - `extract_last_text_content()` checks only last content block (user's command), avoiding false positives from system prompts/context. All 5 handlers updated. Buffered endpoint mock responses use `.model_dump()`.
+- **Buffered Endpoint Inline Commands** - `<nimhelp>` and `<nimrpm:reset>` now work in buffered endpoint, positioned BEFORE `wait_if_blocked()` to bypass rate limiting during backoff.
+- **SSE Dispatch Consolidation** - 3 copy-pasted SSE blocks → single `_sse_response()` helper. All 4 command dispatches now one-liners. Net -30 lines.
+- **Default Model** - `deepseek-ai/deepseek-v4-flash` → `nvidia/nemotron-3-super-120b-a12b` in `.env.example` and setup wizard.
 
-### Files Touched
-- `reasoning_config.json` (updated) - Consolidated reasoning configuration (max_budget, effort_mapping, budget_per_effort); ultracode budget = -1
-- `reasoning_effort_presets.json` (removed) - Legacy presets removed
-- `user_reasoning_effort_mapping.json` (removed) - Legacy user mappings removed
-- `config/nim.py` - New env vars: `NIM_REASONING_BUDGET`, `NIM_ENABLE_THINKING`, `NIM_CHAT_TEMPLATE_*_EFFORT`, `NIMEFFORT_LEVEL_MAPPING`
-- `config/settings.py` - `get_reasoning_config()` with glob matching, `budget_per_effort`, session_id propagation
-- `providers/request.py` - Clean `extra_body` format (only `reasoning_budget` + `chat_template_kwargs`); session effort cache
-- `providers/provider.py` - Smart error handling with `_rebuild_with_reduced_budget()`, `_rebuild_without_key()`, `_sse_response()` helper
-- `.env.example` - New vars documented; `MCP_BROWSER_HEADLESS`, `DISCORD_BROWSER_HEADLESS`
-- `test_nim_thinking.py` (new) - Verification script for NIM thinking params
-- `api/routes.py` - Inline commands before `wait_if_blocked()`; `extract_last_text_content()` for command detection; `_sse_response()` helper; buffered endpoint `.model_dump()` serialization; `<nimeffort>` status command; custom budget support
-- `api/swapper/__init__.py` - Exports `is_nimeffort_tag`, `extract_nimeffort_tag`, `is_nimeffort_status_tag`
-- `api/swapper/parser.py` - `<nimeffort:level>` tag support with integer budget; `<nimhelp>` whitespace fix; `<nimeffort>`/`<nimeffort:status>` patterns
-- `api/effort_store.py` (new) - Per-session effort level and custom budget storage
-- `providers/text.py` - New `extract_last_text_content()` for inline command detection
-- `config/settings.py` - Browser headless config fields, `mcp_browser_headless`, `discord_browser_headless`
-- `discord_bot/bot.py` - Tool result persistence, fallback retries, smart splitting, text-stream tool parsing, duplicate inline command bypass
-- `discord_bot/conversation.py` - `tool_results` field, `get_history_with_tool_results()`, session_id tracking
-- `discord_bot/persistence.py` - Serialize/deserialize `tool_results`
-- `discord_bot/tools/web_search.py` - `use_browser` param, forced browser when headless=false
-- `mcp_server.py` - `MCP_BROWSER_HEADLESS`, `use_browser` param, `_fetch_via_playwright()`, logging
-- `providers/provider.py` - Removed emoji print, streaming idle timeout fix
-- `setup_wizard.py` - Priority settings, web search config, headless browser config
-- `api/models/anthropic.py` - Added `session_id` field to MessagesRequest
-- `api/middleware.py` - Session ID extraction for middleware
+---
+
+### Fixed
+- **Rate Limiter Defaults** - Was using hardcoded defaults (`drop=10`, `min=20`) instead of `.env` values (`NIM_RPM_DROP=2`, `NIM_RPM_MIN=2`). Now reads from settings at startup.
+- **Minimax Effort Mapping** - Efforts now map directly to `thinking_mode` values (`disabled`/`adaptive`/`enabled`) instead of budget numbers.
+- **Streaming Idle Timeout** - Disabled idle read timeout (set to `None`) to prevent timeout errors on sporadic chunk arrival.
+- **Inline Command False Positives** - Detection now checks only last content block, enabling inline commands with Claude Code's concatenated format (system reminder + user command blocks).
+
+---
+
+### Files Touched (Key Changes)
+- `api/routes.py` - Inline command handlers, `_sse_response()`, buffered commands, multi-block detection
+- `api/swapper/parser.py` - `<nimeffort:level>`, `<nimhelp>` parsers; `<nimrpm:reset>` exact-match
+- `api/effort_store.py` - **New**: Per-session effort + custom budget tracking
+- `api/dependencies.py` - `GlobalRateLimiter.get_instance()` with settings fallback; `SHOW_NIM_REPLY`
+- `api/app.py` - Early `GlobalRateLimiter` init in lifespan
+- `api/middleware.py` - Session ID capture
+- `api/models/anthropic.py` - Session ID field
+- `providers/request.py` - Thinking param rewrite (thinking_style-based); model resolution via NIM ID; `-1` budget pass-through; THINKING log; removed session cache
+- `providers/provider.py` - `SHOW_NIM_REPLY` live logging; Nemotron thinking errors; streaming timeout; Discord log cleanup
+- `providers/base.py` - Adaptive rate limit fields; `SHOW_NIM_REPLY` in config
+- `providers/rate_limit.py` - `rpm_reset`, `_last_429_time`, auto-restore; `_rate_limit` property (test compat)
+- `providers/text.py` - `extract_last_text_content()` for multi-block detection
+- `config/settings.py` - `nim_rpm_reset`, `SHOW_NIM_REPLY`, `ReasoningConfig` + `thinking_style`, glob matching, Discord web search, wizard additions
+- `config/nim.py` - `-1` budget validator; reasoning effort validation
+- `reasoning_config.json` - **New**: Consolidated config with `thinking_style` for all models; Minimax→`thinking_mode`; ultracode=-1 for Nemotron; glob patterns
+- `discord_bot/bot.py` - Web search persistence, Playwright fetch, JSON tool parsing, empty reply fix, smart splitting, resilience
+- `discord_bot/conversation.py` - `tool_results` field, `get_history_with_tool_results()`
+- `discord_bot/persistence.py` - Tool results serialization
+- `discord_bot/tools/web_search.py` - Fetch page schema, result size/history config
+- `mcp_server.py` - Browser support for `fetch_page`
+- `setup_wizard.py` - Extended config sections
+- `.env.example` - All new env var docs
+- `config/logging_config.py` - Timestamped log files per session
+- `providers/error_mapping.py` - 403 handling with NVIDIA key URL
+- `server.py` - Logging init at entry point
+- **Deleted**: `config/reasoning_budgets.yaml`, `reasoning_effort_presets.json`, `user_reasoning_effort_mapping.json`
 
 ---
 

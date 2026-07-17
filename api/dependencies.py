@@ -12,6 +12,7 @@ from providers import NVIDIA_NIM_BASE_URL, NvidiaNimProvider
 from providers.base import BaseProvider, ProviderConfig
 from providers.error_mapping import get_user_facing_error_message
 from providers.exceptions import AuthenticationError
+from providers.rate_limit import GlobalRateLimiter
 
 # Global provider instance (singleton)
 _provider: BaseProvider | None = None
@@ -32,6 +33,20 @@ def _create_provider(settings: Settings) -> BaseProvider:
             "NVIDIA_NIM_API_KEY is not set. Add it to your .env file. "
             "Get a key at https://build.nvidia.com/settings/api-keys"
         )
+
+    # Initialize global rate limiter with correct config BEFORE any request
+    # can trigger error_mapping (which would create it with defaults).
+    GlobalRateLimiter.get_instance(
+        rate_limit=settings.provider_rate_limit,
+        rate_window=settings.provider_rate_window,
+        max_concurrency=settings.provider_max_concurrency,
+        worker_limit=settings.request_queue_max_concurrent,
+        rpm_drop=settings.nim_rpm_drop,
+        rpm_min=settings.nim_rpm_min,
+        hold_initial=settings.nim_rpm_hold_initial,
+        hold_max=settings.nim_rpm_hold_max,
+        rpm_reset=settings.nim_rpm_reset,
+    )
 
     config = ProviderConfig(
         api_key=settings.api_key,
@@ -54,6 +69,12 @@ def _create_provider(settings: Settings) -> BaseProvider:
         request_queue_max_size=settings.request_queue_max_size,
         request_queue_timeout=settings.request_queue_timeout,
         request_queue_num_workers=settings.request_queue_num_workers,
+        # Adaptive rate limiting
+        rpm_drop=settings.nim_rpm_drop,
+        rpm_min=settings.nim_rpm_min,
+        hold_initial=settings.nim_rpm_hold_initial,
+        hold_max=settings.nim_rpm_hold_max,
+        rpm_reset=settings.nim_rpm_reset,
     )
     provider = NvidiaNimProvider(config, nim_settings=settings.nim)
     logger.info("Provider initialized: NVIDIA NIM")

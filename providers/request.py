@@ -74,8 +74,12 @@ def build_request_body(
     if request_extra:
         extra_body.update(request_extra)
 
-    # Determine model for reasoning config (use original_model if available)
-    model = getattr(request_data, "original_model", None) or body.get("model", "")
+    # Determine model for reasoning config - use the RESOLVED NIM model name
+    # (not the raw Claude-side name like "nim:minimax-m3" or "claude-opus-4-7").
+    # For example, "nim:minimax-m3" resolves to "minimaxai/minimax-m3" via MODEL MAPPING,
+    # and we need that resolved ID to look up the correct reasoning_config.json entry.
+    body_model = body.get("model", "")
+    model = body_model or getattr(request_data, "original_model", None) or getattr(request_data, "model", "")
 
     # Extract thinking params from Anthropic request (Claude 3.7+)
     request_effort = None
@@ -93,27 +97,25 @@ def build_request_body(
         except AttributeError:
             pass
 
-    # Get model-specific reasoning config (for max budget, effort mapping)
+    # Get model-specific reasoning config (for max budget, effort mapping, thinking style)
     reasoning_config = get_reasoning_config(model)
 
-    # Handle thinking/reasoning mode - only when NIM_THINKING is enabled
-    if nim.thinking:
-        # Exact <nimeffort:level> tag in last user message (exact match like <nimrpm:reset>)
-        last_user_msg = None
-        for msg in reversed(getattr(request_data, "messages", [])):
-            if getattr(msg, "role", None) == "user":
-                msg_text = ""
-                if isinstance(msg.content, str):
-                    msg_text = msg.content
-                elif isinstance(msg.content, list):
-                    for block in msg.content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            msg_text += block.get("text", "")
-                        elif hasattr(block, "text"):
-                            msg_text += getattr(block, "text", "")
-                if msg_text:
-                    last_user_msg = msg_text
-                    break
+    # Exact <nimeffort:level> tag in last user message (exact match like <nimrpm:reset>)
+    last_user_msg = None
+    for msg in reversed(getattr(request_data, "messages", [])):
+        if getattr(msg, "role", None) == "user":
+            msg_text = ""
+            if isinstance(msg.content, str):
+                msg_text = msg.content
+            elif isinstance(msg.content, list):
+                for block in msg.content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        msg_text += block.get("text", "")
+                    elif hasattr(block, "text"):
+                        msg_text += getattr(block, "text", "")
+            if msg_text:
+                last_user_msg = msg_text
+                break
 
     # Check for exact <nimeffort:level> tag (exact match like <nimrpm:reset>)
     exact_effort_tag = None
@@ -134,11 +136,8 @@ def build_request_body(
                 # Named level (low, medium, high, etc.)
                 exact_effort_tag = extracted
 
-    # Get model-specific reasoning config (for effort mapping)
-    reasoning_config = get_reasoning_config(model)
-
-    # Handle thinking/reasoning mode - only when NIM_THINKING is enabled
-    if nim.thinking:
+    # Handle thinking/reasoning mode - only when NIM_THINKING enabled AND model supports thinking
+    if nim.thinking and reasoning_config.supports_thinking:
         # Get session-stored named effort and custom budget
         session_effort = None
         session_custom_budget = None
@@ -152,26 +151,44 @@ def build_request_body(
 
         # Map effort: exact tag > request > session > settings > default (high)
         exact_tag_effort = exact_effort_tag if exact_effort_tag else None
-        # For effort flags, use session effort if no exact tag or request
         effective_effort = exact_tag_effort or request_effort or session_effort or nim.reasoning_effort
-
-        # Remove session cache code - no more session caching for effort
 
         # Get model-specific effort mapping
         effort_map = reasoning_config.effort_mapping if reasoning_config.effort_mapping else {}
         model_effort = effort_map.get(effective_effort, effective_effort)
 
-        # Build chat_template_kwargs using MAPPED effort
-        ctk = extra_body.setdefault("chat_template_kwargs", {})
-        ctk["enable_thinking"] = nim.chat_template_enable_thinking
+        # Apply thinking params based on thinking_style
+        thinking_style = reasoning_config.thinking_style
 
-        # Set chat_template_kwargs effort flags using mapped effort
-        if model_effort == "low":
-            ctk["low_effort"] = True
-        elif model_effort == "medium":
-            ctk["medium_effort"] = True
-        elif model_effort == "high":
-            ctk["high_effort"] = True
+        if thinking_style == "nemotron":
+            # Nemotron: chat_template_kwargs.enable_thinking + reasoning_budget
+            ctk = extra_body.setdefault("chat_template_kwargs", {})
+            ctk["enable_thinking"] = nim.chat_template_enable_thinking
+            # reasoning_budget handled below
+
+        elif thinking_style == "deepseek":
+            # DeepSeek: chat_template_kwargs.thinking (boolean)
+            ctk = extra_body.setdefault("chat_template_kwargs", {})
+            ctk["thinking"] = True  # Enable thinking when enabled globally
+
+        elif thinking_style == "minimax":
+            # MinMax: chat_template_kwargs.thinking_mode (enabled/adaptive/disabled)
+            # Use effort_mapping from config directly
+            ctk = extra_body.setdefault("chat_template_kwargs", {})
+            model_effort = effort_map.get(effective_effort, effective_effort)
+            ctk["thinking_mode"] = model_effort
+
+        else:
+            # Default style: current behavior with effort flags
+            ctk = extra_body.setdefault("chat_template_kwargs", {})
+            ctk["enable_thinking"] = nim.chat_template_enable_thinking
+
+            if model_effort == "low":
+                ctk["low_effort"] = True
+            elif model_effort == "medium":
+                ctk["medium_effort"] = True
+            elif model_effort == "high":
+                ctk["high_effort"] = True
 
         # reasoning_budget: request > numeric tag > session custom budget > settings > budget_per_effort
         effective_budget = request_budget
@@ -193,10 +210,12 @@ def build_request_body(
                 )
 
         # No client-side clamping - NVIDIA enforces limits server-side
-        if effective_budget > 0 and reasoning_config.supports_thinking:
-            _set_extra(extra_body, "reasoning_budget", effective_budget)
-        elif effective_budget == -1 and reasoning_config.supports_thinking:
-            _set_extra(extra_body, "reasoning_budget", -1)  # unlimited
+        # Add reasoning_budget for nemotron and default styles (nemotron needs it, default for backward compat)
+        if thinking_style in ("nemotron", "default"):
+            if effective_budget > 0:
+                _set_extra(extra_body, "reasoning_budget", effective_budget)
+            elif effective_budget == -1:
+                _set_extra(extra_body, "reasoning_budget", -1)  # unlimited
 
     req_top_k = getattr(request_data, "top_k", None)
     top_k = req_top_k if req_top_k is not None else nim.top_k
@@ -215,6 +234,35 @@ def build_request_body(
 
     if extra_body:
         body["extra_body"] = extra_body
+
+    # Log resolved thinking/reasoning config so operators can see at a glance
+    # which thinking_style/effort/budget the proxy applied for this model.
+    if not nim.thinking:
+        # Global kill switch - no thinking params sent regardless of model
+        logger.info(
+            "THINKING: {} thinking disabled (NIM_THINKING=false, sending no reasoning params)",
+            model,
+        )
+    elif not reasoning_config.supports_thinking:
+        # Model not in config (or supports_thinking=false) - let NVIDIA server's defaults apply
+        logger.info(
+            "THINKING: {} no thinking params (model not in reasoning_config.json - "
+            "NVIDIA server defaults will apply)",
+            model,
+        )
+    else:
+        # Thinking enabled, model has reasoning config - log the resolved style + effort + budget
+        ctk = body.get("extra_body", {}).get("chat_template_kwargs", {})
+        budget = body.get("extra_body", {}).get("reasoning_budget")
+        budget_str = f" budget={budget}" if budget is not None else ""
+        logger.info(
+            "THINKING: {} using style={} effort={} -> {}{}",
+            model,
+            reasoning_config.thinking_style,
+            effective_effort,
+            model_effort,
+            budget_str,
+        )
 
     logger.debug(
         "NIM_REQUEST: conversion done model={} msgs={} tools={}",

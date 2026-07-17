@@ -13,7 +13,7 @@ from config.logging_config import configure_logging
 from config.settings import get_settings
 from providers.exceptions import ProviderError
 
-from .dependencies import cleanup_provider
+from .dependencies import cleanup_provider, get_provider
 from .middleware import verify_api_key
 from .routes import router
 
@@ -100,6 +100,22 @@ async def lifespan(app: FastAPI):
     app.state.discord_bot = None
 
     settings = get_settings()
+
+    # Initialize global rate limiter with settings BEFORE any other code
+    # that might trigger the singleton (Discord bot, status_task, etc.)
+    from providers.rate_limit import GlobalRateLimiter
+    GlobalRateLimiter.get_instance(
+        rate_limit=settings.provider_rate_limit,
+        rate_window=settings.provider_rate_window,
+        max_concurrency=settings.provider_max_concurrency,
+        worker_limit=settings.request_queue_max_concurrent,
+        rpm_drop=settings.nim_rpm_drop,
+        rpm_min=settings.nim_rpm_min,
+        hold_initial=settings.nim_rpm_hold_initial,
+        hold_max=settings.nim_rpm_hold_max,
+        rpm_reset=settings.nim_rpm_reset,
+    )
+    logger.debug("GlobalRateLimiter initialized with settings")
 
     # Warm NVIDIA model cache at startup to avoid first-request latency
     try:

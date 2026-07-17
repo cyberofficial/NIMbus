@@ -567,6 +567,11 @@ class NvidiaNimProvider(BaseProvider):
             rate_window=config.rate_window,
             max_concurrency=config.max_concurrency,
             worker_limit=config.request_queue_max_concurrent,
+            rpm_drop=config.rpm_drop,
+            rpm_min=config.rpm_min,
+            hold_initial=config.hold_initial,
+            hold_max=config.hold_max,
+            rpm_reset=config.rpm_reset,
         )
 
         # Initialize request queue

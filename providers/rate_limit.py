@@ -65,6 +65,8 @@ class GlobalRateLimiter:
         rpm_min: int = 20,
         hold_initial: float = 5.0,
         hold_max: float = 10.0,
+        # Auto-restore after N seconds without 429 (0 = disabled)
+        rpm_reset: float = 300.0,
     ):
         if hasattr(self, "_initialized"):
             return
@@ -85,11 +87,13 @@ class GlobalRateLimiter:
         self._rpm_min = rpm_min
         self._hold_initial = hold_initial
         self._hold_max = hold_max
+        self._rpm_reset = rpm_reset  # auto-restore after N seconds without 429
 
         # ---- Adaptive state ----
         self._effective_rpm = rate_limit
         self._drop_count = 0
         self._hold_delay = 0.0  # seconds to wait before each request
+        self._last_429_time: float | None = None  # monotonic timestamp of last 429
 
         # ---- Sliding-window state ----
         self._request_times: deque[float] = deque()
@@ -108,6 +112,7 @@ class GlobalRateLimiter:
             f"(initial={rate_limit} rpm, window={rate_window}s, "
             f"drop={rpm_drop}, min={rpm_min}, "
             f"hold_initial={hold_initial}s, hold_max={hold_max}s, "
+            f"rpm_reset={rpm_reset}s, "
             f"max_concurrency={max_concurrency}, worker_limit={worker_limit})"
         )
 
@@ -126,6 +131,7 @@ class GlobalRateLimiter:
         rpm_min: int | None = None,
         hold_initial: float | None = None,
         hold_max: float | None = None,
+        rpm_reset: float | None = None,
     ) -> GlobalRateLimiter:
         """Get or create the singleton instance.
 
@@ -138,6 +144,7 @@ class GlobalRateLimiter:
             rpm_min: Floor RPM before hold delays activate
             hold_initial: First hold delay in seconds
             hold_max: Maximum hold delay in seconds
+            rpm_reset: Auto-restore RPM after N seconds without 429 (0=disabled)
         """
         if cls._instance is None:
             cls._instance = cls(
@@ -149,6 +156,7 @@ class GlobalRateLimiter:
                 rpm_min=rpm_min or 20,
                 hold_initial=hold_initial or 5.0,
                 hold_max=hold_max or 10.0,
+                rpm_reset=rpm_reset or 300.0,
             )
         return cls._instance
 
@@ -166,6 +174,7 @@ class GlobalRateLimiter:
 
         Drops the effective RPM or increases the hold delay.
         """
+        self._last_429_time = time.monotonic()
         if self._effective_rpm > self._rpm_min:
             old = self._effective_rpm
             self._effective_rpm = max(self._rpm_min, old - self._rpm_drop)
@@ -195,6 +204,16 @@ class GlobalRateLimiter:
     @property
     def effective_rpm(self) -> int:
         return self._effective_rpm
+
+    # Backward compatibility for tests expecting _rate_limit
+    @property
+    def _rate_limit(self) -> int:
+        return self._effective_rpm
+
+    @_rate_limit.setter
+    def _rate_limit(self, value: int) -> None:
+        self._effective_rpm = value
+        self._initial_rpm = value
 
     @property
     def hold_delay(self) -> float:
@@ -275,7 +294,15 @@ class GlobalRateLimiter:
         Returns:
             True if was reactively blocked and waited, False otherwise.
         """
-        # 0. Adaptive hold delay – small pause before each request
+        now = time.monotonic()
+
+        # 0. Auto-restore adaptive backoff if no 429 for rpm_reset seconds
+        if self._rpm_reset > 0 and self._last_429_time is not None:
+            elapsed_since_429 = now - self._last_429_time
+            if elapsed_since_429 >= self._rpm_reset:
+                self.reset_adaptive_backoff()
+
+        # 0b. Adaptive hold delay – small pause before each request
         if self._hold_delay > 0:
             logger.info(
                 "⏳ Adaptive hold delay active: waiting {:.1f}s before request",
@@ -285,7 +312,6 @@ class GlobalRateLimiter:
 
         # 1. Reactive check: Wait if someone hit a 429
         waited_reactively = False
-        now = time.monotonic()
         if now < self._blocked_until:
             wait_time = self._blocked_until - now
             logger.warning(
@@ -356,7 +382,7 @@ class GlobalRateLimiter:
         if reset_in > 0:
             logger.info(
                 f"{emoji} [Rate Limit] [{bar}] {current}/{self._effective_rpm} ({percentage:.0f}%) | "
-                f"{remaining} left | Resets in {reset_in:.1f}s"
+                f"{remaining} left | Next Slot free in {reset_in:.1f}s"
             )
         else:
             logger.info(
