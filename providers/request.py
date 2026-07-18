@@ -43,13 +43,10 @@ def build_request_body(
     )
     body = build_base_request_body(request_data, system_as_user=system_as_user)
 
-    # NIM-specific max_tokens: cap against nim.max_tokens
+    # max_tokens: use request value if provided, otherwise don't set (let model use defaults)
     max_tokens = body.get("max_tokens") or getattr(request_data, "max_tokens", None)
-    if max_tokens is None:
-        max_tokens = nim.max_tokens
-    elif nim.max_tokens:
-        max_tokens = min(max_tokens, nim.max_tokens)
-    set_if_not_none(body, "max_tokens", max_tokens)
+    if max_tokens is not None:
+        set_if_not_none(body, "max_tokens", max_tokens)
 
     # NIM-specific temperature/top_p: fall back to NIM defaults if request didn't set
     if body.get("temperature") is None and nim.temperature is not None:
