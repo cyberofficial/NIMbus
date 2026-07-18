@@ -23,7 +23,7 @@ def _set_extra(
 
 
 def build_request_body(
-    request_data: Any, nim: NimSettings, *, system_as_user: bool = False, session_id: str | None = None
+    request_data: Any, nim: NimSettings, *, system_as_user: bool = False, session_id: str | None = None, model_override: str | None = None
 ) -> dict:
     """Build OpenAI-format request body from Anthropic request.
 
@@ -33,6 +33,8 @@ def build_request_body(
         system_as_user: When True, system prompts are placed as user messages
             (for models that don't support the system role).
         session_id: Optional session ID for per-session effort/budget settings.
+        model_override: Optional model name to override for thinking config lookup
+            (used when model swap is active, so thinking params match the swapped model).
     """
     logger.debug(
         "NIM_REQUEST: conversion start model={} msgs={}",
@@ -74,12 +76,14 @@ def build_request_body(
     if request_extra:
         extra_body.update(request_extra)
 
-    # Determine model for reasoning config - use the RESOLVED NIM model name
-    # (not the raw Claude-side name like "nim:minimax-m3" or "claude-opus-4-7").
-    # For example, "nim:minimax-m3" resolves to "minimaxai/minimax-m3" via MODEL MAPPING,
-    # and we need that resolved ID to look up the correct reasoning_config.json entry.
-    body_model = body.get("model", "")
-    model = body_model or getattr(request_data, "original_model", None) or getattr(request_data, "model", "")
+    # Determine model for reasoning config - use model_override if provided
+    # (for model swap scenarios), otherwise use the resolved NIM model name.
+    # This ensures thinking params match the actual model being called.
+    if model_override:
+        model = model_override
+    else:
+        body_model = body.get("model", "")
+        model = body_model or getattr(request_data, "original_model", None) or getattr(request_data, "model", "")
 
     # Extract thinking params from Anthropic request (Claude 3.7+)
     request_effort = None

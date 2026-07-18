@@ -224,6 +224,7 @@ def _is_thinking_param_error(e: Exception) -> tuple[bool, str | None, str | None
                     "include_reasoning",
                     "return_tokens_as_token_ids",
                     "reasoning_effort",
+                    "reasoning_budget",  # NVIDIA returns this when model doesn't support reasoning_budget param
                 }
                 for param in thinking_params:
                     if param in msg:
@@ -256,6 +257,7 @@ def _is_thinking_param_error(e: Exception) -> tuple[bool, str | None, str | None
                     "include_reasoning",
                     "return_tokens_as_token_ids",
                     "reasoning_effort",
+                    "reasoning_budget",  # NVIDIA returns this when model doesn't support reasoning_budget param
                 }
                 for param in thinking_params:
                     if param in msg:
@@ -709,11 +711,8 @@ class NvidiaNimProvider(BaseProvider):
         assert self._nim_settings is not None
         # Extract session_id from request if available
         session_id = getattr(request, 'session_id', None)
-        body = build_request_body(request, self._nim_settings, session_id=session_id)
-
-        # Apply model override if provided
-        if model_override:
-            body["model"] = model_override
+        # Pass model_override to build_request_body so thinking params match the swapped model
+        body = build_request_body(request, self._nim_settings, session_id=session_id, model_override=model_override)
 
         model = body.get("model", "")
         if _model_rejects_system(model):
