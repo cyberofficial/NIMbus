@@ -67,28 +67,14 @@ def load_env_config() -> dict:
 
 def check_prerequisites() -> bool:
     """Check if required prerequisites are installed."""
-    # Check for uv
-    try:
-        result = subprocess.run(
-            ["uv", "--version"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            print(f"✓ Found: {result.stdout.strip()}")
-            return True
-    except FileNotFoundError:
-        pass
-
-    # Check for python/venv as fallback
+    # Check for venv
     venv_path = Path(__file__).parent / "venv"
     if venv_path.exists():
         print("✓ Found: venv directory")
         return True
 
-    print("Error: Neither 'uv' nor 'venv' found.")
-    print("Please install uv: https://github.com/astral-sh/uv")
-    print("Or create a venv: python -m venv venv")
+    print("Error: 'venv' directory not found.")
+    print("Please create a venv: python -m venv venv")
     return False
 
 
@@ -159,56 +145,30 @@ def start_server(config: dict) -> None:
     """Start the uvicorn server."""
     host = config["host"]
     port = config["port"]
-
-    # Determine the command based on available tools
     script_dir = Path(__file__).parent.resolve()
 
-    # Prefer uv if available
-    try:
-        subprocess.run(["uv", "--version"], capture_output=True)
-        use_uv = True
-    except FileNotFoundError:
-        use_uv = False
+    # Use venv python
+    venv_python = script_dir / "venv" / "Scripts" / "python.exe"
+    if not venv_python.exists():
+        venv_python = script_dir / "venv" / "bin" / "python"
 
-    if use_uv:
-        # Set UV_PROJECT_ENVIRONMENT to use the existing venv/ folder instead of default .venv
-        os.environ["UV_PROJECT_ENVIRONMENT"] = str(script_dir / "venv")
-        cmd = [
-            "uv",
-            "run",
-            "uvicorn",
-            "server:app",
-            "--host",
-            host,
-            "--port",
-            port,
-            "--timeout-graceful-shutdown",
-            "5",
-        ]
-        print(f"Starting server with uv: {' '.join(cmd)}")
-    else:
-        # Fallback to venv
-        venv_python = script_dir / "venv" / "Scripts" / "python.exe"
-        if not venv_python.exists():
-            venv_python = script_dir / "venv" / "bin" / "python"
+    if not venv_python.exists():
+        print("Error: No venv found. Please run: python -m venv venv")
+        sys.exit(1)
 
-        if not venv_python.exists():
-            print("Error: No venv found. Please run: python -m venv venv")
-            sys.exit(1)
-
-        cmd = [
-            str(venv_python),
-            "-m",
-            "uvicorn",
-            "server:app",
-            "--host",
-            host,
-            "--port",
-            port,
-            "--timeout-graceful-shutdown",
-            "5",
-        ]
-        print(f"Starting server with venv: {' '.join(cmd)}")
+    cmd = [
+        str(venv_python),
+        "-m",
+        "uvicorn",
+        "server:app",
+        "--host",
+        host,
+        "--port",
+        port,
+        "--timeout-graceful-shutdown",
+        "5",
+    ]
+    print(f"Starting server with venv: {' '.join(cmd)}")
 
     print()
     try:
