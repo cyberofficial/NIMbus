@@ -36,7 +36,7 @@ class NimSettings(BaseModel):
     top_p: float = Field(default=1.0, ge=0.0, le=1.0)
     top_k: int = -1
     max_tokens: int = Field(
-        default_factory=lambda: int(os.environ.get("NIM_MAX_TOKENS", "202000")), ge=1
+        default_factory=lambda: int(os.environ.get("NIM_MAX_TOKENS", "32000")), ge=1
     )
     presence_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
     frequency_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)

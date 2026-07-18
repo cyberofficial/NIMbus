@@ -45,6 +45,11 @@ def build_request_body(
 
     # max_tokens: use request value if provided, otherwise don't set (let model use defaults)
     max_tokens = body.get("max_tokens") or getattr(request_data, "max_tokens", None)
+    # Upgrade max_tokens against NIM_MAX_TOKENS if configured (0 = no upgrade)
+    if max_tokens is not None and nim.max_tokens and nim.max_tokens > 0:
+        if max_tokens < nim.max_tokens:
+            logger.info("max_tokens {} upgraded to NIM_MAX_TOKENS: {}", max_tokens, nim.max_tokens)
+            max_tokens = nim.max_tokens
     if max_tokens is not None:
         set_if_not_none(body, "max_tokens", max_tokens)
 
@@ -211,7 +216,15 @@ def build_request_body(
                     reasoning_config.max_reasoning_budget
                 )
 
-        # No client-side clamping - NVIDIA enforces limits server-side
+        # Validate: reasoning_budget must be less than max_tokens (if both set)
+        # If budget >= max_tokens, set budget to -1 (unlimited) and let max_tokens cap the response
+        if max_tokens is not None and effective_budget > 0 and effective_budget >= max_tokens:
+            logger.info(
+                "reasoning_budget ({}) >= max_tokens ({}); setting reasoning_budget=-1 (unlimited) and relying on max_tokens cap",
+                effective_budget, max_tokens
+            )
+            effective_budget = -1
+
         # Add reasoning_budget for nemotron and default styles (nemotron needs it, default for backward compat)
         if thinking_style in ("nemotron", "default"):
             if effective_budget > 0:
