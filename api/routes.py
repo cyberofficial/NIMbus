@@ -57,7 +57,6 @@ router = APIRouter()
 # Model Swapper Helpers
 # =============================================================================
 
-
 def _extract_api_key(request: Request, settings: Settings) -> str:
     """Extract API key from request headers (same logic as middleware)."""
     # Check x-api-key header
@@ -191,7 +190,6 @@ async def _handle_modelswap(
 # Adaptive Rate Limit Reset Helper (<nimrpm:reset>)
 # =============================================================================
 
-
 async def _handle_nimrpm_reset(
     request_data: MessagesRequest,
 ) -> MessagesResponse | None:
@@ -262,7 +260,6 @@ async def _handle_nimhelp(request_data: MessagesRequest) -> MessagesResponse | N
 # Reasoning Effort Helper (<nimeffort:level>)
 # =============================================================================
 
-
 async def _handle_nimeffort(
     request: Request,
     request_data: MessagesRequest,
@@ -288,9 +285,8 @@ async def _handle_nimeffort(
                 if not effort_level:
                     return None
 
-                # Store the effort level per session (using API key as session identifier)
-                api_key = _extract_api_key(request, settings)
-                session_id = api_key
+                # Store the effort level per session (using x-claude-code-session-id header as identifier)
+                session_id = request_data.session_id or _extract_api_key(request, settings)
 
                 # Try to parse as integer budget (-1 to 1000000)
                 try:
@@ -325,7 +321,6 @@ async def _handle_nimeffort(
 # Reasoning Effort Status Helper (<nimeffort> or <nimeffort:status>)
 # =============================================================================
 
-
 async def _handle_nimeffort_status(
     request: Request,
     request_data: MessagesRequest,
@@ -347,9 +342,8 @@ async def _handle_nimeffort_status(
                 if _is_title_request(request_data):
                     return None
 
-                # Get session ID
-                api_key = _extract_api_key(request, settings)
-                session_id = api_key
+                # Get session ID - use same logic as _handle_nimeffort and request building
+                session_id = request_data.session_id or _extract_api_key(request, settings)
 
                 # Get stored effort level and custom budget
                 stored_effort = get_effort_level(session_id)
@@ -408,7 +402,7 @@ async def _handle_nimeffort_status(
                             mapped_effort += f" ({budget} tokens)"
 
                     # Build and return status message when stored_effort exists
-                    message = f"\U0001f4ca **Current Reasoning Effort**\n\n"
+                    message = f"📊 **Current Reasoning Effort**\n\n"
                     message += f"**Stored (session):** {stored_effort}\n"
                     message += f"**Mapped effort:** {mapped_effort}\n"
 
@@ -428,7 +422,7 @@ async def _handle_nimeffort_status(
                     # No stored effort, but has custom budget
                     mapped_effort = f"custom budget: {custom_budget} tokens"
 
-                    message = f"\U0001f4ca **Current Reasoning Effort**\n\n"
+                    message = f"📊 **Current Reasoning Effort**\n\n"
                     message += f"**Stored (session):** *(none — custom budget only)*\n"
                     message += f"**Mapped effort:** {mapped_effort}\n"
                     message += f"**Custom budget override:** {custom_budget} tokens\n"
@@ -448,7 +442,7 @@ async def _handle_nimeffort_status(
                 return _create_nimserver_response(
                     True,
                     "effort-status",
-                    f"\U0001f4ca **Current Reasoning Effort**\n\n"
+                    f"📊 **Current Reasoning Effort**\n\n"
                     f"*No effort level set for this session.*\n\n"
                     f"**Provider defaults (from config):**\n"
                     f"  - reasoning_effort: {config_effort}\n"
@@ -461,7 +455,6 @@ async def _handle_nimeffort_status(
 # =============================================================================
 # NIM Server Type Swapper Helpers (stream/buffer)
 # =============================================================================
-
 
 def _create_nimserver_response(
     success: bool, server_type: str, message: str
@@ -545,7 +538,6 @@ async def _handle_nimserver(
 # =============================================================================
 # Routes
 # =============================================================================
-
 
 @router.post("/v1/messages")
 async def create_message(
