@@ -35,17 +35,6 @@ dependencies = [
 #     "librosa>=0.10.0",
 # ]
 
-[tool.uv]
-# Virtual environment path configured via UV_PROJECT_ENVIRONMENT env var in start_server.py
-
-# [tool.uv.sources]
-# torch = { index = "pytorch-cu130" }
-
-# [[tool.uv.index]]
-# name = "pytorch-cu130"
-# url = "https://download.pytorch.org/whl/cu130"
-# explicit = true
-
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",

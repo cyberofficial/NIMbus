@@ -2,7 +2,7 @@
 Claude Code Proxy - Entry Point
 
 Minimal entry point that imports the app from the api module.
-Run with: uv run uvicorn server:app --host 0.0.0.0 --port 8082 --timeout-graceful-shutdown 5
+Run with: python -m uvicorn server:app --host 0.0.0.0 --port 8082 --timeout-graceful-shutdown 5
 """
 
 import sys
