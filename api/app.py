@@ -65,7 +65,7 @@ async def _rate_limit_status_updater():
         if reset_in > 0:
             print(
                 f"{emoji} Rate Limit: [{bar}] {current}/{max_req} ({percentage:.0f}%) | "
-                f"{remaining} left | Resets in {reset_in:.1f}s",
+                f"{remaining} left | Next Slot free in {reset_in:.1f}s",
                 flush=True,
             )
         else:

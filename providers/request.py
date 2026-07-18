@@ -130,15 +130,16 @@ def build_request_body(
         if is_nimeffort_tag(last_user_msg):
             extracted = extract_nimeffort_tag(last_user_msg)
             # Try to parse as integer budget (-1 to 1000000)
-            try:
-                val = int(extracted)
-                if -1 <= val <= 1000000:
-                    custom_budget_from_tag = val
-                else:
-                    logger.warning("nimeffort value %d out of range [-1, 1000000], ignoring", val)
-            except ValueError:
-                # Named level (low, medium, high, etc.)
-                exact_effort_tag = extracted
+            if extracted is not None:
+                try:
+                    val = int(extracted)
+                    if -1 <= val <= 1000000:
+                        custom_budget_from_tag = val
+                    else:
+                        logger.warning("nimeffort value %d out of range [-1, 1000000], ignoring", val)
+                except ValueError:
+                    # Named level (low, medium, high, etc.)
+                    exact_effort_tag = extracted
 
     # Handle thinking/reasoning mode - only when NIM_THINKING enabled AND model supports thinking
     if nim.thinking and reasoning_config.supports_thinking:

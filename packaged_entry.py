@@ -143,7 +143,7 @@ def main() -> None:
     # --- Step 6: Point tiktoken at bundled cache ---
     # In --onefile mode, data files are extracted to sys._MEIPASS
     if getattr(sys, "frozen", False):
-        meipass = Path(sys._MEIPASS)
+        meipass = Path(sys._MEIPASS)  # type: ignore[attr-defined]
         tiktoken_cache = meipass / "tiktoken_cache"
         if tiktoken_cache.exists():
             os.environ["TIKTOKEN_CACHE_DIR"] = str(tiktoken_cache)

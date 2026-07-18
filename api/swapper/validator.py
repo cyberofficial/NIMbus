@@ -57,6 +57,7 @@ async def _execute_with_retry(coro_factory, max_retries=VALIDATION_MAX_RETRIES, 
             raise
 
     logger.error("Validation exhausted all retries: {}", last_error)
+    assert last_error is not None
     raise last_error
 
 

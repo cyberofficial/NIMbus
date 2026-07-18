@@ -278,18 +278,6 @@ def _is_thinking_param_error(e: Exception) -> tuple[bool, str | None, str | None
     return False, None, None
 
 
-def _has_thinking_params(body: dict) -> bool:
-    """Check if request body contains thinking/reasoning parameters."""
-    extra_body = body.get("extra_body", {})
-    thinking_keys = {
-        "thinking",
-        "reasoning_split",
-        "chat_template_kwargs",
-        "return_tokens_as_token_ids",
-        "reasoning_effort",
-        "include_reasoning",
-    }
-    return any(key in extra_body for key in thinking_keys)
 
 
 def _is_retryable_server_error(e: Exception) -> bool:
@@ -311,8 +299,9 @@ def _is_retryable_server_error(e: Exception) -> bool:
             return True
 
     # Check httpx.HTTPStatusError
-    if hasattr(e, "response") and e.response is not None:
-        status_code = getattr(e.response, "status_code", None)
+    response = getattr(e, "response", None)
+    if response is not None:
+        status_code = getattr(response, "status_code", None)
         if status_code in _RETRYABLE_HTTP_STATUS:
             return True
 
@@ -555,6 +544,14 @@ def _rebuild_with_reduced_budget(body: dict, new_budget: int) -> dict:
     return new_body
 
 
+def _system_to_user(msg: dict) -> dict:
+    """Convert a system message to a user message with a prefix."""
+    return {
+        "role": "user",
+        "content": f"[System Instructions]\n{msg.get('content', '')}",
+    }
+
+
 def _rebuild_without_key(body: dict, key_to_remove: str) -> dict:
     """Clone request body, removing a specific key from extra_body."""
     new_body = dict(body)
@@ -566,11 +563,6 @@ def _rebuild_without_key(body: dict, key_to_remove: str) -> dict:
         else:
             new_body.pop("extra_body", None)
     return new_body
-    """Convert a system message to a user message with a prefix."""
-    return {
-        "role": "user",
-        "content": f"[System Instructions]\n{msg.get('content', '')}",
-    }
 
 
 def _save_model_override(model_name: str) -> None:
@@ -954,8 +946,9 @@ class NvidiaNimProvider(BaseProvider):
                             model = body.get("model", "")
                             if error_type == "budget_exceeded":
                                 # Reduce budget and retry WITH thinking
-                                new_budget = int(detail) if detail.isdigit() else detail
-                                set_thinking_budget_override(model, new_budget)
+                                new_budget = int(detail) if detail and detail.isdigit() else 1024
+                                if new_budget is not None:
+                                    set_thinking_budget_override(model, new_budget)
                                 logger.warning(
                                     "{}_BUFFERED: Budget exceeded for model ({}) - "
                                     "reducing reasoning_budget to {} and retrying WITH thinking",
@@ -963,21 +956,23 @@ class NvidiaNimProvider(BaseProvider):
                                     model,
                                     new_budget,
                                 )
-                                body = _rebuild_with_reduced_budget(body, new_budget)
+                                if new_budget is not None:
+                                    body = _rebuild_with_reduced_budget(body, new_budget)
                                 response = await self._client.chat.completions.create(
                                     **body,
                                     stream=False,
                                 )
                             elif error_type == "invalid_param":
                                 # Remove just the invalid param and retry WITH thinking
-                                logger.warning(
-                                    "{}_BUFFERED: Invalid param {} for model ({}) - "
-                                    "removing param and retrying WITH thinking",
-                                    tag,
-                                    detail,
-                                    model,
-                                )
-                                body = _rebuild_without_key(body, detail)
+                                if detail is not None:
+                                    logger.warning(
+                                        "{}_BUFFERED: Invalid param {} for model ({}) - "
+                                        "removing param and retrying WITH thinking",
+                                        tag,
+                                        detail,
+                                        model,
+                                    )
+                                    body = _rebuild_without_key(body, detail)
                                 response = await self._client.chat.completions.create(
                                     **body,
                                     stream=False,
@@ -1459,8 +1454,9 @@ class NvidiaNimProvider(BaseProvider):
                             model = body.get("model", "")
                             if error_type == "budget_exceeded":
                                 # Reduce budget and retry WITH thinking
-                                new_budget = int(detail) if detail.isdigit() else detail
-                                set_thinking_budget_override(model, new_budget)
+                                new_budget = int(detail) if detail and detail.isdigit() else 1024
+                                if new_budget is not None:
+                                    set_thinking_budget_override(model, new_budget)
                                 logger.warning(
                                     "{}_STREAM: Budget exceeded for model ({}) - "
                                     "reducing reasoning_budget to {} and retrying WITH thinking",
@@ -1468,7 +1464,8 @@ class NvidiaNimProvider(BaseProvider):
                                     model,
                                     new_budget,
                                 )
-                                body = _rebuild_with_reduced_budget(body, new_budget)
+                                if new_budget is not None:
+                                    body = _rebuild_with_reduced_budget(body, new_budget)
                                 stream = await self._global_rate_limiter.execute_with_retry(
                                     self._client.chat.completions.create,
                                     **body,
@@ -1478,14 +1475,15 @@ class NvidiaNimProvider(BaseProvider):
                                 )
                             elif error_type == "invalid_param":
                                 # Remove just the invalid param and retry WITH thinking
-                                logger.warning(
-                                    "{}_STREAM: Invalid param {} for model ({}) - "
-                                    "removing param and retrying WITH thinking",
-                                    tag,
-                                    detail,
-                                    model,
-                                )
-                                body = _rebuild_without_key(body, detail)
+                                if detail is not None:
+                                    logger.warning(
+                                        "{}_STREAM: Invalid param {} for model ({}) - "
+                                        "removing param and retrying WITH thinking",
+                                        tag,
+                                        detail,
+                                        model,
+                                    )
+                                    body = _rebuild_without_key(body, detail)
                                 stream = await self._global_rate_limiter.execute_with_retry(
                                     self._client.chat.completions.create,
                                     **body,

@@ -223,7 +223,7 @@ class RequestQueue:
 
         # Clamp priority to valid range
         priority = max(RequestPriority.LOW, min(RequestPriority.HIGH, priority))
-        priority_name = self._priority_names.get(priority, "NORMAL")
+        priority_name = self._priority_names.get(RequestPriority(priority), "NORMAL")
 
         # Create future for result
         loop = asyncio.get_running_loop()

@@ -3,6 +3,7 @@
 import json
 import traceback
 import uuid
+from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -146,9 +147,11 @@ async def _handle_modelswap(
                     return mock_resp, None
 
                 # Resolve short name to full NIM ID before validating/storing
+                model_name = model_name or ""
                 full_model = resolve_model_name(model_name)
 
                 # Validate and test the model
+                model_name = model_name or ""
                 success, msg_text = await validate_and_test_model(
                     model_name, settings, api_key
                 )
@@ -159,6 +162,7 @@ async def _handle_modelswap(
                         chain = f"MODEL MAPPING: '{model_name}' -> `{full_model}`"
                     else:
                         chain = f"MODEL MAPPING: `{full_model}`"
+                    full_model = full_model or ""
                     mock_resp = _create_modelswap_response(
                         True, full_model, f"Model Updated: {full_model}\n\n{chain}"
                     )
@@ -212,7 +216,7 @@ async def _handle_nimrpm_reset(
                 from providers.rate_limit import GlobalRateLimiter
 
                 limiter = GlobalRateLimiter.get_instance()
-                limiter.reset_adaptive_backoff()
+                limiter.reset_reactive_block()
 
                 return _create_nimserver_response(
                     True,
@@ -511,6 +515,7 @@ async def _handle_nimserver(
                     return mock_resp, None
 
                 # Store the override
+                server_type = server_type or "stream"
                 await NimServerManager.set(api_key, server_type)
                 mock_resp = _create_nimserver_response(
                     True,
@@ -674,7 +679,7 @@ async def create_message(
             # Use print to ensure it shows up (only show reset time if active)
             if reset_in > 0:
                 print(
-                    f"{emoji} Rate Limit: [{bar}] {current}/{max_req} ({percentage:.0f}%) | {remaining} left | Resets in {reset_in:.1f}s",
+                    f"{emoji} Rate Limit: [{bar}] {current}/{max_req} ({percentage:.0f}%) | {remaining} left | Next Slot free in {reset_in:.1f}s",
                     flush=True,
                 )
             else:
@@ -697,7 +702,7 @@ async def create_message(
             )
 
             async def sse_generator():
-                for event in optimization_response_to_sse(response, input_tokens):
+                for event in optimization_response_to_sse(cast(MessagesResponse, response), input_tokens):
                     yield event
 
             return StreamingResponse(
@@ -864,7 +869,7 @@ async def create_message_buffered(
 
             if reset_in > 0:
                 print(
-                    f"{emoji} Rate Limit: [{bar}] {current}/{max_req} ({percentage:.0f}%) | {remaining} left | Resets in {reset_in:.1f}s | BUFFERED",
+                    f"{emoji} Rate Limit: [{bar}] {current}/{max_req} ({percentage:.0f}%) | {remaining} left | Next Slot free in {reset_in:.1f}s | BUFFERED",
                     flush=True,
                 )
             else:
@@ -1046,7 +1051,7 @@ async def queue_status(request: Request):
 
     provider = get_provider()
     if hasattr(provider, '_request_queue') and provider._request_queue:
-        return provider._request_queue.get_stats()
+        return provider._request_queue.get_stats()  # type: ignore[attr-defined]
     return {"error": "Request queue not initialized"}
 
 

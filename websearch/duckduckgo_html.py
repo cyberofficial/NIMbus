@@ -5,6 +5,7 @@ Supports pagination to fetch more than 10 results.
 No external search library dependency (Playwright optional for JS-heavy scenarios).
 """
 
+import json
 import os
 import sys
 import urllib.parse

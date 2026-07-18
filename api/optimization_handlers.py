@@ -41,11 +41,11 @@ def optimization_response_to_sse(response: MessagesResponse, input_tokens: int =
         for block in content:
             # Handle both dict and Pydantic model
             if hasattr(block, 'type'):
-                block_type = block.type
-                block_text = block.text if hasattr(block, 'text') else ""
+                block_type = block.type  # type: ignore[attr-defined]
+                block_text = block.text if hasattr(block, 'text') else ""  # type: ignore[attr-defined]
             else:
-                block_type = block.get("type", "")
-                block_text = block.get("text", "")
+                block_type = block.get("type", "")  # type: ignore[attr-defined]
+                block_text = block.get("text", "")  # type: ignore[attr-defined]
             if block_type == "text":
                 text_content = block_text
                 break

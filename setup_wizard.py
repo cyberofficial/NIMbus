@@ -111,14 +111,14 @@ def _unix_masked_input(prompt: str) -> str:
     sys.stdout.flush()
     fd = sys.stdin.fileno()
     try:
-        old = termios.tcgetattr(fd)
-    except termios.error:
+        old = termios.tcgetattr(fd)  # type: ignore[attr-defined]
+    except termios.error:  # type: ignore[attr-defined]
         import getpass
 
         return getpass.getpass(prompt)
     chars: list[str] = []
     try:
-        tty.setraw(fd)
+        tty.setraw(fd)  # type: ignore[attr-defined]
         while True:
             ch = sys.stdin.read(1)
             if ch in ("\r", "\n"):
@@ -135,8 +135,8 @@ def _unix_masked_input(prompt: str) -> str:
                 sys.stdout.write("*")
             sys.stdout.flush()
     finally:
-        with contextlib.suppress(termios.error):
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        with contextlib.suppress(termios.error):  # type: ignore[attr-defined]
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)  # type: ignore[attr-defined]
     return "".join(chars)
 
 
