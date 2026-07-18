@@ -6,6 +6,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## v2.0.13 - Date: 2026-07-18
+
+### Added
+
+#### Token Limit Enforcement & Reasoning Budget Validation
+- **NIM_MAX_TOKENS default reduced** from 202000 to 32000 for more reasonable token limits
+- **Token upgrade logic** — When `NIM_MAX_TOKENS` is set higher than what Claude sends (e.g., 32000 vs 256000), the proxy now **upgrades** the request's `max_tokens` to the configured value instead of capping down
+- **Reasoning budget validation** — If `reasoning_budget >= max_tokens` (after upgrade), sets `reasoning_budget=-1` (unlimited) and relies on `max_tokens` as the effective cap to prevent NVIDIA rejection
+- **Explicit logging** — Logs both token upgrades and budget adjustments for audit trail
+
+#### Type Safety & Defensive Null Checks
+- Added type: ignore comments for mypy/pyright compliance (sys._MEIPASS, termios, attribute access)
+- Defensive null checks for `model_name`, `detail`, `extracted`, `new_budget` variables
+- Fixed bugs: removed malformed duplicate code in `_rebuild_without_key()`, corrected `_has_thinking_params()` removal
+- Simplified tiktoken cache logic by removing fallback handling
+- Fixed priority enum casting in request_queue.py
+
+### Changed
+
+#### Rate Limiter UI Improvements
+- Renamed rate limiter method: `reset_adaptive_backoff()` → `reset_reactive_block()`
+- Updated UI messaging: "Resets in" → "Next Slot free in" for clarity
+- Used `cast(MessagesResponse, response)` for type-safe casting in optimization handler
+
+#### Pydantic Settings & Env Handling
+- `NIM_MAX_TOKENS` default in code changed from 202000 → 32000
+- `.env.example` reorganized with clearer section headers, removed duplicated entries, improved examples
+- `max_tokens` handling in `providers/request.py`: now only set when request explicitly provides it; no fallback to `nim.max_tokens` (introduced in prior commit 720ffc4)
+
+#### Request Building Logic
+- **Added max_tokens upgrade logic** — if request value < `NIM_MAX_TOKENS` env value, upgrades to env value instead of using request's lower value
+
+### Fixed
+
+- Various Pylance/pyright type checking issues across codebase
+- Rate limit status display: "Resets in" → "Next Slot free in" for better clarity
+
+### Files Touched
+
+- **`.env.example`** — Full restructure with clarified defaults, removed duplicates, improved comments; `NIM_MAX_TOKENS=32000` default
+- **`config/nim.py`** — `max_tokens` default from 202000 → 32000
+- **`providers/request.py`** — Token upgrade logic, reasoning budget validation, logging
+- **`api/app.py`** — Rate limit status message update
+- **`api/optimization_handlers.py`** — Type-safe casting
+- **`providers/request_queue.py`** — Priority enum casting fix
+- **`providers/rate_limit.py`** — Method rename, UI message update
+- **`tests/providers/test_nvidia_nim_request.py`** — Updated tests for upgrade behavior
+- **`tests/providers/test_nvidia_nim.py`** — Updated test expectations
+- **`tests/api/test_dependencies.py`** — Mock settings fix
+
+---
+
 ## v2.0.12 - Date: 2026-07-18
 
 ### Added
