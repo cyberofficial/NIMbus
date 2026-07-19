@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import time
+from typing import Literal, cast
 import uuid
 
 import discord
@@ -739,7 +740,10 @@ class NimbusDiscordBot(commands.Bot):
                     model=discord_model,
                     messages=[
                         Message(
-                            role=str(m.role if hasattr(m, "role") else m["role"]),
+                            role=cast(
+                                Literal["user", "assistant", "system"],
+                                str(m.role if hasattr(m, "role") else m["role"])
+                            ),
                             content=m.content if hasattr(m, "content") else m["content"]
                         )
                         for m in new_messages

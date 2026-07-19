@@ -869,6 +869,8 @@ class NvidiaNimProvider(BaseProvider):
                     else f"after {attempt + 1} attempts (endless retries - still trying)"
                 )
                 if is_retryable:
+                    # Release the rate limit slot since the request never reached the server
+                    await self._global_rate_limiter.release_last_slot()
                     logger.warning(
                         "{}_BUFFERED: Retryable error {} {} - {}",
                         tag,
@@ -1405,8 +1407,6 @@ class NvidiaNimProvider(BaseProvider):
         """
         error_occurred = False
         error_message = ""
-
-        await self._global_rate_limiter.wait_if_blocked()
 
         # Acquire worker slot for the entire stream lifecycle (POST + chunk iteration)
         # to respect NVIDIA NIM's per-worker concurrent request limit.

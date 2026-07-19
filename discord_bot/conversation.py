@@ -141,7 +141,11 @@ class ConversationManager:
 
         Returns: {"status": "ok" | "auto_compact" | "needs_compaction" | "dropped"}
         """
-        return self.add_message_with_user(channel_id, role, content, None, "", "", [], auto_compact)
+        return self.add_message_with_user(
+            channel_id=channel_id, role=role, content=content,
+            user_id=None, username="", reply_message="",
+            tools_used=[], tool_results=None, auto_compact=auto_compact
+        )
 
     def add_message_with_user(
         self, channel_id: int, role: str, content: str,

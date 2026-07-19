@@ -12,8 +12,10 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any, ClassVar, TypeVar
 
+import httpx
 import openai
 from loguru import logger
+from openai import APIConnectionError, APITimeoutError
 
 T = TypeVar("T")
 
@@ -296,6 +298,17 @@ class GlobalRateLimiter:
             else:
                 await asyncio.sleep(0)
 
+    async def release_last_slot(self) -> None:
+        """Release the most recently acquired rate limit slot.
+
+        This is used when a request fails before reaching the server (e.g., timeout,
+        connection error) to remove the slot from the sliding window without waiting.
+        """
+        async with self._lock:
+            if self._request_times:
+                self._request_times.pop()
+                logger.debug("Rate limit slot released due to failed request before response")
+
     def _log_rate_limit_status(self) -> None:
         """Log current rate limit usage to console."""
         current = len(self._request_times)
@@ -469,10 +482,12 @@ class GlobalRateLimiter:
         use_worker_slot: bool = True,
         **kwargs: Any,
     ) -> Any:
-        """Execute an async callable with rate limiting and retry on 429.
+        """Execute an async callable with rate limiting and retry on retryable errors.
 
         Waits for the proactive limiter before each attempt. On 429, applies
-        reactive block from retry-after header before retrying.
+        reactive block from retry-after header before retrying. On other retryable
+        errors (timeout, connection error), releases the rate limit slot before retrying
+        since those requests never reached the server.
 
         Args:
             fn: Async callable to execute.
@@ -492,6 +507,32 @@ class GlobalRateLimiter:
         import random
         last_exc: Exception | None = None
         attempt = 0
+
+        # HTTP status codes that indicate retryable server errors
+        retryable_error_codes = {500, 502, 503, 504}
+
+        def is_retryable_error(e: Exception) -> bool:
+            """Check if error is retryable (timeout/connection) or rate limit."""
+            if isinstance(e, openai.RateLimitError):
+                return True
+            if isinstance(e, (
+                httpx.ConnectTimeout,
+                httpx.ReadTimeout,
+                httpx.WriteTimeout,
+                httpx.ConnectError,
+                httpx.ReadError,
+                httpx.TimeoutException,
+                APITimeoutError,
+                APIConnectionError,
+            )):
+                return True
+            # Check for 5xx status codes
+            response = getattr(e, "response", None)
+            if response is not None:
+                status_code = getattr(response, "status_code", None)
+                if status_code in retryable_error_codes:
+                    return True
+            return False
 
         # max_retries=0 means infinite retries
         while max_retries == 0 or attempt <= max_retries:
@@ -533,6 +574,28 @@ class GlobalRateLimiter:
                     await asyncio.sleep(retry_seconds)
                     attempt += 1
                     continue
+
+                except Exception as e:
+                    # Non-429 retryable errors (timeout, connection) - release the slot
+                    # since the request never reached the server
+                    if is_retryable_error(e):
+                        last_exc = e
+                        await self.release_last_slot()
+                        if max_retries > 0 and attempt >= max_retries:
+                            logger.warning(
+                                f"Retryable error exhausted after {max_retries} retries: {type(e).__name__}"
+                            )
+                            break
+                        logger.warning(
+                            f"Retryable error ({type(e).__name__}) on attempt {attempt + 1}/{max_retries if max_retries > 0 else '∞'} - retrying"
+                        )
+                        # Exponential backoff with jitter
+                        retry_seconds = min(base_delay * (2**attempt), max_delay)
+                        retry_seconds += random.uniform(0, jitter)
+                        await asyncio.sleep(retry_seconds)
+                        attempt += 1
+                        continue
+                    raise
 
         assert last_exc is not None
         raise last_exc

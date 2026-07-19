@@ -342,6 +342,12 @@ class NimbusCog(commands.Cog):
                 "🔒 This bot is in owner-only mode.", ephemeral=True
             )
             return
+        # DMs not supported - channel_id is None in DMs
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "This command can only be used in a server channel.", ephemeral=True
+            )
+            return
 
         # Check rate limits
         allowed, error = await self._check_rate_limits(interaction)
@@ -587,7 +593,7 @@ class NimbusCog(commands.Cog):
             import io
             file = discord.File(
                 io.BytesIO(backup_content.encode('utf-8')),
-                filename=f"conversation_{channel.name}_{discord.utils.utcnow().strftime('%Y%m%d_%H%M%S')}.md"
+                filename=f"conversation_{getattr(channel, 'name', 'dm')}_{discord.utils.utcnow().strftime('%Y%m%d_%H%M%S')}.md"
             )
             await dm.send(
                 f"Here's the backup for your conversation in **{channel.name}**:",
@@ -608,8 +614,8 @@ class NimbusCog(commands.Cog):
     ) -> str:
         """Create a markdown backup of the conversation."""
         lines = [
-            f"# Conversation Backup - {channel.guild.name}",
-            f"**Channel:** {channel.name}",
+            f"# Conversation Backup - {getattr(channel.guild, 'name', 'Unknown Guild')}",
+            f"**Channel:** {getattr(channel, 'name', 'dm')}",
             f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             f"**Messages:** {len(messages)}",
             "",
@@ -917,10 +923,10 @@ class NimbusCog(commands.Cog):
             dm = await interaction.user.create_dm()
             file = discord.File(
                 io.BytesIO(backup_content.encode('utf-8')),
-                filename=f"conversation_{interaction.channel.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+                filename=f"conversation_{getattr(interaction.channel, 'name', 'dm')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
             )
             await dm.send(
-                f"Here's the backup for conversation in **{interaction.channel.name}** "
+                f"Here's the backup for conversation in **{getattr(interaction.channel, 'name', 'dm')}** "
                 f"({len(messages)} messages, {token_count:,} tokens):",
                 file=file
             )
@@ -939,6 +945,12 @@ class NimbusCog(commands.Cog):
         """Show current status."""
         # Defer first to avoid 3-second interaction timeout
         await interaction.response.defer()
+        # DMs not supported - channel_id is None in DMs
+        if not interaction.guild:
+            await interaction.followup.send(
+                "This command can only be used in a server channel.", ephemeral=True
+            )
+            return
 
         # Get global rate limit status
         global_limiter = GlobalRateLimiter.get_instance()
