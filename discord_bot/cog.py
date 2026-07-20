@@ -163,7 +163,10 @@ class NimbusCog(commands.Cog):
                 if i == 0:
                     await interaction.followup.send(chunk)
                 else:
-                    await interaction.channel.send(chunk)
+                    channel = interaction.channel
+                    if channel is None:
+                        return content
+                    await channel.send(chunk)
         else:
             await interaction.followup.send(content)
 
@@ -497,7 +500,10 @@ class NimbusCog(commands.Cog):
         )
 
         if not messages:
-            await interaction.channel.send("Nothing to compact.")
+            channel = interaction.channel
+            if channel is None:
+                return
+            await channel.send("Nothing to compact.")
             return
 
         # Build summary prompt
@@ -558,14 +564,16 @@ class NimbusCog(commands.Cog):
 
         # Post summary as new first message
         if summary_text:
-            embed = discord.Embed(
-                title="📝 Conversation Summary",
-                description=summary_text[:4000],
-                color=discord.Color.blue(),
-                timestamp=discord.utils.utcnow(),
-            )
-            embed.set_footer(text="New conversation context started from summary")
-            await interaction.channel.send(embed=embed)
+            channel = interaction.channel
+            if channel is not None:
+                embed = discord.Embed(
+                    title="📝 Conversation Summary",
+                    description=summary_text[:4000],
+                    color=discord.Color.blue(),
+                    timestamp=discord.utils.utcnow(),
+                )
+                embed.set_footer(text="New conversation context started from summary")
+                await channel.send(embed=embed)
 
         # Update conversation manager with summary
         self.conversation_manager.compact(
@@ -596,7 +604,7 @@ class NimbusCog(commands.Cog):
                 filename=f"conversation_{getattr(channel, 'name', 'dm')}_{discord.utils.utcnow().strftime('%Y%m%d_%H%M%S')}.md"
             )
             await dm.send(
-                f"Here's the backup for your conversation in **{channel.name}**:",
+                f"Here's the backup for your conversation in **{getattr(channel, 'name', 'dm')}**:",
                 file=file
             )
             await channel.send(f"✅ Backup sent to {user.mention}'s DMs!")
@@ -874,11 +882,13 @@ class NimbusCog(commands.Cog):
         self.conversation_manager.clear(interaction.channel_id)
 
         # Clear channel messages
-        await self._clear_channel_messages(interaction.channel)
+        channel = interaction.channel
+        if channel is not None:
+            await self._clear_channel_messages(channel)
 
-        await interaction.channel.send(
-            "✅ Conversation cleared. New context started."
-        )
+            await channel.send(
+                "✅ Conversation cleared. New context started."
+            )
 
     @app_commands.command(
         name="download", description="Download conversation history as markdown"

@@ -26,7 +26,7 @@ class CreateChannelModal(ui.Modal, title="Create Conversation Channel"):
                 settings.discord_conversation_category_id
             )
 
-            if not category:
+            if not category or not isinstance(category, discord.CategoryChannel):
                 await interaction.response.send_message(
                     "❌ Conversation category not found. Check configuration.",
                     ephemeral=True,
@@ -113,7 +113,7 @@ class ControlPanelView(ui.View):
                 settings.discord_conversation_category_id
             )
 
-            if not category:
+            if not category or not isinstance(category, discord.CategoryChannel):
                 await interaction.response.send_message(
                     "❌ Conversation category not found.", ephemeral=True
                 )
