@@ -1050,8 +1050,9 @@ async def queue_status(request: Request):
     from api.dependencies import get_provider
 
     provider = get_provider()
+    # type: ignore[attr-defined] - provider is NvidiaNimProvider with _request_queue
     if hasattr(provider, '_request_queue') and provider._request_queue:
-        return provider._request_queue.get_stats()  # type: ignore[attr-defined]
+        return provider._request_queue.get_stats()
     return {"error": "Request queue not initialized"}
 
 

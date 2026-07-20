@@ -30,7 +30,7 @@ class NimSettings(BaseModel):
     """NVIDIA NIM settings."""
 
     # All fields have defaults - Pylance/pyright reports false positives
-    # pyright: disable=reportCallIssue  # All fields have defaults - Pylance/pyright reports false positives
+    # pyright: ignore[reportCallIssue]
 
     temperature: float = Field(default=1.0, ge=0.0)
     top_p: float = Field(default=1.0, ge=0.0, le=1.0)

@@ -43,6 +43,7 @@ class BaseProvider(ABC):
 
     def __init__(self, config: ProviderConfig):
         self._config = config
+        self._request_queue = None
 
     @abstractmethod
     async def cleanup(self) -> None:

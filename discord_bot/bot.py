@@ -752,6 +752,7 @@ class NimbusDiscordBot(commands.Bot):
                     system=system_prompt,
                     tools=self._get_active_tools(web_search_enabled, consecutive_web_search_failures),
                 )
+                # type: ignore[union-attr] - m is either Message or dict, handled by hasattr
                 current_input_tokens = get_token_count(
                     current_request.messages, system_prompt, current_request.tools
                 )

@@ -1643,6 +1643,23 @@ class NvidiaNimProvider(BaseProvider):
                         self._live_nim_reply(reply_log_buffer, kind="REPLY")
                         reply_log_buffer = ""
 
+
+                    # Detect empty/malformed response: stream completed but no finish_reason
+                    # and no content produced. NVIDIA sometimes returns HTTP 200 with an empty
+                    # body when workers are overloaded or backend times out mid-processing.
+                    if finish_reason is None and not (
+                        sse.accumulated_text
+                        or sse.accumulated_reasoning
+                        or sse.blocks.tool_states
+                    ):
+                        logger.warning(
+                            "{}_STREAM: Stream completed with no content or finish_reason - "
+                            "treating as retryable error",
+                            tag,
+                        )
+                        raise StreamTruncatedError(
+                            "NVIDIA backend returned empty response (worker exhausted or timeout)"
+                        )
                 except APIStatusError as e:
                     # Check for system role error during streaming (e.g., "System message must be at the beginning")
                     if _is_role_error(e):
