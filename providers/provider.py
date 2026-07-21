@@ -1688,10 +1688,11 @@ class NvidiaNimProvider(BaseProvider):
                 APIStatusError,
                 httpx.HTTPStatusError,
                 APIError,
+                StreamTruncatedError,
             ) as e:
                 # Check if it's a retryable 5xx server error
                 is_retryable = isinstance(
-                    e, (APIConnectionError, APITimeoutError, httpx.ReadError, httpx.TimeoutException)
+                    e, (APIConnectionError, APITimeoutError, httpx.ReadError, httpx.TimeoutException, StreamTruncatedError)
                 ) or _is_retryable_server_error(e) or _is_resource_exhausted_error(e)
                 last_error_tag = f"{type(e).__name__}"
                 detail = _format_error_detail(e)
