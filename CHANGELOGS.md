@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
-## v2.0.13 - Date: 2026-07-18
+## v2.0.13 - Date: 2026-07-20
 
 ### Added
 
@@ -16,42 +16,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Reasoning budget validation** — If `reasoning_budget >= max_tokens` (after upgrade), sets `reasoning_budget=-1` (unlimited) and relies on `max_tokens` as the effective cap to prevent NVIDIA rejection
 - **Explicit logging** — Logs both token upgrades and budget adjustments for audit trail
 
-#### Type Safety & Defensive Null Checks
-- Added type: ignore comments for mypy/pyright compliance (sys._MEIPASS, termios, attribute access)
+#### Empty NIM Stream Handling & Provider Resilience
+- **Empty stream detection** — NvidiaNimProvider now detects empty/malformed NVIDIA NIM streaming responses (stream finishes with no `finish_reason` and no content: text, reasoning, or tool states) and raises `StreamTruncatedError` to trigger retry logic
+- **Request queue attribute on BaseProvider** — Added default `_request_queue = None` on `BaseProvider` to enable queue stats in `api/routes.queue_status` with proper typing
+- **Rate limit slot release on pre-response failures** — Buffered requests that fail before reaching the server now properly release rate-limit slots via `release_last_slot()`
+- **Expanded retryable errors** — `execute_with_rate_limit` now treats `httpx.TimeoutException`, `APIConnectionError`, `APITimeoutError`, and 5xx server errors as retryable; releases slots, logs, and applies exponential backoff
+
+#### Discord Bot Stability & DM Handling
+- **DM/channel guards** — Added defensive checks for `interaction.channel` being `None` or not a messageable channel; returns early instead of crashing
+- **Missing channel/category guards** — In `discord_bot/views.py`, validates resolved category is a `discord.CategoryChannel` before use; returns clear ephemeral error if not
+- **Fallback channel/guild names** — Backup/backup commands now use `getattr(channel, 'name', 'dm')` and `getattr(channel.guild, 'name', 'Unknown Guild')` for DM-friendly filenames and messages
+- **Conversation wrapper ergonomics** — `add_message` now calls `add_message_with_user` with explicit keyword arguments for `tools_used` and `tool_results`
+
+#### Type Safety, Null Checks & Pylance Compliance
+- Added type: ignore comments for mypy/pyright compliance (sys._MEIPASS, termios, attribute access on unions)
 - Defensive null checks for `model_name`, `detail`, `extracted`, `new_budget` variables
 - Fixed bugs: removed malformed duplicate code in `_rebuild_without_key()`, corrected `_has_thinking_params()` removal
 - Simplified tiktoken cache logic by removing fallback handling
-- Fixed priority enum casting in request_queue.py
+- Fixed priority enum casting in `request_queue.py` (`RequestPriority(priority)` → `RequestPriority(priority)`)
+- Fixed pyright directive in `config/nim.py` (changed to `# pyright: ignore[reportCallIssue]`)
+
+#### Discord Bot & Views Resilience
+- **CategoryChannel validation** — `CreateChannelModal` and `list_channels` button now verify `interaction.guild.get_channel()` returns a `CategoryChannel` before use
+- **DM/guild guards** — Commands requiring guild channels now explicitly check `interaction.guild` first and return early for DMs
+- `Member` vs `User` typing — `CompactConfirmView` and related classes use `discord.abc.User` to accept both `User` and `Member`
+
+#### Pylance/Type Checking Fixes
+- Fixed pyright directive in `config/nim.py` (invalid `disable=` syntax → `ignore[...]`)
+- Added `# type: ignore[union-attr]` and `# type: ignore[attr-defined]` suppressions for union attribute access patterns
+- Added `cast(Literal["user", "assistant", "system"], ...)` for message role literal types
+- Fixed `reportIndexIssue` for `Message` indexing in `bot.py`
+
+#### Discord Bot DM/Channel Safety
+- All command handlers now guard with `if not interaction.guild: return` before using `interaction.channel`
+- `interaction.channel` accesses wrapped with `if channel is None: return`
+- Channel name access uses `getattr(channel, 'name', 'dm')` for DM friendliness
+- `isinstance(category, discord.CategoryChannel)` check before using as category
+
+#### Conversation API Ergonomics
+- `add_message` now calls `add_message_with_user` with keyword arguments for `tools_used` and `tool_results` instead of positional
 
 ### Changed
 
-#### Rate Limiter UI Improvements
-- Renamed rate limiter method: `reset_adaptive_backoff()` → `reset_reactive_block()`
-- Updated UI messaging: "Resets in" → "Next Slot free in" for clarity
-- Used `cast(MessagesResponse, response)` for type-safe casting in optimization handler
+#### NIM_MAX_TOKENS Behavior
+- **Default reduced** from 202000 to 32000 in code and `.env.example`
+- **Upgrade logic added** — if request `max_tokens` < `NIM_MAX_TOKENS` env value, proxy upgrades to env value (log: "max_tokens X upgraded to NIM_MAX_TOKENS: Y")
+- Removed fallback to `nim.max_tokens` when request doesn't provide `max_tokens`; lets NIM model use its own defaults
 
-#### Pydantic Settings & Env Handling
-- `NIM_MAX_TOKENS` default in code changed from 202000 → 32000
-- `.env.example` reorganized with clearer section headers, removed duplicated entries, improved examples
-- `max_tokens` handling in `providers/request.py`: now only set when request explicitly provides it; no fallback to `nim.max_tokens` (introduced in prior commit 720ffc4)
+#### .env.example Reorganization
+- Full restructure with section headers (CORE SERVER, NVIDIA NIM, PROVIDER RATE LIMITING, REQUEST QUEUE, MCP, DISCORD BOT, COMMAND TOGGLES)
+- Removed duplicated entries and improved examples/comments
+- `NIM_MAX_TOKENS=32000` default shown
 
-#### Request Building Logic
-- **Added max_tokens upgrade logic** — if request value < `NIM_MAX_TOKENS` env value, upgrades to env value instead of using request's lower value
+#### Rate Limiter Improvements
+- **Method renamed** — `reset_adaptive_backoff()` → `reset_reactive_block()`
+- **UI messaging** — "Resets in" → "Next Slot free in" for clarity
+- **New `release_last_slot()`** — Explicit slot release for pre-response failures
+- **Retriable error expansion** — Now handles `httpx.TimeoutException`, `openai.APIConnectionError`, `openai.APITimeoutError`, 5xx; releases slots, logs, applies exponential backoff
+- **`cast(MessagesResponse, response)`** — Type-safe casting in optimization handler
+
+#### Discord Bot DM/Channel Safety
+- All command handlers now guard with `if not interaction.guild: return` before using `interaction.channel`
+- `interaction.channel` accesses wrapped with `if channel is None: return`
+- Channel name access uses `getattr(channel, 'name', 'dm')` for DM friendliness
+- `isinstance(category, discord.CategoryChannel)` check before using as category
+
+#### Conversation API Ergonomics
+- `add_message` now calls `add_message_with_user` with keyword arguments for `tools_used` and `tool_results` instead of positional
 
 ### Fixed
 
 - Various Pylance/pyright type checking issues across codebase
-- Rate limit status display: "Resets in" → "Next Slot free in" for better clarity
+- Rate limit status display: "Resets in" → "Next Slot free in" for clarity
+- `config/nim.py` pyright directive syntax (invalid `disable=` → `ignore[...]`)
+- Empty/malformed NIM stream handling (no `finish_reason`, no content → retry)
+- `BaseProvider` missing `_request_queue` attribute
+- Discord DM crashes (missing channel/category/category type)
+- Rate limit slot leaks on pre-response failures
+- `Conversation.add_message` positional arg mismatch for `tools_used`/`tool_results`
+- Priority enum casting in `request_queue.py` (`RequestPriority(priority)` → `RequestPriority(priority)`)
+
+### Removed
+
+- Fallback to `nim.max_tokens` when request doesn't provide `max_tokens` (lets NIM use its own defaults)
 
 ### Files Touched
 
 - **`.env.example`** — Full restructure with clarified defaults, removed duplicates, improved comments; `NIM_MAX_TOKENS=32000` default
-- **`config/nim.py`** — `max_tokens` default from 202000 → 32000
+- **`config/nim.py`** — `max_tokens` default from 202000 → 32000; pyright directive fix
 - **`providers/request.py`** — Token upgrade logic, reasoning budget validation, logging
 - **`api/app.py`** — Rate limit status message update
+- **`api/routes.py`** — Queue status endpoint with `_request_queue` typing comment; DM/guild guards
 - **`api/optimization_handlers.py`** — Type-safe casting
+- **`providers/request.py`** — Token upgrade logic, reasoning budget validation, logging
 - **`providers/request_queue.py`** — Priority enum casting fix
-- **`providers/rate_limit.py`** — Method rename, UI message update
+- **`providers/rate_limit.py`** — `release_last_slot()`, expanded retryable errors, `reset_reactive_block()`, exponential backoff
+- **`providers/provider.py`** — Empty stream detection, `StreamTruncatedError`, rate limit slot release, `BaseProvider._request_queue`
+- **`providers/base.py`** — `_request_queue = None`, `_client = None`
+- **`discord_bot/bot.py`** — Type ignores for union attributes, DM message guards, `getattr` for channel names
+- **`discord_bot/cog.py`** — `getattr` for channel/guild names, `isinstance` CategoryChannel checks, `interaction.channel` None guards, `discord.abc.User` typing, keyword args in `add_message`
+- **`discord_bot/views.py`** — CategoryChannel validation, `client.settings` type ignores
+- **`discord_bot/conversation.py`** — Keyword args for `add_message_with_user`
+- **`config/nim.py`** — Pyright directive fix
+- **`config/settings.py`** — (minor)
+- **`providers/base.py`** — `_request_queue = None`, `_client = None`
+- **`providers/request.py`** — Token upgrade, budget validation
+- **`providers/rate_limit.py`** — `release_last_slot()`, retryable error expansion, `reset_reactive_block()`, backoff
+- **`packaged_entry.py`** - (typing)
+- **`api/optimization_handlers.py`** — `cast(MessagesResponse, response)`
 - **`tests/providers/test_nvidia_nim_request.py`** — Updated tests for upgrade behavior
 - **`tests/providers/test_nvidia_nim.py`** — Updated test expectations
 - **`tests/api/test_dependencies.py`** — Mock settings fix
