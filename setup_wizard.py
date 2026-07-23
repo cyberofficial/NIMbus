@@ -438,6 +438,8 @@ def _write_dotenv(path: Path, params: dict, is_linux: bool = False) -> None:
         f"ENABLE_SUGGESTION_MODE_SKIP={params.get('enable_suggestion_mode_skip', 'true')}",
         f"ENABLE_FILEPATH_EXTRACTION_MOCK={params.get('enable_filepath_extraction_mock', 'true')}",
         f"FAST_PREFIX_DETECTION={str(params.get('fast_prefix_detection', True)).lower()}",
+        # Show NIM Reply
+        f"SHOW_NIM_REPLY={str(params.get('show_nim_reply', False)).lower()}",
         # Fable Model Override
         f"FABLE_OVERRIDE={params.get('fable_override', '')}",
         # MCP Server settings
@@ -802,6 +804,26 @@ def _run_section(
             except ValueError:
                 request_queue_num_workers = 4
             print()
+            print("  Discord Priority: Priority for Discord bot requests (2=HIGH, 1=NORMAL, 0=LOW)")
+            print("  Default: 2 (HIGH)")
+            discord_priority_str = _prompt("  Discord priority (0-2)", default=str(existing.get("REQUEST_QUEUE_DISCORD_PRIORITY", "2")))
+            try:
+                request_queue_discord_priority = int(discord_priority_str)
+                if request_queue_discord_priority < 0 or request_queue_discord_priority > 2:
+                    request_queue_discord_priority = 2
+            except ValueError:
+                request_queue_discord_priority = 2
+            print()
+            print("  API Priority: Priority for API proxy requests (2=HIGH, 1=NORMAL, 0=LOW)")
+            print("  Default: 1 (NORMAL)")
+            api_priority_str = _prompt("  API priority (0-2)", default=str(existing.get("REQUEST_QUEUE_API_PRIORITY", "1")))
+            try:
+                request_queue_api_priority = int(api_priority_str)
+                if request_queue_api_priority < 0 or request_queue_api_priority > 2:
+                    request_queue_api_priority = 1
+            except ValueError:
+                request_queue_api_priority = 1
+            print()
             print("  Resource Exhausted Retries: Max retry attempts for 'Worker local")
             print("  total request limit reached' errors from NVIDIA's shared worker nodes.")
             print("  Set to 0 for endless retries. Default: 10")
@@ -816,6 +838,8 @@ def _run_section(
             "request_queue_max_size": request_queue_max_size,
             "request_queue_timeout": request_queue_timeout,
             "request_queue_num_workers": request_queue_num_workers,
+            "request_queue_discord_priority": request_queue_discord_priority,
+            "request_queue_api_priority": request_queue_api_priority,
             "resource_exhausted_retries": resource_exhausted_retries,
         })
 
@@ -879,11 +903,15 @@ def _run_section(
             nim_rpm_reset = int(rpm_reset_str)
         except ValueError:
             nim_rpm_reset = 5
+        print()
+        print("  Show NIM Reply (verbose logging of NVIDIA responses):")
+        show_nim_reply = _prompt_yes_no("  Show NIM Reply (SHOW_NIM_REPLY)?", default=False)
         updates.update({
             "provider_rate_limit": provider_rate_limit,
             "provider_rate_window": provider_rate_window,
             "provider_max_concurrency": provider_max_concurrency,
             "nim_rpm_reset": nim_rpm_reset,
+            "show_nim_reply": show_nim_reply,
         })
 
     elif section == "http_timeouts":
@@ -1008,6 +1036,8 @@ def _run_section(
         )
         discord_web_search_max_results = 10
         discord_web_search_max_iterations = 10
+        discord_web_search_max_result_size = 5000
+        discord_web_search_include_in_history = True
         if discord_enable_web_search:
             print()
             max_results_str = _prompt(
@@ -1026,10 +1056,25 @@ def _run_section(
                 discord_web_search_max_iterations = int(max_iter_str)
             except ValueError:
                 discord_web_search_max_iterations = 10
+            max_result_size_str = _prompt(
+                "  Max result size in chars (DISCORD_WEB_SEARCH_MAX_RESULT_SIZE)",
+                default=str(existing.get("DISCORD_WEB_SEARCH_MAX_RESULT_SIZE", "5000"))
+            )
+            try:
+                discord_web_search_max_result_size = int(max_result_size_str)
+            except ValueError:
+                discord_web_search_max_result_size = 5000
+            include_history = _prompt_yes_no(
+                "  Include search results in conversation history (DISCORD_WEB_SEARCH_INCLUDE_IN_HISTORY)?",
+                default=True
+            )
+            discord_web_search_include_in_history = include_history
         updates.update({
             "discord_enable_web_search": discord_enable_web_search,
             "discord_web_search_max_results": discord_web_search_max_results,
             "discord_web_search_max_iterations": discord_web_search_max_iterations,
+            "discord_web_search_max_result_size": discord_web_search_max_result_size,
+            "discord_web_search_include_in_history": discord_web_search_include_in_history,
         })
 
     elif section == "mcp":
@@ -1056,10 +1101,16 @@ def _run_section(
             web_search_debug = _prompt_yes_no(
                 "  Enable debug logging for web search (WEB_SEARCH_DEBUG)?", default=False
             )
+            mcp_browser_headless = _prompt_yes_no(
+                "  Use headless browser (MCP_BROWSER_HEADLESS)?", default=True
+            )
+        else:
+            mcp_browser_headless = True
         updates.update({
             "configure_mcp": configure_mcp,
             "mcp_fetch_timeout": mcp_fetch_timeout,
             "web_search_debug": web_search_debug,
+            "mcp_browser_headless": mcp_browser_headless,
         })
 
     elif section == "discord":
@@ -1841,6 +1892,9 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                     "request_queue_max_size": updates.get("request_queue_max_size", int(merged.get("REQUEST_QUEUE_MAX_SIZE", 600))),
                     "request_queue_timeout": updates.get("request_queue_timeout", float(merged.get("REQUEST_QUEUE_TIMEOUT", 300.0))),
                     "request_queue_num_workers": updates.get("request_queue_num_workers", int(merged.get("REQUEST_QUEUE_NUM_WORKERS", 4))),
+                    "request_queue_discord_priority": updates.get("request_queue_discord_priority", int(merged.get("REQUEST_QUEUE_DISCORD_PRIORITY", 2))),
+                    "request_queue_api_priority": updates.get("request_queue_api_priority", int(merged.get("REQUEST_QUEUE_API_PRIORITY", 1))),
+                    "show_nim_reply": updates.get("show_nim_reply", merged.get("SHOW_NIM_REPLY", "false") == "true"),
                     "enable_recap_skip": merged.get("ENABLE_RECAP_SKIP", "true"),
                     "enable_network_probe_mock": merged.get("ENABLE_NETWORK_PROBE_MOCK", "true"),
                     "enable_title_generation_skip": merged.get("ENABLE_TITLE_GENERATION_SKIP", "true"),
@@ -1895,9 +1949,16 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                     "discord_cmd_prefix_new": updates.get("discord_cmd_prefix_new", merged.get("DISCORD_CMD_PREFIX_NEW", "true") == "true"),
                     "discord_cmd_prefix_status": updates.get("discord_cmd_prefix_status", merged.get("DISCORD_CMD_PREFIX_STATUS", "true") == "true"),
                     # Discord Web Search
-                    "discord_enable_web_search": merged.get("DISCORD_ENABLE_WEB_SEARCH", "true") == "true",
+                    "discord_enable_web_search": merged.get("DISCORD_ENABLE_WEB_SEARCH", "true").lower() == "true",
                     "discord_web_search_max_results": int(merged.get("DISCORD_WEB_SEARCH_MAX_RESULTS", 10)),
                     "discord_web_search_max_iterations": int(merged.get("DISCORD_WEB_SEARCH_MAX_ITERATIONS", 10)),
+                    "discord_web_search_max_result_size": int(merged.get("DISCORD_WEB_SEARCH_MAX_RESULT_SIZE", 5000)),
+                    "discord_web_search_include_in_history": merged.get("DISCORD_WEB_SEARCH_INCLUDE_IN_HISTORY", "true").lower() == "true",
+                    "discord_browser_headless": merged.get("DISCORD_BROWSER_HEADLESS", "true").lower() == "true",
+                    "mcp_browser_headless": merged.get("MCP_BROWSER_HEADLESS", "true").lower() == "true",
+                    "request_queue_discord_priority": int(merged.get("REQUEST_QUEUE_DISCORD_PRIORITY", 2)),
+                    "request_queue_api_priority": int(merged.get("REQUEST_QUEUE_API_PRIORITY", 1)),
+                    "show_nim_reply": merged.get("SHOW_NIM_REPLY", "false").lower() == "true",
                 },
                 is_linux=is_linux,
             )
@@ -2154,6 +2215,26 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 request_queue_num_workers = int(workers_str)
             except ValueError:
                 request_queue_num_workers = 4
+            print()
+            print("  Discord Priority: Priority for Discord bot requests (2=HIGH, 1=NORMAL, 0=LOW)")
+            print("  Default: 2 (HIGH)")
+            discord_priority_str = _prompt("  Discord priority (0-2)", default="2")
+            try:
+                request_queue_discord_priority = int(discord_priority_str)
+                if request_queue_discord_priority < 0 or request_queue_discord_priority > 2:
+                    request_queue_discord_priority = 2
+            except ValueError:
+                request_queue_discord_priority = 2
+            print()
+            print("  API Priority: Priority for API proxy requests (2=HIGH, 1=NORMAL, 0=LOW)")
+            print("  Default: 1 (NORMAL)")
+            api_priority_str = _prompt("  API priority (0-2)", default="1")
+            try:
+                request_queue_api_priority = int(api_priority_str)
+                if request_queue_api_priority < 0 or request_queue_api_priority > 2:
+                    request_queue_api_priority = 1
+            except ValueError:
+                request_queue_api_priority = 1
 
         # ---- Step 6: Optimization Settings ----
         print()
@@ -2223,6 +2304,9 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
             nim_rpm_reset = int(rpm_reset_str)
         except ValueError:
             nim_rpm_reset = 5
+        print()
+        print("  Show NIM Reply (verbose logging of NVIDIA responses):")
+        show_nvidia_reply = _prompt_yes_no("  Show NIM Reply (SHOW_NIM_REPLY)?", default=False)
 
         # ---- Step 6c: HTTP Client Timeouts ----
         print()
@@ -2641,6 +2725,8 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 "provider_max_concurrency": provider_max_concurrency,
                 # Adaptive Rate Limiting
                 "nim_rpm_reset": nim_rpm_reset,
+                # Show NIM Reply
+                "show_nim_reply": show_nvidia_reply,
                 # HTTP Client Timeouts
                 "http_read_timeout": http_read_timeout,
                 "http_write_timeout": http_write_timeout,
@@ -2651,6 +2737,8 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 "request_queue_max_size": request_queue_max_size,
                 "request_queue_timeout": request_queue_timeout,
                 "request_queue_num_workers": request_queue_num_workers,
+                "request_queue_discord_priority": request_queue_discord_priority,
+                "request_queue_api_priority": request_queue_api_priority,
                 "enable_recap_skip": enable_recap_skip,
                 "enable_network_probe_mock": enable_network_probe_mock,
                 "enable_title_generation_skip": enable_title_generation_skip,
@@ -2711,6 +2799,8 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 "discord_enable_web_search": discord_enable_web_search,
                 "discord_web_search_max_results": discord_web_search_max_results,
                 "discord_web_search_max_iterations": discord_web_search_max_iterations,
+                "discord_web_search_max_result_size": 5000,
+                "discord_web_search_include_in_history": True,
                 "discord_browser_headless": discord_browser_headless,
             },
             is_linux=is_linux,
