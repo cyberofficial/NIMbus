@@ -7,6 +7,16 @@ Run with: uv run uvicorn server:app --host 0.0.0.0 --port 8082 --timeout-gracefu
 
 import sys
 
+# Process CLI flags BEFORE importing settings (must set env vars first)
+if "--swapper" in sys.argv:
+    import os
+
+    os.environ["SWAPPER_ENABLED"] = "true"
+    print(
+        "Model Swapper enabled - use <modelswap:model-name> in chat to switch models",
+        file=sys.stderr,
+    )
+
 from config.logging_config import configure_logging
 from config.settings import get_settings
 

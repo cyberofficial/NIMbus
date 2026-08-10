@@ -427,6 +427,12 @@ def _write_dotenv(path: Path, params: dict, is_linux: bool = False) -> None:
         f"NIM_MAX_TOKENS={params.get('nim_max_tokens', 202000)}",
         f"NIM_REASONING_EFFORT={params.get('nim_reasoning_effort', 'high')}",
         f"NIM_REASONING_EFFORT_MAPPINGS={params.get('nim_reasoning_effort_mappings', '')}",
+        f"NIM_REASONING_BUDGET={params.get('nim_reasoning_budget', 0)}",
+        f"NIM_ENABLE_THINKING={'true' if params.get('nim_enable_thinking', True) else 'false'}",
+        f"NIM_CHAT_TEMPLATE_ENABLE_THINKING={'true' if params.get('nim_chat_template_enable_thinking', True) else 'false'}",
+        f"NIM_CHAT_TEMPLATE_LOW_EFFORT={'true' if params.get('nim_chat_template_low_effort', False) else 'false'}",
+        f"NIM_CHAT_TEMPLATE_MEDIUM_EFFORT={'true' if params.get('nim_chat_template_medium_effort', False) else 'false'}",
+        f"NIM_CHAT_TEMPLATE_HIGH_EFFORT={'true' if params.get('nim_chat_template_high_effort', False) else 'false'}",
         # Model Swapper
         f"SWAPPER_ENABLED={str(params.get('swapper_enabled', False)).lower()}",
         f"SWAPPER_TEST_PROMPT={params.get('swapper_test_prompt', 'Please reply with pong only, nothing else')}",
@@ -969,10 +975,36 @@ def _run_section(
             "  Reasoning effort mappings JSON (NIM_REASONING_EFFORT_MAPPINGS)",
             default=existing.get("NIM_REASONING_EFFORT_MAPPINGS", "")
         )
+        print()
+        print("  Reasoning budget (0 = auto from model config, -1 = unlimited):")
+        reasoning_budget_str = _prompt("  Reasoning budget (NIM_REASONING_BUDGET)", default=str(existing.get("NIM_REASONING_BUDGET", "0")))
+        try:
+            nim_reasoning_budget = int(reasoning_budget_str)
+        except ValueError:
+            nim_reasoning_budget = 0
+        print()
+        print("  Enable thinking globally (overrides model config if false):")
+        nim_enable_thinking = _prompt_yes_no("  Enable thinking (NIM_ENABLE_THINKING)?", default=True)
+        print()
+        print("  Chat template kwargs effort flags:")
+        print("    enable_thinking - enables thinking in chat template")
+        print("    low_effort - adds low effort to chat template")
+        print("    medium_effort - adds medium effort to chat template")
+        print("    high_effort - adds high effort to chat template")
+        nim_chat_template_enable_thinking = _prompt_yes_no("    enable_thinking (NIM_CHAT_TEMPLATE_ENABLE_THINKING)?", default=True)
+        nim_chat_template_low_effort = _prompt_yes_no("    low_effort (NIM_CHAT_TEMPLATE_LOW_EFFORT)?", default=False)
+        nim_chat_template_medium_effort = _prompt_yes_no("    medium_effort (NIM_CHAT_TEMPLATE_MEDIUM_EFFORT)?", default=False)
+        nim_chat_template_high_effort = _prompt_yes_no("    high_effort (NIM_CHAT_TEMPLATE_HIGH_EFFORT)?", default=False)
         updates.update({
             "nim_max_tokens": nim_max_tokens,
             "nim_reasoning_effort": nim_reasoning_effort,
             "nim_reasoning_effort_mappings": nim_reasoning_effort_mappings,
+            "nim_reasoning_budget": nim_reasoning_budget,
+            "nim_enable_thinking": nim_enable_thinking,
+            "nim_chat_template_enable_thinking": nim_chat_template_enable_thinking,
+            "nim_chat_template_low_effort": nim_chat_template_low_effort,
+            "nim_chat_template_medium_effort": nim_chat_template_medium_effort,
+            "nim_chat_template_high_effort": nim_chat_template_high_effort,
         })
 
     elif section == "model_swapper":
@@ -1808,7 +1840,33 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
       --init restore        Restore from ~/.claude/ (Windows)
       --init linux          Linux mode (searches for settings.json)
       --init linux restore  Restore from saved Linux settings path
+      --help                Show help and exit
     """
+    # Handle --help flag
+    if "--help" in argv or "-h" in argv:
+        print()
+        print("NIMbus -- Claude Code / NVIDIA NIM Proxy")
+        print("Version 2.0.0")
+        print("Interactive Setup Wizard")
+        print()
+        print("Usage:")
+        print("  nimbus_setup_wizard.exe [--init] [--init linux] [--init restore] [--init linux restore]")
+        print()
+        print("Options:")
+        print("  --init               Run Windows setup wizard (default)")
+        print("  --init linux         Run Linux setup wizard")
+        print("  --init restore       Restore settings.json from backup (Windows)")
+        print("  --init linux restore Restore settings.json from backup (Linux)")
+        print("  --help, -h           Show this help and exit")
+        print()
+        print("Examples:")
+        print("  nimbus_setup_wizard.exe --init              # Run Windows wizard")
+        print("  nimbus_setup_wizard.exe --init linux        # Run Linux wizard")
+        print("  nimbus_setup_wizard.exe --init restore      # Restore Windows backup")
+        print("  nimbus_setup_wizard.exe --init linux restore # Restore Linux backup")
+        print()
+        return
+
     is_linux = "linux" in argv
     is_restore = "restore" in argv
 
@@ -1905,6 +1963,12 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                     "nim_max_tokens": int(merged.get("NIM_MAX_TOKENS", 202000)),
                     "nim_reasoning_effort": merged.get("NIM_REASONING_EFFORT", "high"),
                     "nim_reasoning_effort_mappings": merged.get("NIM_REASONING_EFFORT_MAPPINGS", ""),
+                    "nim_reasoning_budget": int(merged.get("NIM_REASONING_BUDGET", 0)),
+                    "nim_enable_thinking": merged.get("NIM_ENABLE_THINKING", "true").lower() == "true",
+                    "nim_chat_template_enable_thinking": merged.get("NIM_CHAT_TEMPLATE_ENABLE_THINKING", "true").lower() == "true",
+                    "nim_chat_template_low_effort": merged.get("NIM_CHAT_TEMPLATE_LOW_EFFORT", "false").lower() == "true",
+                    "nim_chat_template_medium_effort": merged.get("NIM_CHAT_TEMPLATE_MEDIUM_EFFORT", "false").lower() == "true",
+                    "nim_chat_template_high_effort": merged.get("NIM_CHAT_TEMPLATE_HIGH_EFFORT", "false").lower() == "true",
                     # Model Swapper
                     "swapper_enabled": merged.get("SWAPPER_ENABLED", "false") == "true",
                     "swapper_test_prompt": merged.get("SWAPPER_TEST_PROMPT", "Please reply with pong only, nothing else"),
@@ -2749,6 +2813,12 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 "nim_max_tokens": nim_max_tokens,
                 "nim_reasoning_effort": nim_reasoning_effort,
                 "nim_reasoning_effort_mappings": nim_reasoning_effort_mappings,
+                "nim_reasoning_budget": 0,
+                "nim_enable_thinking": True,
+                "nim_chat_template_enable_thinking": True,
+                "nim_chat_template_low_effort": False,
+                "nim_chat_template_medium_effort": False,
+                "nim_chat_template_high_effort": False,
                 # Model Swapper
                 "swapper_enabled": swapper_enabled,
                 "swapper_test_prompt": swapper_test_prompt,
