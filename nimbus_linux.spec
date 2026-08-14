@@ -6,7 +6,44 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[('build_resources/tiktoken_cache/9b5ad71b2ce5302211f9c61530b329a4922fc6a4', 'tiktoken_cache')],
-    hiddenimports=['uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.loops.asyncio', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.http.h11_impl', 'uvicorn.protocols.http.httptools_impl', 'uvicorn.protocols.http.flow_control', 'uvicorn.protocols.websockets.auto', 'uvicorn.protocols.websockets.websockets_impl', 'uvicorn.middleware.asgi2', 'uvicorn.middleware.wsgi', 'uvicorn.middleware.proxy_headers', 'tiktoken_ext.openai_public', 'mcp', 'mcp.server', 'mcp.server.fastmcp', 'duckduckgo_search', 'lxml', 'primp'],
+    hiddenimports=[
+        # uvicorn internals
+        'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.loops.asyncio',
+        'uvicorn.protocols.http.auto', 'uvicorn.protocols.http.h11_impl',
+        'uvicorn.protocols.http.httptools_impl', 'uvicorn.protocols.http.flow_control',
+        'uvicorn.protocols.websockets.auto', 'uvicorn.protocols.websockets.websockets_impl',
+        'uvicorn.middleware.asgi2', 'uvicorn.middleware.wsgi', 'uvicorn.middleware.proxy_headers',
+        # tiktoken
+        'tiktoken_ext.openai_public',
+        # mcp
+        'mcp', 'mcp.server', 'mcp.server.fastmcp',
+        # external libs
+        'lxml', 'lxml.etree',
+        # api
+        'api', 'api.app', 'api.routes', 'api.dependencies', 'api.middleware',
+        'api.models', 'api.models.anthropic', 'api.models.responses',
+        'api.bot_protection', 'api.optimization_handlers', 'api.request_utils',
+        'api.command_utils', 'api.detection', 'api.effort_store',
+        # config
+        'config', 'config.settings', 'config.nim', 'config.logging_config',
+        # cli
+        'cli', 'cli.manager', 'cli.session', 'cli.process_registry',
+        # discord_bot
+        'discord_bot', 'discord_bot.bot', 'discord_bot.cog', 'discord_bot.conversation',
+        'discord_bot.persistence', 'discord_bot.rate_limit', 'discord_bot.views',
+        'discord_bot.user_blocking', 'discord_bot.tools', 'discord_bot.tools.web_search',
+        # providers
+        'providers', 'providers.provider', 'providers.base', 'providers.text',
+        'providers.rate_limit', 'providers.request_queue', 'providers.logging_utils',
+        'providers.error_mapping', 'providers.sse_builder', 'providers.header_capture',
+        'providers.heuristic_tool_parser', 'providers.request', 'providers.tiktoken_cache',
+        'providers.think_parser', 'providers.message_converter', 'providers.exceptions',
+        'providers.utils',
+        # websearch
+        'websearch', 'websearch.duckduckgo_html',
+        # pydantic-settings
+        'pydantic_settings',
+    ],
     hookspath=['build_hooks'],
     hooksconfig={},
     runtime_hooks=[],
