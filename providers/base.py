@@ -36,6 +36,8 @@ class ProviderConfig(BaseModel):
     request_queue_num_workers: int = 4
     # Adaptive rate limiting
     rpm_reset: int = 5
+    # Hidden auto-compact
+    hidden_compact: bool = False
 
 
 class BaseProvider(ABC):

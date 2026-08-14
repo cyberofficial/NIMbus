@@ -55,6 +55,14 @@ from providers.request_queue import RequestPriority, RequestQueue
 from providers.sse_builder import SSEBuilder, map_stop_reason
 from providers.think_parser import ContentType, ThinkTagParser
 
+# Module-level hidden compact imports are avoided to prevent circular imports.
+# _is_context_length_error is imported lazily inside _do_stream_request where it is used.
+
+# Sentinel raised when hidden compact finishes the stream so the calling
+# retry loop knows NOT to emit duplicate message_delta / message_stop events.
+class _HiddenCompactDone(Exception):
+    """Raised by _do_stream_request when hidden compact finished the stream."""
+
 NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
 
@@ -749,6 +757,8 @@ class NvidiaNimProvider(BaseProvider):
         request_id: str | None = None,
         model_override: str | None = None,
         use_rate_limiter_concurrency: bool = True,
+        channel_id: int | None = None,
+        conversation_manager: Any | None = None,
     ) -> dict:
         """Internal implementation of buffered request with retry logic.
 
@@ -796,12 +806,12 @@ class NvidiaNimProvider(BaseProvider):
                 # inside a queue worker (which holds the queue's worker semaphore)
                 if use_rate_limiter_concurrency:
                     async with self._global_rate_limiter.concurrency_slot():
-                        result = await self._do_buffered_request(body, request, input_tokens, request_id, tag=tag, attempt=attempt, req_tag=req_tag)
+                        result = await self._do_buffered_request(body, request, input_tokens, request_id, tag=tag, attempt=attempt, req_tag=req_tag, channel_id=channel_id, conversation_manager=conversation_manager)
                         self._global_rate_limiter.on_success()
                         return result
 
                 # Queue already holds worker slot - just execute
-                result = await self._do_buffered_request(body, request, input_tokens, request_id, tag=tag, attempt=attempt, req_tag=req_tag)
+                result = await self._do_buffered_request(body, request, input_tokens, request_id, tag=tag, attempt=attempt, req_tag=req_tag, channel_id=channel_id, conversation_manager=conversation_manager)
                 self._global_rate_limiter.on_success()
                 return result
 
@@ -909,7 +919,7 @@ class NvidiaNimProvider(BaseProvider):
             "NVIDIA backend dropped connection after all retries"
         ) from last_error
 
-    async def _do_buffered_request(self, body: dict, request: Any, input_tokens: int, request_id: str | None, tag: str = "", attempt: int = 0, req_tag: str = "") -> dict:
+    async def _do_buffered_request(self, body: dict, request: Any, input_tokens: int, request_id: str | None, tag: str = "", attempt: int = 0, req_tag: str = "", *, channel_id: int | None = None, conversation_manager: Any | None = None) -> dict:
         """Execute the actual buffered request (shared by queued and non-queued paths)."""
         req_token = request_id_var.set(request_id)
         try:
@@ -1025,6 +1035,28 @@ class NvidiaNimProvider(BaseProvider):
                                 stream=False,
                             )
                         else:
+                            from providers.hidden_compact import (
+                                _is_context_length_error,
+                                _attempt_hidden_compact_buffered,
+                            )
+                            if (
+                                self._config.hidden_compact
+                                and _is_context_length_error(e)
+                            ):
+                                logger.info(
+                                    "🔄 {}_BUFFERED: Context length error detected — "
+                                    "attempting hidden auto-compact",
+                                    tag,
+                                )
+                                return await _attempt_hidden_compact_buffered(
+                                    provider=self,
+                                    original_body=body,
+                                    channel_id=channel_id or 0,
+                                    conversation_manager=conversation_manager,
+                                    tag=tag,
+                                    attempt=attempt,
+                                    original_error=e,
+                                )
                             raise
         finally:
             request_id_var.reset(req_token)
@@ -1178,16 +1210,23 @@ class NvidiaNimProvider(BaseProvider):
         request_id: str | None = None,
         model_override: str | None = None,
         priority: int = RequestPriority.NORMAL,
+        channel_id: int | None = None,
+        conversation_manager: Any | None = None,
     ) -> AsyncIterator[str]:
         """Stream response in Anthropic SSE format.
 
         Requests are queued to respect NVIDIA NIM worker limits.
+
+        Args:
+            channel_id: Discord channel ID (for hidden auto-compact).
+            conversation_manager: ConversationManager instance (for hidden auto-compact).
         """
         await self._ensure_queue_started()
 
         async def _stream_factory() -> AsyncIterator[str]:
             async for event in self._stream_response_impl(
-                request, input_tokens, request_id=request_id, model_override=model_override, use_rate_limiter_concurrency=False
+                request, input_tokens, request_id=request_id, model_override=model_override, use_rate_limiter_concurrency=False,
+                channel_id=channel_id, conversation_manager=conversation_manager,
             ):
                 yield event
 
@@ -1207,6 +1246,9 @@ class NvidiaNimProvider(BaseProvider):
         request_id: str | None,
         model_override: str | None = None,
         use_rate_limiter_concurrency: bool = True,
+        *,
+        channel_id: int | None = None,
+        conversation_manager: Any | None = None,
     ) -> AsyncIterator[str]:
         """Streaming implementation with retry on transient backend disconnections.
 
@@ -1281,13 +1323,17 @@ class NvidiaNimProvider(BaseProvider):
             try:
                 if use_rate_limiter_concurrency:
                     async with self._global_rate_limiter.concurrency_slot():
-                        async for event in self._do_stream_request(body, sse, think_parser, heuristic_parser, request, attempt, max_retries, req_tag, tag, request_id, finish_reason, usage_info, last_error_tag):
+                        async for event in self._do_stream_request(body, sse, think_parser, heuristic_parser, request, attempt, max_retries, req_tag, tag, request_id, finish_reason, usage_info, last_error_tag, channel_id=channel_id, conversation_manager=conversation_manager):
                             yield event
                 else:
                     # Queue already holds worker slot - just execute
-                    async for event in self._do_stream_request(body, sse, think_parser, heuristic_parser, request, attempt, max_retries, req_tag, tag, request_id, finish_reason, usage_info, last_error_tag):
+                    async for event in self._do_stream_request(body, sse, think_parser, heuristic_parser, request, attempt, max_retries, req_tag, tag, request_id, finish_reason, usage_info, last_error_tag, channel_id=channel_id, conversation_manager=conversation_manager):
                         yield event
             except Exception as e:
+                if isinstance(e, _HiddenCompactDone):
+                    # Hidden compact finished the stream (already emitted
+                    # message_delta + message_stop) — no more work needed.
+                    return
                 # The exception from _do_stream_request triggers the outer retry loop
                 error_occurred = True
                 logger.warning(
@@ -1399,6 +1445,9 @@ class NvidiaNimProvider(BaseProvider):
         finish_reason: str | None,
         usage_info: Any,
         last_error_tag: str,
+        *,
+        channel_id: int | None = None,
+        conversation_manager: Any | None = None,
     ) -> AsyncIterator[str]:
         """Execute the actual streaming request (shared by queued and non-queued paths).
 
@@ -1528,6 +1577,38 @@ class NvidiaNimProvider(BaseProvider):
                                     max_retries=self._config.retry_on_truncation,
                                 )
                         else:
+                            # Check for context-length error → hidden auto-compact
+                            from providers.hidden_compact import (
+                                _is_context_length_error,
+                                _attempt_hidden_compact_streaming,
+                            )
+                            if (
+                                self._config.hidden_compact
+                                and _is_context_length_error(e)
+                            ):
+                                logger.info(
+                                    "🔄 {}_STREAM: Context length error detected — "
+                                    "attempting hidden auto-compact",
+                                    tag,
+                                )
+
+                                compact_gen = _attempt_hidden_compact_streaming(
+                                    provider=self,
+                                    original_body=body,
+                                    sse=sse,
+                                    think_parser=think_parser,
+                                    heuristic_parser=heuristic_parser,
+                                    channel_id=channel_id or 0,
+                                    conversation_manager=conversation_manager,
+                                    tag=tag,
+                                    attempt=attempt,
+                                    usage_info=usage_info,
+                                    last_error_tag=last_error_tag,
+                                    original_error=e,
+                                )
+                                async for event in compact_gen:
+                                    yield event
+                                raise _HiddenCompactDone()
                             raise
                 finally:
                     request_id_var.reset(req_token)
@@ -1797,6 +1878,8 @@ class NvidiaNimProvider(BaseProvider):
                     yield event
 
             except Exception as e:
+                if isinstance(e, _HiddenCompactDone):
+                    raise
                 # Log exception details for debugging
                 logger.error(
                     "{}_EXCEPTION_DIAGNOSTIC: type={} bases={} error={}",

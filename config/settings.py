@@ -106,6 +106,14 @@ class Settings(BaseSettings):
     # Works in both stream and buffer modes. Off by default (very chatty).
     show_nvidia_reply: bool = Field(default=False, validation_alias="SHOW_NIM_REPLY")
 
+    # ==================== Hidden Auto-Compact ====================
+    # When enabled, if the provider returns a context-length error (400 BadRequest
+    # with "maximum context length"), instead of surfacing the error to the user
+    # we transparently summarize older messages, replace them with the summary,
+    # and retry.  The user only sees a slightly longer wait.
+    # Default: False (disabled).
+    hidden_compact: bool = Field(default=False, validation_alias="HIDDEN_COMPACT")
+
     # ==================== HTTP Client Timeouts ====================
     http_read_timeout: float = Field(
         default=300.0, validation_alias="HTTP_READ_TIMEOUT"

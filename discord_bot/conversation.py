@@ -1,6 +1,7 @@
 """Conversation management with token tracking for Discord bot."""
 
 import asyncio
+import hashlib
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -31,6 +32,10 @@ class ConversationSession:
     processing_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
     is_processing: bool = False
     compaction_warning_shown: bool = False  # Track if we warned about auto-compact
+    # Fingerprints of messages *before* the most recent compaction/clear,
+    # so hidden_compact can detect whether the user has manually reset the conversation.
+    previous_fingerprint: str = ""  # SHA-256 hex of concatenated message contents
+    compacted_message_count: int = 0  # How many messages have been compacted so far
 
 
 class ConversationManager:
@@ -56,6 +61,16 @@ class ConversationManager:
     def _count_tokens(self, text: str) -> int:
         """Count tokens using cl100k_base encoding."""
         return len(self._encoder.encode(text))
+
+    def _compute_fingerprint(self, channel_id: int) -> str:
+        """Return a SHA-256 fingerprint of current message content for change detection."""
+        session = self._sessions.get(channel_id)
+        if not session or not session.messages:
+            return ""
+        concatenated = "".join(
+            f"{m.role}:{m.content}" for m in session.messages
+        )
+        return hashlib.sha256(concatenated.encode("utf-8")).hexdigest()
 
     def get_session(self, channel_id: int) -> Optional[ConversationSession]:
         """Get or create a conversation session."""
@@ -219,8 +234,15 @@ class ConversationManager:
         return [{"role": m.role, "content": m.content} for m in session.messages], session.token_count
 
     def clear(self, channel_id: int) -> None:
-        """Clear conversation session (for /new command)."""
+        """Clear conversation session (for /new command).
+
+        Saves the fingerprint of cleared messages so hidden_compact can
+        detect that the user has manually reset the conversation.
+        """
         if channel_id in self._sessions:
+            # Capture fingerprint before clearing so hidden_compact can
+            # detect that the user manually reset the conversation.
+            self._sessions[channel_id].previous_fingerprint = self._compute_fingerprint(channel_id)
             del self._sessions[channel_id]
         # Persist the clear
         from .persistence import save_conversations
@@ -231,6 +253,10 @@ class ConversationManager:
         Replace conversation with summary.
         Called after compaction is complete.
         """
+        # Capture fingerprint of pre-compact messages so hidden_compact
+        # can detect when the user issues a manual /compact.
+        if channel_id in self._sessions:
+            self._sessions[channel_id].previous_fingerprint = self._compute_fingerprint(channel_id)
         summary_tokens = self._count_tokens(summary)
         self._sessions[channel_id] = ConversationSession(
             channel_id=channel_id,
@@ -240,6 +266,76 @@ class ConversationManager:
         # Persist after compaction and reset warning flag
         from .persistence import save_conversations
         save_conversations(self._sessions)
+
+    def replace_with_compacted(
+        self,
+        channel_id: int,
+        summary: str,
+        retained_messages: list[dict],
+    ) -> None:
+        """
+        Replace conversation history with a compacted version.
+
+        Called after a hidden auto-compaction succeeds.  Inserts the summary as
+        an assistant message, then appends the retained (recent) messages.
+
+        Args:
+            channel_id: Discord channel ID.
+            summary: Compacted summary of older messages.
+            retained_messages: List of ``{"role": ..., "content": ...}`` dicts
+                representing recent messages that were kept as-is.
+        """
+        session = self.get_session(channel_id)
+        if session is None:
+            session = ConversationSession(channel_id=channel_id)
+            self._sessions[channel_id] = session
+
+        # Build new message list: summary + retained messages
+        new_messages: list[ConversationMessage] = [
+            ConversationMessage(
+                role="assistant",
+                content=summary,
+                username="[Summary]",
+            ),
+        ]
+        for rm in retained_messages:
+            new_messages.append(
+                ConversationMessage(
+                    role=rm.get("role", "user"),
+                    content=rm.get("content", ""),
+                )
+            )
+
+        # Recalculate token count
+        new_tokens = sum(self._count_tokens(m.content) for m in new_messages)
+
+        # Store fingerprint of pre-compaction messages for change detection
+        session.previous_fingerprint = self._compute_fingerprint(channel_id)
+        session.compacted_message_count += 1
+
+        session.messages = new_messages
+        session.token_count = new_tokens
+        session.last_activity = time.monotonic()
+        session.compaction_warning_shown = False  # Reset warning after compact
+
+        # Persist
+        from .persistence import save_conversations
+        save_conversations(self._sessions)
+
+    def was_conversation_reset(self, channel_id: int) -> bool:
+        """Check if the user has manually reset (/new or /compact) since last hidden compaction.
+
+        Returns True when the current messages no longer match the fingerprint
+        captured at the time of the most recent compact/clear — meaning the user
+        issued a /new or /compact command, so tracked state should be reset.
+        """
+        session = self._sessions.get(channel_id)
+        if not session:
+            return True  # No session == definitely reset
+        if not session.previous_fingerprint:
+            return False  # Never been compacted/cleared
+        current_fp = self._compute_fingerprint(channel_id)
+        return current_fp != session.previous_fingerprint
 
     def get_history_with_tool_results(self, channel_id: int, max_tool_result_size: int = 5000) -> List[dict]:
         """

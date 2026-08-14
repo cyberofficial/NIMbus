@@ -103,6 +103,7 @@ class NimbusCog(commands.Cog):
         interaction: discord.Interaction,
         request_data: MessagesRequest,
         input_tokens: int,
+        channel_id: int | None = None,
     ) -> str:
         """
         Stream NIM response to Discord.
@@ -125,7 +126,8 @@ class NimbusCog(commands.Cog):
                 # Call stream_response directly - it's an async generator
                 # execute_with_retry doesn't work with generators
                 stream = self.provider.stream_response(
-                    request_data, input_tokens, request_id=request_id, priority=RequestPriority.HIGH
+                    request_data, input_tokens, request_id=request_id, priority=RequestPriority.HIGH,
+                    channel_id=channel_id, conversation_manager=self.conversation_manager,
                 )
 
                 # Collect full response (Discord doesn't support true streaming)
@@ -244,7 +246,8 @@ class NimbusCog(commands.Cog):
                         import uuid
                         request_id = f"discord_prefix_{uuid.uuid4().hex[:8]}"
                         stream = self.provider.stream_response(
-                            request_data, input_tokens, request_id=request_id, priority=RequestPriority.HIGH
+                            request_data, input_tokens, request_id=request_id, priority=RequestPriority.HIGH,
+                            channel_id=channel.id, conversation_manager=self.conversation_manager,
                         )
                         async for chunk in stream:
                             if chunk.strip():
@@ -404,7 +407,7 @@ class NimbusCog(commands.Cog):
 
             # Stream response
             response_text = await self._stream_response_to_discord(
-                interaction, request_data, input_tokens
+                interaction, request_data, input_tokens, channel_id=interaction.channel_id
             )
 
             # Store in conversation history
@@ -540,7 +543,8 @@ class NimbusCog(commands.Cog):
                 request_id = f"compact_{uuid.uuid4().hex[:8]}"
                 # Call directly - stream_response is an async generator
                 stream = self.provider.stream_response(
-                    summary_request, input_tokens, request_id=request_id, priority=RequestPriority.HIGH
+                    summary_request, input_tokens, request_id=request_id, priority=RequestPriority.HIGH,
+                    channel_id=interaction.channel_id, conversation_manager=self.conversation_manager,
                 )
 
                 async for chunk in stream:
@@ -697,7 +701,8 @@ class NimbusCog(commands.Cog):
             try:
                 request_id = f"compact_{uuid.uuid4().hex[:8]}"
                 stream = self.provider.stream_response(
-                    summary_request, input_tokens, request_id=request_id, priority=RequestPriority.HIGH
+                    summary_request, input_tokens, request_id=request_id, priority=RequestPriority.HIGH,
+                    channel_id=channel.id, conversation_manager=self.conversation_manager,
                 )
 
                 async for chunk in stream:
@@ -782,7 +787,8 @@ class NimbusCog(commands.Cog):
             try:
                 request_id = f"compact_{uuid.uuid4().hex[:8]}"
                 stream = self.provider.stream_response(
-                    summary_request, input_tokens, request_id=request_id, priority=RequestPriority.HIGH
+                    summary_request, input_tokens, request_id=request_id, priority=RequestPriority.HIGH,
+                    channel_id=channel.id, conversation_manager=self.conversation_manager,
                 )
 
                 async for chunk in stream:

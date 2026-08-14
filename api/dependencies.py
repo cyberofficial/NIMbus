@@ -67,6 +67,8 @@ def _create_provider(settings: Settings) -> BaseProvider:
         request_queue_num_workers=settings.request_queue_num_workers,
         # Adaptive rate limiting
         rpm_reset=settings.nim_rpm_reset,
+        # Hidden auto-compact
+        hidden_compact=settings.hidden_compact,
     )
     provider = NvidiaNimProvider(config, nim_settings=settings.nim)
     logger.info("Provider initialized: NVIDIA NIM")
