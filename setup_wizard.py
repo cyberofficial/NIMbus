@@ -746,10 +746,20 @@ def _run_section(
                 request_queue_num_workers = int(workers_str)
             except ValueError:
                 request_queue_num_workers = 4
+            print()
+            print("  Resource Exhausted Retries: Max retry attempts for 'Worker local'")
+            print("  total request limit reached' errors from NVIDIA's shared worker nodes.")
+            print("  Set to 0 for endless retries. Default: 10")
+            exhausted_str = _prompt("  Resource exhausted retries", default="10")
+            try:
+                resource_exhausted_retries = int(exhausted_str)
+            except ValueError:
+                resource_exhausted_retries = 10
         updates.update({
             "provider_max_wait": provider_max_wait,
             "provider_retry_on_truncation": provider_retry_on_truncation,
             "provider_retry_delay": provider_retry_delay,
+            "resource_exhausted_retries": resource_exhausted_retries,
             "request_queue_enabled": request_queue_enabled,
             "request_queue_max_concurrent": request_queue_max_concurrent,
             "request_queue_max_size": request_queue_max_size,
@@ -2782,7 +2792,7 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 "provider_max_wait": provider_max_wait,
                 "provider_retry_on_truncation": provider_retry_on_truncation,
                 "provider_retry_delay": provider_retry_delay,
-                "resource_exhausted_retries": 10,  # Default, not prompted in full wizard
+                "resource_exhausted_retries": resource_exhausted_retries,
                 # Provider Rate Limiting
                 "provider_rate_limit": provider_rate_limit,
                 "provider_rate_window": provider_rate_window,
@@ -2790,7 +2800,7 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 # Adaptive Rate Limiting
                 "nim_rpm_reset": nim_rpm_reset,
                 # Show NIM Reply
-                "show_nim_reply": show_nvidia_reply,
+                "show_nim_reply": show_nim_reply,
                 # HTTP Client Timeouts
                 "http_read_timeout": http_read_timeout,
                 "http_write_timeout": http_write_timeout,
@@ -2813,12 +2823,12 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 "nim_max_tokens": nim_max_tokens,
                 "nim_reasoning_effort": nim_reasoning_effort,
                 "nim_reasoning_effort_mappings": nim_reasoning_effort_mappings,
-                "nim_reasoning_budget": 0,
-                "nim_enable_thinking": True,
-                "nim_chat_template_enable_thinking": True,
-                "nim_chat_template_low_effort": False,
-                "nim_chat_template_medium_effort": False,
-                "nim_chat_template_high_effort": False,
+                "nim_reasoning_budget": nim_reasoning_budget,
+                "nim_enable_thinking": nim_enable_thinking,
+                "nim_chat_template_enable_thinking": nim_chat_template_enable_thinking,
+                "nim_chat_template_low_effort": nim_chat_template_low_effort,
+                "nim_chat_template_medium_effort": nim_chat_template_medium_effort,
+                "nim_chat_template_high_effort": nim_chat_template_high_effort,
                 # Model Swapper
                 "swapper_enabled": swapper_enabled,
                 "swapper_test_prompt": swapper_test_prompt,
@@ -2830,7 +2840,7 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 # MCP Server settings
                 "mcp_fetch_timeout": mcp_fetch_timeout,
                 "mcp_cache_ttl": mcp_cache_ttl,
-                "web_search_debug": False,
+                "web_search_debug": web_search_debug,
                 # Discord Bot settings
                 "configure_discord": configure_discord,
                 "discord_token": discord_token,
@@ -2859,8 +2869,8 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 "discord_cmd_unblock": discord_cmd_unblock,
                 "discord_cmd_blocked": discord_cmd_blocked,
                 "discord_cmd_newchannel": discord_cmd_newchannel,
-                "discord_require_mention": True,  # Default, not prompted in full wizard
-                "discord_command_prefix": "!!",  # Default, not prompted in full wizard
+                "discord_require_mention": discord_require_mention,
+                "discord_command_prefix": discord_command_prefix,
                 "discord_cmd_prefix_ask": discord_cmd_prefix_ask,
                 "discord_cmd_prefix_compact": discord_cmd_prefix_compact,
                 "discord_cmd_prefix_new": discord_cmd_prefix_new,
@@ -2869,8 +2879,8 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 "discord_enable_web_search": discord_enable_web_search,
                 "discord_web_search_max_results": discord_web_search_max_results,
                 "discord_web_search_max_iterations": discord_web_search_max_iterations,
-                "discord_web_search_max_result_size": 5000,
-                "discord_web_search_include_in_history": True,
+                "discord_web_search_max_result_size": discord_web_search_max_result_size,
+                "discord_web_search_include_in_history": discord_web_search_include_in_history,
                 "discord_browser_headless": discord_browser_headless,
             },
             is_linux=is_linux,
