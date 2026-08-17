@@ -10,9 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Thinking block initialization in streaming mode** - Fixed an issue where thinking blocks were not being started at the beginning of streaming responses when `NIM_THINKING` was enabled, causing thinking content to only appear after the stream completed. The fix correctly initializes a thinking block at the start of streaming when thinking is enabled and no other block has been started yet, allowing thinking to stream incrementally in Claude Code.
+- **Setup wizard improvements**:
+  - Added prompt for resource_exhausted retries configuration in the setup wizard.
+  - Fixed .env writing to use user-selected values for resource_exhausted_retries, nim_reasoning_budget, nim_enable_thinking, show_nim_reply, and other settings instead of hardcoded defaults.
+
 
 ### Files Touched
 - **`providers/provider.py`** - Added import of `get_settings` from `config.settings` and corrected thinking block initialization to use `settings.nim.thinking` and `sse.blocks`.
+- **setup_wizard.py** - Added prompt for resource_exhausted retries configuration and fixed .env writing to use user-selected values instead of hardcoded defaults.
 
 ---
 ## v2.0.13 - Date: 2026-07-20
