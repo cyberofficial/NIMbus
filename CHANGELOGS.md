@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## v2.0.14 - Date: 2026-08-16
+
+### Fixed
+- **Thinking block initialization in streaming mode** - Fixed an issue where thinking blocks were not being started at the beginning of streaming responses when `NIM_THINKING` was enabled, causing thinking content to only appear after the stream completed. The fix correctly initializes a thinking block at the start of streaming when thinking is enabled and no other block has been started yet, allowing thinking to stream incrementally in Claude Code.
+
+### Files Touched
+- **`providers/provider.py`** - Added import of `get_settings` from `config.settings` and corrected thinking block initialization to use `settings.nim.thinking` and `sse.blocks`.
+
+---
 ## v2.0.13 - Date: 2026-07-20
 
 ### Added

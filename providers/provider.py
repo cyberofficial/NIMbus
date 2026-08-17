@@ -36,6 +36,7 @@ from openai import (
 _RETRYABLE_HTTP_STATUS = {500, 502, 503, 504}
 
 from config.nim import NimSettings
+from config.settings import get_settings
 from providers.base import BaseProvider, ProviderConfig
 from providers.error_mapping import (
     append_request_id,
@@ -1275,6 +1276,11 @@ class NvidiaNimProvider(BaseProvider):
             # retry, Claude will see the previous stream end abruptly and
             # then see a new message_start - this signals a clean restart.
             yield sse.message_start()
+
+            # If thinking is enabled, start a thinking block at the beginning if no block has been started yet.
+            settings = get_settings()
+            if settings.nim.thinking and not sse.blocks.thinking_started and not sse.blocks.text_started:
+                yield sse.start_thinking_block()
 
             # Use rate limiter's concurrency slot only if not already
             # inside a queue worker (which holds the queue's worker semaphore)
