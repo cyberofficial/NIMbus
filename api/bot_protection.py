@@ -44,11 +44,20 @@ class BotProtection:
         except Exception as e:
             logger.error(f"Failed to save banned IPs: {e}")
 
+    @staticmethod
+    def _is_localhost(ip: str) -> bool:
+        """Check if IP is localhost (IPv4 or IPv6)."""
+        return ip in ("127.0.0.1", "::1", "0:0:0:0:0:0:0:1")
+
     def is_banned(self, ip: str) -> bool:
         """Check if an IP is banned."""
+        if self._is_localhost(ip):
+            return False
         return ip in self._banned_ips
 
     def ban_ip(self, ip: str) -> None:
+        if self._is_localhost(ip):
+            return
         """Ban an IP address."""
         if ip not in self._banned_ips:
             self._banned_ips.add(ip)
