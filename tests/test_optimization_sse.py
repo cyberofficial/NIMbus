@@ -78,3 +78,21 @@ def test_empty_text_block_skipped():
     # one block = event line + type field
     assert joined.count("content_block_start") == 2
     assert "hello" in joined
+
+
+def test_thinking_block_emitted():
+    response = {
+        "id": "msg_test",
+        "model": "m",
+        "stop_reason": "end_turn",
+        "content": [
+            {"type": "thinking", "thinking": "pondering the request"},
+            {"type": "text", "text": "Here is the answer."},
+        ],
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+    joined = "\n".join(_events(response))
+    assert '"type": "thinking"' in joined
+    assert "thinking_delta" in joined
+    assert "pondering the request" in joined
+    assert "Here is the answer." in joined

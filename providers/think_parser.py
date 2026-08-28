@@ -4,6 +4,31 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum
 
+_ORPHAN_CLOSE_TAG = "</think>"
+
+
+def split_think_content(text: str) -> tuple[str, str]:
+    """Split inline <think> reasoning from content. Returns (thinking, remaining).
+
+    Some backends (e.g. DeepSeek-V4 on NVIDIA NIM) return reasoning inside
+    message.content instead of a separate reasoning_content field, and may
+    consume the opening <think> server-side, leaving an orphan closing tag.
+    """
+    if _ORPHAN_CLOSE_TAG in text:
+        idx = text.find(_ORPHAN_CLOSE_TAG)
+        before, after = text[:idx], text[idx + len(_ORPHAN_CLOSE_TAG):]
+        if "<think>" in before:
+            # Well-formed pair; anything before the opener is not reasoning
+            thinking = before.split("<think>", 1)[1]
+        else:
+            # Orphan closing tag: opening <think> consumed server-side
+            thinking = before
+        return thinking.strip(), after.strip()
+    if "<think>" in text:
+        # Unterminated think block (truncated stream)
+        return text.split("<think>", 1)[1].strip(), ""
+    return "", text
+
 
 class ContentType(Enum):
     """Type of content chunk."""

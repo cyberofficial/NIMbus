@@ -55,7 +55,7 @@ from providers.rate_limit import GlobalRateLimiter
 from providers.request import build_request_body
 from providers.request_queue import RequestPriority, RequestQueue
 from providers.sse_builder import SSEBuilder, map_stop_reason
-from providers.think_parser import ContentType, ThinkTagParser
+from providers.think_parser import ContentType, ThinkTagParser, split_think_content
 from providers.dsml_parser import DsmlParser, is_dsml_model, parse_dsml_tool_calls
 
 NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
@@ -1102,9 +1102,22 @@ class NvidiaNimProvider(BaseProvider):
         content_blocks: list[dict] = []
 
         if content is not None:
+            # DeepSeek-V4 on NIM returns reasoning inline in content (with a
+            # trailing </think>) instead of a reasoning_content field;
+            # convert it to a proper thinking block before anything else.
+            thinking_text, raw_content = split_think_content(
+                content.content if content.content else ""
+            )
+            if thinking_text:
+                logger.info(
+                    "Converted {} chars of inline <think> reasoning to a thinking block",
+                    len(thinking_text),
+                )
+                content_blocks.append({"type": "thinking", "thinking": thinking_text})
+
             # Check for DSML tool calls in content (DeepSeek-V4-Pro specific)
             remaining_text, dsml_tool_calls = self._try_parse_dsml_tool_calls(
-                content.content if content.content else "",
+                raw_content,
                 model_used
             )
 

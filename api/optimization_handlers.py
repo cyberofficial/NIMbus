@@ -64,6 +64,14 @@ def optimization_response_to_sse(response: MessagesResponse | dict, input_tokens
                 yield sse.content_block_delta(index, "text_delta", block_text)
                 yield sse.content_block_stop(index)
 
+            elif block_type == "thinking":
+                thinking_text = get_attr(block, "thinking", "")
+                if not thinking_text:
+                    continue
+                yield sse.content_block_start(index, "thinking", thinking=thinking_text)
+                yield sse.content_block_delta(index, "thinking_delta", thinking_text)
+                yield sse.content_block_stop(index)
+
             elif block_type == "tool_use":
                 tool_id = get_attr(block, "id", f"tool_{uuid.uuid4()}")
                 tool_name = get_attr(block, "name", "")
