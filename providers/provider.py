@@ -56,7 +56,7 @@ from providers.request import build_request_body
 from providers.request_queue import RequestPriority, RequestQueue
 from providers.sse_builder import SSEBuilder, map_stop_reason
 from providers.think_parser import ContentType, ThinkTagParser
-from providers.dsml_parser import DsmlParser
+from providers.dsml_parser import DsmlParser, is_dsml_model, parse_dsml_tool_calls
 
 NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
@@ -1061,134 +1061,30 @@ class NvidiaNimProvider(BaseProvider):
             logger.info("NIM_{} | {}", kind, text)
 
     def _try_parse_dsml_tool_calls(self, content_text: str, model: str) -> tuple[str, list[dict]]:
-        """Try to parse DSML tool calls from content text if model is DeepSeek-V4-Pro.
+        """Try to parse DSML tool calls from content text for DeepSeek-V4 models.
 
         Returns:
             tuple of (remaining_text, parsed_tool_calls)
             If no DSML found or not applicable model, returns (content_text, [])
         """
-        # Only apply to DeepSeek-V4-Pro models
-        if not model or not (
-            model.startswith("deepseek-ai/deepseek-v4-pro") or
-            model.startswith("deepseek-ai/deepseek-v4-pro-")
-        ):
+        if not is_dsml_model(model):
             return content_text, []
 
-        # Import re locally to avoid top-level import if not needed
-        import re
-
-        # Normalize DSML token variants: <||DSML|| → <｜DSML｜
-        # Handle both single and double pipe variants with optional whitespace
-        normalized = re.sub(
-            r'<\s*/?\s*\|\s*\|\s*DSML\s*\|\s*\|\s*>',
-            lambda m: m.group(0).replace('||', '｜'),
-            content_text
-        )
-        normalized = re.sub(
-            r'<\s*/?\s*｜\s*｜\s*DSML\s*｜\s*｜\s*>',
-            lambda m: m.group(0).replace('｜｜', '｜'),
-            normalized
-        )
-
-        # Define DSML tokens
-        DSML_TOKEN = "｜DSML｜"
-        tool_calls_start = f"<{DSML_TOKEN}tool_calls>"
-        tool_calls_end = f"</{DSML_TOKEN}tool_calls>"
-
-        # Find tool_calls section
-        start_idx = normalized.find(tool_calls_start)
-        if start_idx == -1:
-            # No DSML tool_calls found
-            logger.debug("DSML tool_calls not found in content for model {}", model)
-            return content_text, []
-
-        end_idx = normalized.find(tool_calls_end, start_idx)
-        if end_idx == -1:
-            logger.warning(
-                "Invalid DSML format: missing closing tag for model {}", model
-            )
-            return content_text, []
-
-        # Extract parts
-        before_tool_calls = normalized[:start_idx].rstrip()
-        tool_calls_section = normalized[start_idx:end_idx].strip()
-        after_tool_calls = normalized[end_idx + len(tool_calls_end):].strip()
-
-        # Validate no unexpected content after
-        if after_tool_calls:
-            logger.warning(
-                "Unexpected content after DSML tool_calls: {} for model {}",
-                after_tool_calls[:50], model
-            )
-            # Still process what we found, but note the issue
-
-        # Parse the tool_calls section
-        parsed_tool_calls = []
-
-        # Normalize whitespace in the section for easier parsing
-        tool_calls_section = re.sub(r'\s+', ' ', tool_calls_section)
-
-        # Find all invoke tags
-        invoke_pattern = rf'<{re.escape(DSML_TOKEN)}invoke\s+name="([^"]+)">'
-        parameter_pattern = rf'<{re.escape(DSML_TOKEN)}parameter\s+name="([^"]+)"\s+string="([^"]*)">'
-
-        # Split by invoke tags to get individual tool calls
-        invoke_parts = re.split(
-            rf'(<{re.escape(DSML_TOKEN)}invoke\s+[^>]+>)',
-            tool_calls_section
-        )
-
-        i = 1  # Skip first part if it's empty (before first invoke)
-        while i < len(invoke_parts):
-            invoke_match = re.search(invoke_pattern, invoke_parts[i])
-            if not invoke_match:
-                i += 1
-                continue
-
-            tool_name = invoke_match.group(1)
-            arguments = {}
-
-            # Look for parameters until next invoke or end
-            j = i + 1
-            current_params = {}
-            while j < len(invoke_parts):
-                # Check if this part is a parameter
-                param_match = re.search(parameter_pattern, invoke_parts[j])
-                if param_match:
-                    param_name = param_match.group(1)
-                    param_value = param_match.group(2)
-                    current_params[param_name] = param_value
-                # Check if this part is the next invoke
-                elif re.search(invoke_pattern, invoke_parts[j]):
-                    break
-                j += 1
-
-            if current_params:
-                arguments = current_params
-
-            # Build tool call in Anthropic format
-            parsed_tool_calls.append({
-                "type": "tool_use",
-                "id": f"tool_{uuid.uuid4()}",
-                "name": tool_name,
-                "input": arguments,
-            })
-
-            i = j  # Move to next unprocessed part
-
+        remaining_text, parsed_tool_calls = parse_dsml_tool_calls(content_text)
         if parsed_tool_calls:
             logger.info(
                 "Successfully parsed {} DSML tool calls from content for model {}",
                 len(parsed_tool_calls), model
             )
-            # Combine text parts: before + after (preserving spacing)
-            remaining_text = (before_tool_calls + " " + after_tool_calls).strip()
-            return remaining_text, parsed_tool_calls
-        else:
+        elif remaining_text != content_text:
+            # Markup was present but no valid invokes could be extracted
             logger.warning(
                 "Found DSML tool_calls section but no valid invokes for model {}", model
             )
-            return content_text, []
+        else:
+            logger.debug("DSML tool_calls not found in content for model {}", model)
+
+        return remaining_text, parsed_tool_calls
 
     def _build_anthropic_response(
         self,
@@ -1261,6 +1157,20 @@ class NvidiaNimProvider(BaseProvider):
         stop_reason = "end_turn"
         if choice and choice.finish_reason:
             stop_reason = map_stop_reason(choice.finish_reason)
+
+        # Guard: never claim tool_use without an actual tool_use block.
+        # DeepSeek-V4 sometimes emits DSML tool calls the backend parser fails
+        # to extract, so finish_reason says "tool_calls" but no structured
+        # call survives. Claude Code hard-fails on tool_use with no tool block.
+        if stop_reason == "tool_use" and not any(
+            block.get("type") == "tool_use" for block in content_blocks
+        ):
+            logger.warning(
+                "finish_reason={} but no tool_use block produced; "
+                "downgrading stop_reason to end_turn",
+                choice.finish_reason if choice else None,
+            )
+            stop_reason = "end_turn"
 
         return {
             "id": message_id,
@@ -1558,7 +1468,20 @@ class NvidiaNimProvider(BaseProvider):
         if sse.truncated and finish_reason is None:
             finish_reason = "length"  # maps to "max_tokens" per STOP_REASON_MAP
 
-        yield sse.message_delta(map_stop_reason(finish_reason), output_tokens)
+        stop_reason = map_stop_reason(finish_reason)
+        # Guard: never claim tool_use without a streamed tool_use block
+        # (DeepSeek-V4 DSML tool calls the backend failed to parse, etc.)
+        if stop_reason == "tool_use" and not any(
+            state.started for state in sse.blocks.tool_states.values()
+        ):
+            logger.warning(
+                "finish_reason={} but no tool_use block was streamed; "
+                "downgrading stop_reason to end_turn",
+                finish_reason,
+            )
+            stop_reason = "end_turn"
+
+        yield sse.message_delta(stop_reason, output_tokens)
         yield sse.message_stop()
 
     async def _do_stream_request(

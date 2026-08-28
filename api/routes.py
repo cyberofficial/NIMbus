@@ -692,8 +692,10 @@ async def create_message(
         effective_server_type = server_type_override if server_type_override is not None else settings.server_type
 
         if effective_server_type == "buffer":
-            logger.info("NIMSERVER: streaming endpoint -> using buffered mode (%s)",
-                       "override" if server_type_override else "global setting")
+            logger.info(
+                "NIMSERVER: streaming endpoint -> using buffered mode ({})",
+                "override" if server_type_override else "global setting",
+            )
 
             response = await provider.buffered_request(
                 request_data,

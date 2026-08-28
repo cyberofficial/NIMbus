@@ -244,7 +244,13 @@ def build_request_body(
     _set_extra(extra_body, "request_id", nim.request_id)
     if nim.thinking:
         _set_extra(extra_body, "return_tokens_as_token_ids", nim.return_tokens_as_token_ids)
-    _set_extra(extra_body, "include_stop_str_in_output", nim.include_stop_str_in_output)
+    # DeepSeek-V4 emits tool calls as DSML markup; when its server-side
+    # tool-call parser fails on degraded tokens, the markup is stripped from
+    # content unless stop strings are included, leaving nothing to recover.
+    if model.startswith("deepseek-ai/deepseek-v4"):
+        _set_extra(extra_body, "include_stop_str_in_output", True)
+    else:
+        _set_extra(extra_body, "include_stop_str_in_output", nim.include_stop_str_in_output)
     _set_extra(extra_body, "ignore_eos", nim.ignore_eos)
 
     if extra_body:

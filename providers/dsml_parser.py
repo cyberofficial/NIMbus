@@ -1,44 +1,149 @@
-"""Streaming parser for DeepSeek DSML tool-call markup.
+"""DSML tool-call markup parsing for DeepSeek-V4.
 
-DeepSeek V4 Pro sometimes emits tool calls as literal DSML markup inside
-delta.content instead of structured tool_calls. This parser buffers the stream
-and converts complete <tool_calls> blocks into Anthropic-format tool_use dicts.
+DeepSeek V4 sometimes emits tool calls as literal DSML markup inside
+message content instead of structured tool_calls. The emitted tokens can
+also be "degraded" from the canonical full-width form (<｜DSML｜tool_calls>)
+to an ASCII double-pipe form (<||DSML||tool_calls>) without the newlines
+the reference format expects. This module normalizes both variants and
+converts complete <tool_calls> blocks into Anthropic-format tool_use dicts.
 """
 
 import json
 import re
 import uuid
 
-from loguru import logger
+DSML_TOKEN = "｜DSML｜"
+
+_OPEN_TC = f"<{DSML_TOKEN}tool_calls>"
+_CLOSE_TC = f"</{DSML_TOKEN}tool_calls>"
+_CLOSE_INVOKE = f"</{DSML_TOKEN}invoke>"
+
+# Degraded equivalent of the opening tag, used for partial-tag detection
+# when a tag is split across stream chunks.
+_DEGRADED_OPEN = "<||DSML||tool_calls>"
+
+# Degraded tokens: <||DSML||tag>, <｜｜DSML｜｜tag>, mixed pipes/whitespace.
+# The tag name and any attributes that follow are preserved as-is, so both
+# bare tags (<||DSML||tool_calls>) and attributed tags
+# (<||DSML||invoke name="x">) are normalized.
+_DEGRADED_TOKEN_RE = re.compile(
+    r"<\s*(/?)\s*(?:\|\s*\||｜\s*｜)\s*DSML\s*(?:\|\s*\||｜\s*｜)\s*([A-Za-z_][A-Za-z0-9_]*)"
+)
+
+_TOOL_CALLS_BLOCK_RE = re.compile(
+    re.escape(_OPEN_TC) + r"(.*?)" + re.escape(_CLOSE_TC),
+    re.DOTALL,
+)
+_INVOKE_OPEN_RE = re.compile(re.escape(f"<{DSML_TOKEN}invoke") + r"([^>]*)>")
+_PARAM_RE = re.compile(
+    re.escape(f"<{DSML_TOKEN}parameter")
+    + r"([^>]*)>(.*?)"
+    + re.escape(f"</{DSML_TOKEN}parameter>"),
+    re.DOTALL,
+)
+_ATTR_NAME_RE = re.compile(r'name="([^"]*)"')
+_ATTR_STRING_RE = re.compile(r'string="([^"]*)"')
+
+
+def is_dsml_model(model: str | None) -> bool:
+    """DSML tool-call markup is a DeepSeek-V4 family output format."""
+    return bool(model) and model.startswith("deepseek-ai/deepseek-v4")
+
+
+def normalize_dsml_markup(text: str) -> str:
+    """Convert degraded DSML tokens like <||DSML||tool_calls> to <｜DSML｜tool_calls>."""
+    return _DEGRADED_TOKEN_RE.sub(
+        lambda m: f"<{m.group(1)}{DSML_TOKEN}{m.group(2)}", text
+    )
+
+
+def _param_value(raw: str, type_flag: str | None):
+    """Convert a parameter's inner text to its typed value.
+
+    string="true" marks a plain-string value; otherwise the text is
+    JSON-typed and falls back to the raw string if it doesn't parse.
+    """
+    value = raw.strip()
+    if type_flag == "true":
+        return value
+    try:
+        return json.loads(value)
+    except ValueError:
+        return value
+
+
+def _parse_invokes(block: str) -> list[dict]:
+    """Parse <｜DSML｜invoke> elements from a tool_calls block body."""
+    tools = []
+    opens = list(_INVOKE_OPEN_RE.finditer(block))
+    for i, m in enumerate(opens):
+        name_match = _ATTR_NAME_RE.search(m.group(1))
+        if not name_match:
+            continue
+
+        # Invoke body: from end of the open tag up to the closing tag,
+        # never spilling into the next invoke.
+        body_start = m.end()
+        body_end = opens[i + 1].start() if i + 1 < len(opens) else len(block)
+        close = block.find(_CLOSE_INVOKE, body_start)
+        if close != -1 and close < body_end:
+            body_end = close
+
+        parameters = {}
+        for pm in _PARAM_RE.finditer(block[body_start:body_end]):
+            pname = _ATTR_NAME_RE.search(pm.group(1))
+            if not pname:
+                continue
+            flag = _ATTR_STRING_RE.search(pm.group(1))
+            parameters[pname.group(1)] = _param_value(
+                pm.group(2), flag.group(1) if flag else None
+            )
+
+        tools.append(
+            {
+                "type": "tool_use",
+                "id": f"toolu_dsml_{uuid.uuid4().hex[:8]}",
+                "name": name_match.group(1),
+                "input": parameters,
+            }
+        )
+    return tools
+
+
+def parse_dsml_tool_calls(text: str) -> tuple[str, list[dict]]:
+    """Extract DSML tool_calls blocks from completion text.
+
+    Returns (remaining_text, tool_use_blocks) where remaining_text is the
+    content outside the tool_calls blocks. If no tool calls are found the
+    input is returned (normalized) unchanged.
+    """
+    text = normalize_dsml_markup(text)
+    tools: list[dict] = []
+    remaining_parts: list[str] = []
+    last = 0
+    for m in _TOOL_CALLS_BLOCK_RE.finditer(text):
+        remaining_parts.append(text[last : m.start()])
+        tools.extend(_parse_invokes(m.group(1)))
+        last = m.end()
+    if not tools:
+        return text, []
+    remaining_parts.append(text[last:])
+    return "".join(remaining_parts).strip(), tools
 
 
 class DsmlParser:
+    """Stateful streaming parser: feed chunks, get text + tool_use blocks back.
+
+    Buffers across chunk boundaries so tags split over multiple deltas are
+    still recognized.
+    """
+
     def __init__(self):
         self._buffer = ""
         self._in_tool_calls = False
 
-    # Tag constants for canonical form (based on actual logs)
-    _OPEN_TC = "｜DSML｜tool_calls>"
-    _CLOSE_TC = "</｜DSML｜tool_calls>"
-    _OPEN_INVOKE = "｜DSML｜invoke name=\""
-    _CLOSE_INVOKE = "</｜DSML｜invoke>"
-    _OPEN_PARAM = "｜DSML｜parameter name=\""
-    _CLOSE_PARAM = "</｜DSML｜parameter>"
-
     def _normalize(self, text: str) -> str:
-        # Normalize degraded DSML token variants: <||DSML|| -> <｜DSML｜
-        # Handle both single and double pipe variants with optional whitespace
-        normalized = re.sub(
-            r'<\s*/?\s*\|\s*\|\s*DSML\s*\|\s*\|\s*>',
-            lambda m: m.group(0).replace('||', '｜'),
-            text
-        )
-        normalized = re.sub(
-            r'<\s*/?\s*｜\s*｜\s*DSML\s*｜\s*｜\s*>',
-            lambda m: m.group(0).replace('｜｜', '｜'),
-            normalized
-        )
-        return normalized
+        return normalize_dsml_markup(text)
 
     def feed(self, text: str) -> tuple[str, list[dict]]:
         """
@@ -59,7 +164,7 @@ class DsmlParser:
         while self._buffer:
             if not self._in_tool_calls:
                 # Look for the opening tool_calls tag
-                idx = self._buffer.find(self._OPEN_TC)
+                idx = self._buffer.find(_OPEN_TC)
                 if idx == -1:
                     # No opening tag found - emit all but a possible partial opening tag tail
                     safe_text = self._safe_text_tail()
@@ -69,19 +174,19 @@ class DsmlParser:
 
                 # Found opening tag - emit text before it
                 out_text_parts.append(self._buffer[:idx])
-                self._buffer = self._buffer[idx + len(self._OPEN_TC):]
+                self._buffer = self._buffer[idx + len(_OPEN_TC):]
                 self._in_tool_calls = True
                 # Continue loop to parse tool_calls content
             else:
                 # We're inside tool_calls, look for closing tag
-                end = self._buffer.find(self._CLOSE_TC)
+                end = self._buffer.find(_CLOSE_TC)
                 if end == -1:
                     # No closing tag yet - wait for more data
                     break
 
                 # Found closing tag - extract and parse the tool_calls content
                 block = self._buffer[:end]
-                self._buffer = self._buffer[end + len(self._CLOSE_TC):]
+                self._buffer = self._buffer[end + len(_CLOSE_TC):]
                 self._in_tool_calls = False
                 tools.extend(self._parse_block(block))
 
@@ -104,7 +209,9 @@ class DsmlParser:
         remaining = self._buffer[last_lt:]
 
         # Check if remaining could be a prefix of our opening tag
-        if self._OPEN_TC.startswith(remaining):
+        # (both canonical and degraded forms, since a tag may be split
+        # across chunk boundaries before normalization can see it)
+        if _OPEN_TC.startswith(remaining) or _DEGRADED_OPEN.startswith(remaining):
             # This could be a partial opening tag - keep it in buffer
             return self._buffer[:last_lt]
         else:
@@ -112,116 +219,8 @@ class DsmlParser:
             return self._buffer
 
     def _parse_block(self, block: str) -> list[dict]:
-        """
-        Parse a complete tool_calls block into a list of tool_use dicts.
-
-        Expected format:
-        <｜DSML｜tool_calls>
-          <｜DSML｜invoke name="tool_name">
-            <｜DSML｜parameter name="param1" string="value1">...</｜DSML｜parameter>
-            <｜DSML｜parameter name="param2" string="value2">...</｜DSML｜parameter>
-          </｜DSML｜invoke>
-        </｜DSML｜tool_calls>
-        """
-        tools = []
-
-        # Normalize the block content
-        block = self._normalize(block)
-
-        # Find all invoke tags
-        invoke_start_pos = 0
-        while True:
-            invoke_start = block.find(self._OPEN_INVOKE, invoke_start_pos)
-            if invoke_start == -1:
-                break
-
-            # Extract tool name
-            name_start = invoke_start + len(self._OPEN_INVOKE)
-            name_end = block.find("\"", name_start)
-            if name_end == -1:
-                # Malformed - skip this invoke
-                invoke_start_pos = invoke_start + 1
-                continue
-            tool_name = block[name_start:name_end]
-
-            # Find closing invoke tag
-            invoke_end = block.find(self._CLOSE_INVOKE, name_end)
-            if invoke_end == -1:
-                # Malformed - skip this invoke
-                invoke_start_pos = name_end + 1
-                continue
-
-            # Extract the invoke body (between > and </invoke>)
-            invoke_body = block[name_end + 1:invoke_end]
-
-            # Parse parameters from the invoke body
-            parameters = self._parse_parameters(invoke_body)
-
-            # Create tool use dict
-            tools.append({
-                "type": "tool_use",
-                "id": f"toolu_dsml_{uuid.uuid4().hex[:8]}",
-                "name": tool_name,
-                "input": parameters,
-            })
-
-            # Move position past this invoke
-            invoke_start_pos = invoke_end + len(self._CLOSE_INVOKE)
-
-        return tools
-
-    def _parse_parameters(self, text: str) -> dict:
-        """
-        Parse parameter tags from text.
-
-        Expected format:
-        <｜DSML｜parameter name="param1" string="value1">...</｜DSML｜parameter>
-        """
-        parameters = {}
-        param_start_pos = 0
-
-        while True:
-            param_start = text.find(self._OPEN_PARAM, param_start_pos)
-            if param_start == -1:
-                break
-
-            # Extract parameter name
-            name_start = param_start + len(self._OPEN_PARAM)
-            name_end = text.find("\"", name_start)
-            if name_end == -1:
-                # Malformed - skip this parameter
-                param_start_pos = param_start + 1
-                continue
-            param_name = text[name_start:name_end]
-
-            # Find the string="..." part
-            string_start = text.find("string=\"", name_end)
-            if string_start == -1:
-                # Malformed - skip this parameter
-                param_start_pos = param_start + 1
-                continue
-            string_value_start = string_start + len("string=\"")
-            string_value_end = text.find("\"", string_value_start)
-            if string_value_end == -1:
-                # Malformed - skip this parameter
-                param_start_pos = string_start + 1
-                continue
-            param_value = text[string_value_start:string_value_end]
-
-            # Find closing parameter tag
-            param_end = text.find(self._CLOSE_PARAM, string_value_end)
-            if param_end == -1:
-                # Malformed - skip this parameter
-                param_start_pos = string_start + 1
-                continue
-
-            # Store parameter
-            parameters[param_name] = param_value
-
-            # Move position past this parameter
-            param_start_pos = param_end + len(self._CLOSE_PARAM)
-
-        return parameters
+        """Parse a complete tool_calls block body into tool_use dicts."""
+        return _parse_invokes(self._normalize(block))
 
     def flush(self) -> list[dict]:
         """
