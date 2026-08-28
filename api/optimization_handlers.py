@@ -4,6 +4,7 @@ Each handler returns a MessagesResponse if the request matches and the
 optimization is enabled, otherwise None.
 """
 
+import json
 import uuid
 
 from loguru import logger
@@ -49,23 +50,35 @@ def optimization_response_to_sse(response: MessagesResponse | dict, input_tokens
     # message_start
     yield sse.message_start()
 
-    # content_block_start for text
+    # Emit ALL content blocks (text + tool_use). Dropping non-text blocks here
+    # caused Claude Code to receive stop_reason=tool_use with no tool call.
     if response_content:
-        text_content = ""
-        for block in response_content:
-            # Handle both dict and Pydantic model
-            block_type = get_attr(block, 'type')
-            block_text = get_attr(block, 'text', "")
+        for index, block in enumerate(response_content):
+            block_type = get_attr(block, "type")
+
             if block_type == "text":
-                text_content = block_text
-                break
+                block_text = get_attr(block, "text", "")
+                if not block_text:
+                    continue
+                yield sse.content_block_start(index, "text", text=block_text)
+                yield sse.content_block_delta(index, "text_delta", block_text)
+                yield sse.content_block_stop(index)
 
-        yield sse.content_block_start(0, "text", text=text_content)
+            elif block_type == "tool_use":
+                tool_id = get_attr(block, "id", f"tool_{uuid.uuid4()}")
+                tool_name = get_attr(block, "name", "")
+                tool_input = get_attr(block, "input", {})
+                yield sse.content_block_start(
+                    index, "tool_use", id=tool_id, name=tool_name
+                )
+                if tool_input:
+                    yield sse.content_block_delta(
+                        index, "input_json_delta", json.dumps(tool_input)
+                    )
+                yield sse.content_block_stop(index)
 
-        if text_content:
-            yield sse.content_block_delta(0, "text_delta", text_content)
-
-        yield sse.content_block_stop(0)
+            else:
+                logger.warning("Unsupported content block type {}: dropped", block_type)
 
     # message_delta with stop_reason
     stop_reason = response_stop_reason
