@@ -24,28 +24,38 @@ from .models.responses import MessagesResponse, Usage
 from providers.sse_builder import SSEBuilder
 
 
-def optimization_response_to_sse(response: MessagesResponse, input_tokens: int = 0):
+def optimization_response_to_sse(response: MessagesResponse | dict, input_tokens: int = 0):
     """Convert an optimization MessagesResponse to SSE events for streaming.
 
     Generates the proper SSE sequence: message_start -> content_block_start -> content_block_delta -> content_block_stop -> message_delta -> message_stop
     """
-    sse = SSEBuilder(response.id, response.model, input_tokens)
+    # Helper to get attribute from object or dict
+    def get_attr(obj, attr, default=None):
+        if hasattr(obj, attr):
+            return getattr(obj, attr)
+        elif isinstance(obj, dict):
+            return obj.get(attr, default)
+        return default
+
+    # Extract response fields
+    response_id = get_attr(response, 'id')
+    response_model = get_attr(response, 'model')
+    response_content = get_attr(response, 'content')
+    response_stop_reason = get_attr(response, 'stop_reason', 'end_turn')
+    response_usage = get_attr(response, 'usage')
+
+    sse = SSEBuilder(response_id, response_model, input_tokens)
 
     # message_start
     yield sse.message_start()
 
     # content_block_start for text
-    content = response.content
-    if content:
+    if response_content:
         text_content = ""
-        for block in content:
+        for block in response_content:
             # Handle both dict and Pydantic model
-            if hasattr(block, 'type'):
-                block_type = block.type  # type: ignore[attr-defined]
-                block_text = block.text if hasattr(block, 'text') else ""  # type: ignore[attr-defined]
-            else:
-                block_type = block.get("type", "")  # type: ignore[attr-defined]
-                block_text = block.get("text", "")  # type: ignore[attr-defined]
+            block_type = get_attr(block, 'type')
+            block_text = get_attr(block, 'text', "")
             if block_type == "text":
                 text_content = block_text
                 break
@@ -58,8 +68,11 @@ def optimization_response_to_sse(response: MessagesResponse, input_tokens: int =
         yield sse.content_block_stop(0)
 
     # message_delta with stop_reason
-    stop_reason = response.stop_reason or "end_turn"
-    yield sse.message_delta(stop_reason, response.usage.output_tokens)
+    stop_reason = response_stop_reason
+    output_tokens = 0
+    if response_usage:
+        output_tokens = get_attr(response_usage, 'output_tokens', 0)
+    yield sse.message_delta(stop_reason, output_tokens)
 
     # message_stop
     yield sse.message_stop()

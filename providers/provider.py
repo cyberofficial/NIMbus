@@ -56,6 +56,7 @@ from providers.request import build_request_body
 from providers.request_queue import RequestPriority, RequestQueue
 from providers.sse_builder import SSEBuilder, map_stop_reason
 from providers.think_parser import ContentType, ThinkTagParser
+from providers.dsml_parser import DsmlParser
 
 NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
@@ -1041,7 +1042,7 @@ class NvidiaNimProvider(BaseProvider):
                 self._live_nim_reply(getattr(msg, "reasoning_content", None), kind="THINKING")
                 self._live_nim_reply(msg.content, kind="REPLY")
 
-        result = self._build_anthropic_response(response, request, input_tokens)
+        result = self._build_anthropic_response(response, request, input_tokens, body.get("model", ""))
         logger.info(
             "{}_BUFFERED: success attempt={}{}",
             tag,
@@ -1059,11 +1060,142 @@ class NvidiaNimProvider(BaseProvider):
         if self._config.show_nvidia_reply and text:
             logger.info("NIM_{} | {}", kind, text)
 
+    def _try_parse_dsml_tool_calls(self, content_text: str, model: str) -> tuple[str, list[dict]]:
+        """Try to parse DSML tool calls from content text if model is DeepSeek-V4-Pro.
+
+        Returns:
+            tuple of (remaining_text, parsed_tool_calls)
+            If no DSML found or not applicable model, returns (content_text, [])
+        """
+        # Only apply to DeepSeek-V4-Pro models
+        if not model or not (
+            model.startswith("deepseek-ai/deepseek-v4-pro") or
+            model.startswith("deepseek-ai/deepseek-v4-pro-")
+        ):
+            return content_text, []
+
+        # Import re locally to avoid top-level import if not needed
+        import re
+
+        # Normalize DSML token variants: <||DSML|| → <｜DSML｜
+        # Handle both single and double pipe variants with optional whitespace
+        normalized = re.sub(
+            r'<\s*/?\s*\|\s*\|\s*DSML\s*\|\s*\|\s*>',
+            lambda m: m.group(0).replace('||', '｜'),
+            content_text
+        )
+        normalized = re.sub(
+            r'<\s*/?\s*｜\s*｜\s*DSML\s*｜\s*｜\s*>',
+            lambda m: m.group(0).replace('｜｜', '｜'),
+            normalized
+        )
+
+        # Define DSML tokens
+        DSML_TOKEN = "｜DSML｜"
+        tool_calls_start = f"<{DSML_TOKEN}tool_calls>"
+        tool_calls_end = f"</{DSML_TOKEN}tool_calls>"
+
+        # Find tool_calls section
+        start_idx = normalized.find(tool_calls_start)
+        if start_idx == -1:
+            # No DSML tool_calls found
+            logger.debug("DSML tool_calls not found in content for model {}", model)
+            return content_text, []
+
+        end_idx = normalized.find(tool_calls_end, start_idx)
+        if end_idx == -1:
+            logger.warning(
+                "Invalid DSML format: missing closing tag for model {}", model
+            )
+            return content_text, []
+
+        # Extract parts
+        before_tool_calls = normalized[:start_idx].rstrip()
+        tool_calls_section = normalized[start_idx:end_idx].strip()
+        after_tool_calls = normalized[end_idx + len(tool_calls_end):].strip()
+
+        # Validate no unexpected content after
+        if after_tool_calls:
+            logger.warning(
+                "Unexpected content after DSML tool_calls: {} for model {}",
+                after_tool_calls[:50], model
+            )
+            # Still process what we found, but note the issue
+
+        # Parse the tool_calls section
+        parsed_tool_calls = []
+
+        # Normalize whitespace in the section for easier parsing
+        tool_calls_section = re.sub(r'\s+', ' ', tool_calls_section)
+
+        # Find all invoke tags
+        invoke_pattern = rf'<{re.escape(DSML_TOKEN)}invoke\s+name="([^"]+)">'
+        parameter_pattern = rf'<{re.escape(DSML_TOKEN)}parameter\s+name="([^"]+)"\s+string="([^"]*)">'
+
+        # Split by invoke tags to get individual tool calls
+        invoke_parts = re.split(
+            rf'(<{re.escape(DSML_TOKEN)}invoke\s+[^>]+>)',
+            tool_calls_section
+        )
+
+        i = 1  # Skip first part if it's empty (before first invoke)
+        while i < len(invoke_parts):
+            invoke_match = re.search(invoke_pattern, invoke_parts[i])
+            if not invoke_match:
+                i += 1
+                continue
+
+            tool_name = invoke_match.group(1)
+            arguments = {}
+
+            # Look for parameters until next invoke or end
+            j = i + 1
+            current_params = {}
+            while j < len(invoke_parts):
+                # Check if this part is a parameter
+                param_match = re.search(parameter_pattern, invoke_parts[j])
+                if param_match:
+                    param_name = param_match.group(1)
+                    param_value = param_match.group(2)
+                    current_params[param_name] = param_value
+                # Check if this part is the next invoke
+                elif re.search(invoke_pattern, invoke_parts[j]):
+                    break
+                j += 1
+
+            if current_params:
+                arguments = current_params
+
+            # Build tool call in Anthropic format
+            parsed_tool_calls.append({
+                "type": "tool_use",
+                "id": f"tool_{uuid.uuid4()}",
+                "name": tool_name,
+                "input": arguments,
+            })
+
+            i = j  # Move to next unprocessed part
+
+        if parsed_tool_calls:
+            logger.info(
+                "Successfully parsed {} DSML tool calls from content for model {}",
+                len(parsed_tool_calls), model
+            )
+            # Combine text parts: before + after (preserving spacing)
+            remaining_text = (before_tool_calls + " " + after_tool_calls).strip()
+            return remaining_text, parsed_tool_calls
+        else:
+            logger.warning(
+                "Found DSML tool_calls section but no valid invokes for model {}", model
+            )
+            return content_text, []
+
     def _build_anthropic_response(
         self,
         response: Any,
         request: Any,
         input_tokens: int,
+        model_used: str = "",
     ) -> dict:
         """Convert an OpenAI-compatible completion response into Anthropic format."""
         message_id = f"msg_{uuid.uuid4()}"
@@ -1074,14 +1206,26 @@ class NvidiaNimProvider(BaseProvider):
         content_blocks: list[dict] = []
 
         if content is not None:
-            if content.content:
+            # Check for DSML tool calls in content (DeepSeek-V4-Pro specific)
+            remaining_text, dsml_tool_calls = self._try_parse_dsml_tool_calls(
+                content.content if content.content else "",
+                model_used
+            )
+
+            # Add text content if any remains
+            if remaining_text:
                 content_blocks.append(
                     {
                         "type": "text",
-                        "text": content.content,
+                        "text": remaining_text,
                     }
                 )
 
+            # Add parsed DSML tool calls
+            for tc in dsml_tool_calls:
+                content_blocks.append(tc)
+
+            # Add standard tool_calls if present (for other models)
             if content.tool_calls:
                 for tc in content.tool_calls:
                     tool_block = {
@@ -1248,6 +1392,7 @@ class NvidiaNimProvider(BaseProvider):
         sse = SSEBuilder("", "", 0)
         think_parser = ThinkTagParser()
         heuristic_parser = HeuristicToolParser()
+        dsml_parser = DsmlParser()
 
         attempt = 0
         while max_retries == 0 or attempt < (max_retries + 1):
@@ -1257,6 +1402,7 @@ class NvidiaNimProvider(BaseProvider):
             sse = SSEBuilder(message_id, request.model, input_tokens)
             think_parser = ThinkTagParser()
             heuristic_parser = HeuristicToolParser()
+            dsml_parser = DsmlParser()
             finish_reason = None
             usage_info = None
             error_occurred = False
@@ -1289,11 +1435,11 @@ class NvidiaNimProvider(BaseProvider):
             try:
                 if use_rate_limiter_concurrency:
                     async with self._global_rate_limiter.concurrency_slot():
-                        async for event in self._do_stream_request(body, sse, think_parser, heuristic_parser, request, attempt, max_retries, req_tag, tag, request_id, finish_reason, usage_info, last_error_tag):
+                        async for event in self._do_stream_request(body, sse, think_parser, heuristic_parser, dsml_parser, request, attempt, max_retries, req_tag, tag, request_id, finish_reason, usage_info, last_error_tag):
                             yield event
                 else:
                     # Queue already holds worker slot - just execute
-                    async for event in self._do_stream_request(body, sse, think_parser, heuristic_parser, request, attempt, max_retries, req_tag, tag, request_id, finish_reason, usage_info, last_error_tag):
+                    async for event in self._do_stream_request(body, sse, think_parser, heuristic_parser, dsml_parser, request, attempt, max_retries, req_tag, tag, request_id, finish_reason, usage_info, last_error_tag):
                         yield event
             except Exception as e:
                 # The exception from _do_stream_request triggers the outer retry loop
@@ -1335,6 +1481,29 @@ class NvidiaNimProvider(BaseProvider):
                 yield sse.emit_text_delta(remaining.content)
 
         for tool_use in heuristic_parser.flush():
+            for event in sse.close_content_blocks():
+                yield event
+
+            block_idx = sse.blocks.allocate_index()
+            yield sse.content_block_start(
+                block_idx,
+                "tool_use",
+                id=tool_use["id"],
+                name=tool_use["name"],
+            )
+            if tool_use.get("name") == "Task" and isinstance(
+                tool_use.get("input"), dict
+            ):
+                tool_use["input"]["run_in_background"] = False
+            yield sse.content_block_delta(
+                block_idx,
+                "input_json_delta",
+                json.dumps(tool_use["input"]),
+            )
+            yield sse.content_block_stop(block_idx)
+
+        # Flush any remaining DSML tool calls
+        for tool_use in dsml_parser.flush():
             for event in sse.close_content_blocks():
                 yield event
 
@@ -1398,6 +1567,7 @@ class NvidiaNimProvider(BaseProvider):
         sse: SSEBuilder,
         think_parser: ThinkTagParser,
         heuristic_parser: HeuristicToolParser,
+        dsml_parser: DsmlParser,
         request: Any,
         attempt: int,
         max_retries: int,
@@ -1592,9 +1762,28 @@ class NvidiaNimProvider(BaseProvider):
                                         yield event
                                     yield sse.emit_thinking_delta(part.content)
                                 else:
-                                    filtered_text, detected_tools = (
-                                        heuristic_parser.feed(part.content)
-                                    )
+                                    # First pass text through DSML parser to catch DSML tool calls
+                                    dsml_text, dsml_tool_calls = dsml_parser.feed(part.content)
+                                    # Then pass the remaining text to heuristic parser for regular tool calls
+                                    filtered_text, detected_tools = heuristic_parser.feed(dsml_text)
+
+                                    # Emit DSML tool calls first
+                                    for tool_use in dsml_tool_calls:
+                                        for event in sse.close_content_blocks():
+                                            yield event
+                                        block_idx = sse.blocks.allocate_index()
+                                        yield sse.content_block_start(
+                                            block_idx,
+                                            "tool_use",
+                                            id=tool_use["id"],
+                                            name=tool_use["name"],
+                                        )
+                                        yield sse.content_block_delta(
+                                            block_idx,
+                                            "input_json_delta",
+                                            json.dumps(tool_use["input"]),
+                                        )
+                                        yield sse.content_block_stop(block_idx)
 
                                     if filtered_text:
                                         for event in sse.ensure_text_block():

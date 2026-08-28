@@ -688,10 +688,12 @@ async def create_message(
                     flush=True,
                 )
 
-        # If nimserver override is active and it's 'buffer', dispatch to buffered_request
-        # and convert the response to SSE for the streaming endpoint.
-        if server_type_override == "buffer":
-            logger.info("NIMSERVER: streaming endpoint -> using buffered mode (override)")
+        # Determine effective server type: per-session override takes precedence, otherwise use global setting
+        effective_server_type = server_type_override if server_type_override is not None else settings.server_type
+
+        if effective_server_type == "buffer":
+            logger.info("NIMSERVER: streaming endpoint -> using buffered mode (%s)",
+                       "override" if server_type_override else "global setting")
 
             response = await provider.buffered_request(
                 request_data,
@@ -715,7 +717,7 @@ async def create_message(
                 },
             )
 
-        # Normal streaming path
+        # Normal streaming path (effective_server_type == "stream")
         return StreamingResponse(
             provider.stream_response(
                 request_data,
@@ -901,25 +903,19 @@ async def create_message_buffered(
                     except Exception:
                         continue
 
-            # Build an Anthropic-format response from the collected text
-            import uuid as _uuid
-
-            response = {
-                "id": f"msg_{_uuid.uuid4().hex[:24]}",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": full_response_text.strip()}],
-                "model": request_data.model,
-                "stop_reason": "end_turn",
-                "stop_sequence": None,
-                "usage": {
-                    "input_tokens": input_tokens,
-                    "output_tokens": 0,
-                },
-            }
+            # Build a proper MessagesResponse object from the collected text
+            # Estimate output tokens (rough approximation: 4 chars per token)
+            estimated_output_tokens = max(1, len(full_response_text.strip()) // 4)
+            response_obj = MessagesResponse(
+                id=f"msg_{uuid.uuid4().hex[:24]}",
+                model=request_data.model,
+                content=[{"type": "text", "text": full_response_text.strip()}],
+                stop_reason="end_turn",
+                usage=Usage(input_tokens=input_tokens, output_tokens=estimated_output_tokens),
+            )
 
             return JSONResponse(
-                content=response,
+                content=response_obj.model_dump(),
                 headers={
                     "X-Buffered": "true",
                     "X-Request-ID": request_id,
