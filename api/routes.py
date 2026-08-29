@@ -285,35 +285,33 @@ async def _handle_nimeffort(
                 if _is_title_request(request_data):
                     return None
 
-                effort_level = extract_nimeffort_tag(text_content)
-                if not effort_level:
+                effort_level, effort_budget = extract_nimeffort_tag(text_content)
+                if not effort_level and not effort_budget:
                     return None
 
                 # Store the effort level per session (using x-claude-code-session-id header as identifier)
                 session_id = request_data.session_id or _extract_api_key(request, settings)
 
-                # Try to parse as integer budget (-1 to 1000000)
-                try:
-                    val = int(effort_level)
-                    if -1 <= val <= 1000000:
-                        # Numeric budget - store as custom budget override
-                        # Do NOT force a named effort; let user set it separately if desired
-                        set_effort_budget(session_id, val)
-                        stored_effort = get_effort_level(session_id)
-                        effort_display = f" (effort: {stored_effort})" if stored_effort else ""
-                        display = f"custom budget: {val} tokens{effort_display}"
-                    else:
-                        logger.warning("nimeffort value %d out of range [-1, 1000000], ignoring", val)
-                        return None
-                except ValueError:
-                    # Named level - store as effort level, clear any custom budget
+                # Handle combined format: <nimeffort:level:budget>
+                if effort_level and effort_budget is not None:
+                    set_effort_level(session_id, effort_level)
+                    set_effort_budget(session_id, effort_budget)
+                    display = f"{effort_level} (budget: {effort_budget} tokens)"
+                # Handle budget-only: <nimeffort:100>
+                elif effort_budget is not None:
+                    set_effort_budget(session_id, effort_budget)
+                    stored_effort = get_effort_level(session_id)
+                    effort_display = f" (effort: {stored_effort})" if stored_effort else ""
+                    display = f"custom budget: {effort_budget} tokens{effort_display}"
+                # Handle level-only: <nimeffort:ultracode>
+                elif effort_level:
                     set_effort_level(session_id, effort_level)
                     clear_effort_budget(session_id)
                     display = effort_level
 
                 return _create_nimserver_response(
                     True,
-                    f"effort-{effort_level}",
+                    f"effort-set",
                     f"✅ Reasoning effort set to: **{display}**\n\n"
                     f"This applies to the current session.",
                 )

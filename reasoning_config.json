@@ -50,7 +50,7 @@
       ]
     },
     "deepseek-ai/deepseek-v4-pro-0813": {
-      "supports_thinking": false,
+      "supports_thinking": true,
       "thinking_style": "deepseek",
       "efforts": [
         "low:high:1024",
@@ -59,6 +59,18 @@
         "xhigh:max:28672",
         "max:max:32768",
         "ultracode:max:-1"
+      ]
+    },
+    "deepseek-ai/deepseek-v4-flash-0731": {
+      "supports_thinking": true,
+      "thinking_style": "deepseek",
+      "efforts": [
+        "low:high:1024",
+        "medium:high:4096",
+        "high:high:16384",
+        "xhigh:max:28672",
+        "max:max:32768",
+        "ultracode:max:384000"
       ]
     },
     "minimaxai/minimax-m3": {

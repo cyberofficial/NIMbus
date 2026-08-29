@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **NotFoundError & overloads retryability** - `NotFoundError` and overload errors are now treated as retryable.
 - **Bot protection bypass for localhost** - Localhost requests are ignored by bot protection.
 - **Mid-stream truncation retry** - Streams that end without a `finish_reason` (NVIDIA backend cut off mid-response) now trigger a retry instead of silently returning a partial response. Previously only completely empty streams were detected.
+- **Reasoning budget sets max_tokens** - The reasoning budget (from effort config, `<nimeffort:level:budget>` tag, or session store) now directly sets `max_tokens` instead of being silently capped. This allows models like `deepseek-v4-flash-0731` to use their full reasoning capability (e.g. `<nimeffort:ultracode:100>` → `max_tokens=100`). DeepSeek uses `reasoning_effort` in `chat_template_kwargs` to control thinking intensity; Nemotron uses `reasoning_budget` in `extra_body`.
+- **Nimeffort combined format** - The `<nimeffort>` tag now supports `<nimeffort:level:budget>` format (e.g. `<nimeffort:ultracode:100>` sets effort to ultracode with a 100-token budget). The budget directly controls `max_tokens`. Budget is stored in the session store by `_handle_nimeffort` in `routes.py` and retrieved per-request.
+- **DeepSeek reasoning_budget exclusion** - `reasoning_budget` parameter is no longer sent to DeepSeek models (which reject it with 400 errors). Only Nemotron/default styles send it. DeepSeek uses `reasoning_effort` in `chat_template_kwargs` + `max_tokens` instead.
 
 ### Removed
 - **UV references** - Removed `uv.lock` and `UV_*` references from `pyproject.toml`, `server.py`, and `start_server.py`.
@@ -27,7 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`providers/dsml_parser.py`** - Rewritten DSML tool-call parsing for stream/buffered modes.
 - **`api/optimization_handlers.py`** - Thinking and `tool_use` block emission in buffered→SSE conversion.
 - **`api/routes.py`** - SERVER_TYPE config fix.
-- **`providers/request.py`** - Force `include_stop_str_in_output` for `deepseek-v4` so failed backend parses leave recoverable DSML markup.
+- **`providers/request.py`** - Force `include_stop_str_in_output` for `deepseek-v4`; budget sets `max_tokens` directly from session store; deepseek sends `reasoning_effort` in `chat_template_kwargs`; `reasoning_budget` sent only for nemotron/default styles; nimeffort combined format parsing.
+- **`api/swapper/parser.py`** - Nimeffort tag regex supports `<nimeffort:level:budget>` combined format; returns `(level, budget)` tuple.
+- **`api/routes.py`** - Nimeffort handler stores both effort level and budget from combined format; SERVER_TYPE config fix.
 - **`api/bot_protection.py`** - Localhost bypass.
 - **`reasoning_config.json`** - Renamed model key to `deepseek-v4-pro-0813` with explicit token budgets; disabled forced thinking flag.
 - **`pyproject.toml`**, **`server.py`**, **`start_server.py`**, **`uv.lock`** - UV reference removal.

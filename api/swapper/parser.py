@@ -42,11 +42,13 @@ def is_nimhelp_tag(text: str) -> bool:
     return bool(NIMHELP_PATTERN.search(text))
 
 
-# Match <nimeffort:level> ONLY when it's the ENTIRE message (after optional leading/trailing whitespace)
-# This avoids false positives from embedded content in file outputs, system prompts, docs, etc.
-# Accepts named levels (low, medium, high, xhigh, max, ultracode) OR integers (-1 to 1000000)
+# Match <nimeffort:level> or <nimeffort:level:budget> ONLY when it's the ENTIRE message
+# (after optional leading/trailing whitespace). Avoids false positives from embedded content.
+# Accepts named levels (low, medium, high, xhigh, max, ultracode) with optional integer budget.
+# Also accepts bare integers (-1 to 1000000) for budget-only mode.
 NIMEFFORT_PATTERN = re.compile(
-    r"^[ \t]*<nimeffort:\s*(-1|[1-9]\d{0,5}|1000000|low|medium|high|xhigh|max|ultracode)\s*>[ \t]*$",
+    r"^[ \t]*<nimeffort:\s*(-1|[1-9]\d{0,5}|1000000|low|medium|high|xhigh|max|ultracode)"
+    r"(?::\s*(-1|[1-9]\d{0,5}|1000000))?\s*>[ \t]*$",
     re.IGNORECASE
 )
 
@@ -70,14 +72,25 @@ def is_nimeffort_status_tag(text: str) -> bool:
     return bool(NIMEFFORT_STATUS_PATTERN.search(text))
 
 
-def extract_nimeffort_tag(text: str) -> str | None:
-    """Extract effort level from <nimeffort:level> tag if exact match.
-    Returns the effort level (low|medium|high|xhigh|max|ultracode) or None if no match.
+def extract_nimeffort_tag(text: str) -> tuple[str | None, int | None]:
+    """Extract effort level and optional budget from <nimeffort:level:budget> tag.
+    
+    Returns:
+        Tuple of (effort_level, budget) where either can be None.
+        - <nimeffort:ultracode> → ("ultracode", None)
+        - <nimeffort:100> → (None, 100)
+        - <nimeffort:ultracode:100> → ("ultracode", 100)
+        - No match → (None, None)
     """
     match = NIMEFFORT_PATTERN.search(text)
     if match:
-        return match.group(1).lower()
-    return None
+        level = match.group(1).lower() if match.group(1) else None
+        # If level is a number (not a named level), treat it as budget
+        if level and level.lstrip('-').isdigit():
+            return (None, int(level))
+        budget = int(match.group(2)) if match.group(2) else None
+        return (level, budget)
+    return (None, None)
 
 
 def extract_modelswap_tag(text: str) -> str | None:

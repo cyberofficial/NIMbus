@@ -130,18 +130,17 @@ def build_request_body(
         from api.swapper.parser import extract_nimeffort_tag, is_nimeffort_tag
 
         if is_nimeffort_tag(last_user_msg):
-            extracted = extract_nimeffort_tag(last_user_msg)
-            # Try to parse as integer budget (-1 to 1000000)
-            if extracted is not None:
-                try:
-                    val = int(extracted)
-                    if -1 <= val <= 1000000:
-                        custom_budget_from_tag = val
-                    else:
-                        logger.warning("nimeffort value %d out of range [-1, 1000000], ignoring", val)
-                except ValueError:
-                    # Named level (low, medium, high, etc.)
-                    exact_effort_tag = extracted
+            effort_level_from_tag, budget_from_tag = extract_nimeffort_tag(last_user_msg)
+            # Handle combined format: <nimeffort:ultracode:100>
+            if effort_level_from_tag and budget_from_tag is not None:
+                exact_effort_tag = effort_level_from_tag
+                custom_budget_from_tag = budget_from_tag
+            # Handle budget-only: <nimeffort:100>
+            elif budget_from_tag is not None:
+                custom_budget_from_tag = budget_from_tag
+            # Handle level-only: <nimeffort:ultracode>
+            elif effort_level_from_tag:
+                exact_effort_tag = effort_level_from_tag
 
     # Handle thinking/reasoning mode - only when NIM_THINKING enabled AND model supports thinking
     if nim.thinking and reasoning_config.supports_thinking:
@@ -174,9 +173,10 @@ def build_request_body(
             # reasoning_budget handled below
 
         elif thinking_style == "deepseek":
-            # DeepSeek: chat_template_kwargs.thinking (boolean)
+            # DeepSeek: chat_template_kwargs.thinking + reasoning_effort
             ctk = extra_body.setdefault("chat_template_kwargs", {})
             ctk["thinking"] = True  # Enable thinking when enabled globally
+            ctk["reasoning_effort"] = model_effort
 
         elif thinking_style == "minimax":
             # MinMax: chat_template_kwargs.thinking_mode (enabled/adaptive/disabled)
@@ -216,16 +216,13 @@ def build_request_body(
                     reasoning_config.max_reasoning_budget
                 )
 
-        # Validate: reasoning_budget must be less than max_tokens (if both set)
-        # If budget >= max_tokens, set budget to -1 (unlimited) and let max_tokens cap the response
-        if max_tokens is not None and effective_budget > 0 and effective_budget >= max_tokens:
-            logger.info(
-                "reasoning_budget ({}) >= max_tokens ({}); setting reasoning_budget=-1 (unlimited) and relying on max_tokens cap",
-                effective_budget, max_tokens
-            )
-            effective_budget = -1
+        # Set max_tokens from budget so the model can use its full reasoning capability
+        # (e.g. deepseek-v4-flash ultracode=384k sets max_tokens=384000)
+        if effective_budget > 0:
+            body["max_tokens"] = effective_budget
 
         # Add reasoning_budget for nemotron and default styles (nemotron needs it, default for backward compat)
+        # DeepSeek does NOT support reasoning_budget - it uses reasoning_effort in chat_template_kwargs instead
         if thinking_style in ("nemotron", "default"):
             if effective_budget > 0:
                 _set_extra(extra_body, "reasoning_budget", effective_budget)
