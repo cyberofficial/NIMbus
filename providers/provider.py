@@ -1828,10 +1828,19 @@ class NvidiaNimProvider(BaseProvider):
                 StreamTruncatedError,
             ) as e:
                 # Check if it's a retryable error
-                # Note: APIConnectionError, APITimeoutError, httpx.ReadError, httpx.TimeoutException
-                # are already handled by execute_with_retry, so we don't include them here to avoid
-                # double retry spam/loops
-                is_retryable = _is_retryable_server_error(e) or _is_resource_exhausted_error(e) or isinstance(e, (StreamTruncatedError, NotFoundError)) or ("service temporarily overloaded" in str(e).lower())
+                # Note: APIConnectionError, APITimeoutError, httpx.ReadError,
+                # httpx.TimeoutException during chunk iteration are retried here
+                # (execute_with_retry only covers the initial create() call, not
+                # the async-for loop where mid-stream drops actually occur).
+                # Safe to retry: enqueue_stream buffers all events, so the client
+                # only receives the final attempt's clean SSE sequence.
+                is_retryable = (
+                    isinstance(e, (APIConnectionError, APITimeoutError, httpx.ReadError, httpx.TimeoutException))
+                    or _is_retryable_server_error(e)
+                    or _is_resource_exhausted_error(e)
+                    or isinstance(e, (StreamTruncatedError, NotFoundError))
+                    or ("service temporarily overloaded" in str(e).lower())
+                )
                 last_error_tag = f"{type(e).__name__}"
                 detail = _format_error_detail(e)
 
