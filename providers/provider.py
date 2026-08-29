@@ -1077,9 +1077,10 @@ class NvidiaNimProvider(BaseProvider):
                 len(parsed_tool_calls), model
             )
         elif remaining_text != content_text:
-            # Markup was present but no valid invokes could be extracted
+            # Residual DSML markup (e.g. a dangling closing-tag tail the
+            # backend's tool parser failed to consume) was stripped
             logger.warning(
-                "Found DSML tool_calls section but no valid invokes for model {}", model
+                "Stripped residual DSML markup from content for model {}", model
             )
         else:
             logger.debug("DSML tool_calls not found in content for model {}", model)

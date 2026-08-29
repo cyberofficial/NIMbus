@@ -110,12 +110,26 @@ def _parse_invokes(block: str) -> list[dict]:
     return tools
 
 
+_RESIDUAL_DSML_TAG_RE = re.compile(r"</?\s*｜DSML｜\s*[A-Za-z_][^<>]*>")
+
+
+def _strip_residual_tags(text: str) -> str:
+    """Remove DSML tags that survived outside parsed tool_calls blocks.
+
+    Backends with a server-side tool-call parser sometimes consume the head
+    of a DSML block and leave dangling closing tags (e.g. only
+    </｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>) in content.
+    Those tags are never legitimate user-facing text.
+    """
+    return _RESIDUAL_DSML_TAG_RE.sub("", text)
+
+
 def parse_dsml_tool_calls(text: str) -> tuple[str, list[dict]]:
     """Extract DSML tool_calls blocks from completion text.
 
     Returns (remaining_text, tool_use_blocks) where remaining_text is the
     content outside the tool_calls blocks. If no tool calls are found the
-    input is returned (normalized) unchanged.
+    input is returned (normalized, residual tags stripped) unchanged.
     """
     text = normalize_dsml_markup(text)
     tools: list[dict] = []
@@ -125,10 +139,11 @@ def parse_dsml_tool_calls(text: str) -> tuple[str, list[dict]]:
         remaining_parts.append(text[last : m.start()])
         tools.extend(_parse_invokes(m.group(1)))
         last = m.end()
-    if not tools:
-        return text, []
     remaining_parts.append(text[last:])
-    return "".join(remaining_parts).strip(), tools
+    remaining = _strip_residual_tags("".join(remaining_parts)).strip()
+    if not tools:
+        return remaining, []
+    return remaining, tools
 
 
 class DsmlParser:

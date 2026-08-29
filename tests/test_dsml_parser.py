@@ -77,6 +77,40 @@ def test_no_dsml_passthrough():
     assert remaining == text
 
 
+# Exact dangling tail observed in the field: NVIDIA's server-side tool
+# parser consumed the head of the block, leaving only closing tags.
+DANGLING_TAIL = "</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>"
+
+
+def test_dangling_dsml_tail_stripped():
+    remaining, tools = parse_dsml_tool_calls(DANGLING_TAIL)
+    assert tools == []
+    assert remaining == ""
+    assert "DSML" not in remaining
+
+
+def test_degraded_dangling_tail_stripped():
+    remaining, tools = parse_dsml_tool_calls(
+        "</||DSML||parameter></||DSML||invoke></||DSML||tool_calls>"
+    )
+    assert tools == []
+    assert remaining == ""
+
+
+def test_stray_tail_after_complete_block_stripped():
+    text = CANONICAL_SAMPLE + "\n</｜DSML｜invoke>"
+    remaining, tools = parse_dsml_tool_calls(text)
+    assert len(tools) == 1
+    assert "DSML" not in remaining
+    assert remaining == "I will run the command."
+
+
+def test_normal_text_with_dangling_tail_keeps_text():
+    remaining, tools = parse_dsml_tool_calls("Some real answer." + DANGLING_TAIL)
+    assert tools == []
+    assert remaining == "Some real answer."
+
+
 def test_is_dsml_model():
     assert is_dsml_model("deepseek-ai/deepseek-v4-pro-0813")
     assert is_dsml_model("deepseek-ai/deepseek-v4-flash-0731")
