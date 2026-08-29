@@ -1267,6 +1267,26 @@ class NvidiaNimProvider(BaseProvider):
             raise RuntimeError("Request queue is not initialized")
         events = await self._request_queue.enqueue_stream(_stream_factory, priority)
 
+        # When a stream is retried, `_stream_response_impl` emits a fresh
+        # message_start for every attempt, so the buffered `events` list can
+        # contain multiple message sequences (one per attempt). Claude Code
+        # only accepts a single message per response, so keep only the final
+        # attempt's sequence and drop any partial earlier ones (which end at a
+        # truncation without message_stop).
+        if events:
+            start_indices = [
+                i for i, ev in enumerate(events)
+                if "message_start" in ev
+            ]
+            if len(start_indices) > 1:
+                logger.warning(
+                    "{}_STREAM: {} retry attempt(s) left duplicate message_start "
+                    "in buffer; keeping only the final attempt's sequence",
+                    self._provider_name,
+                    len(start_indices) - 1,
+                )
+                events = events[start_indices[-1]:]
+
         # Yield collected events
         for event in events:
             yield event
