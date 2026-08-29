@@ -1778,21 +1778,27 @@ class NvidiaNimProvider(BaseProvider):
                         reply_log_buffer = ""
 
 
-                    # Detect empty/malformed response: stream completed but no finish_reason
-                    # and no content produced. NVIDIA sometimes returns HTTP 200 with an empty
-                    # body when workers are overloaded or backend times out mid-processing.
-                    if finish_reason is None and not (
-                        sse.accumulated_text
-                        or sse.accumulated_reasoning
-                        or sse.blocks.tool_states
-                    ):
-                        logger.warning(
-                            "{}_STREAM: Stream completed with no content or finish_reason - "
-                            "treating as retryable error",
-                            tag,
-                        )
+                    # Detect truncated/malformed response: stream completed without finish_reason.
+                    # NVIDIA sometimes cuts off the connection mid-response — partial content with
+                    # no finish_reason means the stream was truncated and should be retried.
+                    if finish_reason is None:
+                        if not (sse.accumulated_text or sse.accumulated_reasoning or sse.blocks.tool_states):
+                            logger.warning(
+                                "{}_STREAM: Stream completed with no content or finish_reason - "
+                                "treating as retryable error",
+                                tag,
+                            )
+                        else:
+                            logger.warning(
+                                "{}_STREAM: Stream truncated mid-response - {} chars text, {} chars reasoning, "
+                                "{} tool calls delivered but no finish_reason. Treating as retryable error.",
+                                tag,
+                                len(sse.accumulated_text),
+                                len(sse.accumulated_reasoning),
+                                len(sse.blocks.tool_states),
+                            )
                         raise StreamTruncatedError(
-                            "NVIDIA backend returned empty response (worker exhausted or timeout)"
+                            "NVIDIA backend stream truncated (no finish_reason received)"
                         )
                 except APIStatusError as e:
                     # Check for system role error during streaming (e.g., "System message must be at the beginning")

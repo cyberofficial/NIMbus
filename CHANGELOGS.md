@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SERVER_TYPE config** - Fixed `SERVER_TYPE` handling and added DeepSeek-V4-Pro DSML tool-call parsing for stream mode.
 - **NotFoundError & overloads retryability** - `NotFoundError` and overload errors are now treated as retryable.
 - **Bot protection bypass for localhost** - Localhost requests are ignored by bot protection.
+- **Mid-stream truncation retry** - Streams that end without a `finish_reason` (NVIDIA backend cut off mid-response) now trigger a retry instead of silently returning a partial response. Previously only completely empty streams were detected.
 
 ### Removed
 - **UV references** - Removed `uv.lock` and `UV_*` references from `pyproject.toml`, `server.py`, and `start_server.py`.
