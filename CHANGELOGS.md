@@ -26,9 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`providers/dsml_parser.py`** - Rewritten DSML tool-call parsing for stream/buffered modes.
 - **`api/optimization_handlers.py`** - Thinking and `tool_use` block emission in buffered→SSE conversion.
 - **`api/routes.py`** - SERVER_TYPE config fix.
-- **`providers/request.py`** - DSML tool-call parsing updates.
+- **`providers/request.py`** - Force `include_stop_str_in_output` for `deepseek-v4` so failed backend parses leave recoverable DSML markup.
 - **`api/bot_protection.py`** - Localhost bypass.
-- **`reasoning_config.json`** - Disabled forced thinking flag for `deepseek-v4-pro`.
+- **`reasoning_config.json`** - Renamed model key to `deepseek-v4-pro-0813` with explicit token budgets; disabled forced thinking flag.
+- **`pyproject.toml`**, **`server.py`**, **`start_server.py`**, **`uv.lock`** - UV reference removal.
 - **`tests/test_think_split.py`**, **`tests/test_optimization_sse.py`**, **`tests/test_dsml_parser.py`** - New/updated tests.
 - **`nimbus_linux.spec`** - Hidden imports update.
 - **`BUILD_LINUX_BINARY.md`** - Build documentation.
