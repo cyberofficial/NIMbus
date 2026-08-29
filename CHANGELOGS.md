@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## v2.0.15 - Date: 2026-08-28
+
+### Fixed
+- **DeepSeek-V4-Pro CoT leakage in streaming** - Disabled the forced thinking flag for `deepseek-v4-pro`. With server-default thinking, DeepSeek-V4 on NIM returns Chain-of-Thought inline in `message.content` with a trailing (orphan) response instead of the separate `reasoning_content` field.
+- **Inline thinking → thinking blocks (buffered mode)** - Split inline CoT via `split_think_content` and emit proper Anthropic thinking blocks; `optimization_response_to_sse` now emits thinking blocks too instead of dropping them.
+- **Degraded DeepSeek-V4 DSML tool-call parsing & stop_reason guard** - Rewrote the DSML parser to fix degraded tool-call extraction and guard `stop_reason` correctly.
+- **Missing tool_use blocks in buffered→SSE conversion** - Emitted `tool_use` blocks when converting buffered responses to SSE.
+- **SERVER_TYPE config** - Fixed `SERVER_TYPE` handling and added DeepSeek-V4-Pro DSML tool-call parsing for stream mode.
+- **NotFoundError & overloads retryability** - `NotFoundError` and overload errors are now treated as retryable.
+- **Bot protection bypass for localhost** - Localhost requests are ignored by bot protection.
+
+### Removed
+- **UV references** - Removed `uv.lock` and `UV_*` references from `pyproject.toml`, `server.py`, and `start_server.py`.
+
+### Files Touched
+- **`providers/provider.py`** - Inline thinking split logic; DeepSeek-V4 DSML parsing; retryable error handling.
+- **`providers/think_parser.py`** - `split_think_content` for separating CoT from content.
+- **`providers/dsml_parser.py`** - Rewritten DSML tool-call parsing for stream/buffered modes.
+- **`api/optimization_handlers.py`** - Thinking and `tool_use` block emission in buffered→SSE conversion.
+- **`api/routes.py`** - SERVER_TYPE config fix.
+- **`providers/request.py`** - DSML tool-call parsing updates.
+- **`api/bot_protection.py`** - Localhost bypass.
+- **`reasoning_config.json`** - Disabled forced thinking flag for `deepseek-v4-pro`.
+- **`tests/test_think_split.py`**, **`tests/test_optimization_sse.py`**, **`tests/test_dsml_parser.py`** - New/updated tests.
+- **`nimbus_linux.spec`** - Hidden imports update.
+- **`BUILD_LINUX_BINARY.md`** - Build documentation.
+
+---
 ## v2.0.14 - Date: 2026-08-16
 
 ### Fixed
