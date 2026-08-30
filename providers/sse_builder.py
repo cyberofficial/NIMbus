@@ -70,6 +70,7 @@ class ContentBlockManager:
     thinking_started: bool = False
     text_started: bool = False
     tool_states: dict[int, ToolCallState] = field(default_factory=dict)
+    tool_blocks_started: int = 0
 
     def allocate_index(self) -> int:
         """Allocate and return the next block index."""
@@ -215,6 +216,8 @@ class SSEBuilder:
     # Content block events
     def content_block_start(self, index: int, block_type: str, **kwargs) -> str:
         """Generate content_block_start event."""
+        if block_type == "tool_use":
+            self.blocks.tool_blocks_started += 1
         content_block: dict[str, Any] = {"type": block_type}
         if block_type == "thinking":
             content_block["thinking"] = kwargs.get("thinking", "")
