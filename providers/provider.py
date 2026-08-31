@@ -1867,6 +1867,26 @@ class NvidiaNimProvider(BaseProvider):
                         raise StreamTruncatedError(
                             "NVIDIA backend stream truncated (no finish_reason received)"
                         )
+
+                    # Detect "thinking-only" truncation: finish_reason is set (e.g. "length"
+                    # from max_tokens) but the stream produced only reasoning with no usable
+                    # assistant text and no tool calls. DeepSeek can burn the entire token
+                    # budget on thinking and return finish_reason="length" with zero reply.
+                    # Claude Code cannot act on reasoning alone — treat as retryable so the
+                    # next attempt can deliver an actual response (or we eventually exhaust
+                    # retries and emit a clean SSE error).
+                    if finish_reason and not sse.accumulated_text and not sse.blocks.tool_states:
+                        logger.warning(
+                            "{}_STREAM: finish_reason={} but stream produced only {} chars reasoning "
+                            "and no assistant text or tool calls - treating as retryable truncation",
+                            tag,
+                            finish_reason,
+                            len(sse.accumulated_reasoning),
+                        )
+                        raise StreamTruncatedError(
+                            f"NVIDIA backend returned finish_reason={finish_reason} with "
+                            "reasoning-only content (no assistant text)"
+                        )
                 except APIStatusError as e:
                     # Check for system role error during streaming (e.g., "System message must be at the beginning")
                     if _is_role_error(e):
