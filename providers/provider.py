@@ -651,7 +651,13 @@ class NvidiaNimProvider(BaseProvider):
             timeout=httpx.Timeout(
                 config.http_read_timeout,
                 connect=config.http_connect_timeout,
-                read=None,  # Disable idle read timeout for streaming; chunks may be far apart
+                # Bounded idle-read timeout. `None` would let a stalled stream
+                # (NVIDIA returns 200 + `nvcf-status: fulfilled` but then sends
+                # zero chunks) block forever — the client sees a half-open
+                # response and fails with "empty or malformed response (HTTP 200)".
+                # A bounded read timeout raises httpx.ReadTimeout, which the
+                # stream retry path classifies as retryable.
+                read=config.http_read_timeout,
                 write=config.http_write_timeout,
             ),
             http_client=http_client,
@@ -1172,19 +1178,31 @@ class NvidiaNimProvider(BaseProvider):
         if choice and choice.finish_reason:
             stop_reason = map_stop_reason(choice.finish_reason)
 
+        tool_blocks_present = any(
+            block.get("type") == "tool_use" for block in content_blocks
+        )
         # Guard: never claim tool_use without an actual tool_use block.
         # DeepSeek-V4 sometimes emits DSML tool calls the backend parser fails
         # to extract, so finish_reason says "tool_calls" but no structured
         # call survives. Claude Code hard-fails on tool_use with no tool block.
-        if stop_reason == "tool_use" and not any(
-            block.get("type") == "tool_use" for block in content_blocks
-        ):
+        if stop_reason == "tool_use" and not tool_blocks_present:
             logger.warning(
                 "finish_reason={} but no tool_use block produced; "
                 "downgrading stop_reason to end_turn",
                 choice.finish_reason if choice else None,
             )
             stop_reason = "end_turn"
+        # Inverse guard: DeepSeek emits tool calls as DSML markup, so OpenAI's
+        # finish_reason is "stop" even when tool_use blocks were parsed out of
+        # the content. Claude Code expects stop_reason="tool_use" when tool_use
+        # content blocks are present; end_turn + tool_use blocks is rejected.
+        elif tool_blocks_present and stop_reason != "tool_use":
+            logger.debug(
+                "finish_reason={} but tool_use blocks were produced; "
+                "setting stop_reason to tool_use",
+                choice.finish_reason if choice else None,
+            )
+            stop_reason = "tool_use"
 
         return {
             "id": message_id,
@@ -1395,6 +1413,12 @@ class NvidiaNimProvider(BaseProvider):
                     max_retries if max_retries > 0 else "∞",
                     type(e).__name__,
                 )
+                # Increment the outer attempt counter so the while-condition can
+                # eventually terminate a persistently-failing stream and so the
+                # backoff delay (retry_delay * attempt) actually ramps up. Without
+                # this, attempt stays 0 forever and a broken stream retries
+                # endlessly with no delay.
+                attempt += 1
                 continue
 
             # If we got here without error, the stream completed cleanly - exit retry loop
@@ -1503,17 +1527,31 @@ class NvidiaNimProvider(BaseProvider):
             finish_reason = "length"  # maps to "max_tokens" per STOP_REASON_MAP
 
         stop_reason = map_stop_reason(finish_reason)
+        tool_blocks_streamed = (
+            sse.blocks.tool_blocks_started > 0
+            or any(state.started for state in sse.blocks.tool_states.values())
+        )
         # Guard: never claim tool_use without a streamed tool_use block
         # (DeepSeek-V4 DSML tool calls the backend failed to parse, etc.)
-        if stop_reason == "tool_use" and not any(
-            state.started for state in sse.blocks.tool_states.values()
-        ):
+        if stop_reason == "tool_use" and not tool_blocks_streamed:
             logger.warning(
                 "finish_reason={} but no tool_use block was streamed; "
                 "downgrading stop_reason to end_turn",
                 finish_reason,
             )
             stop_reason = "end_turn"
+        # Inverse guard: if tool_use blocks were streamed but finish_reason
+        # was "stop" (DeepSeek emits tool calls as DSML markup, so OpenAI's
+        # finish_reason is not "tool_calls"), Claude Code still expects
+        # stop_reason="tool_use" when tool_use content blocks are present.
+        # Delivering end_turn + tool_use blocks is rejected as malformed.
+        elif tool_blocks_streamed:
+            logger.debug(
+                "finish_reason={} but tool_use blocks were streamed; "
+                "setting stop_reason to tool_use",
+                finish_reason,
+            )
+            stop_reason = "tool_use"
 
         yield sse.message_delta(stop_reason, output_tokens)
         yield sse.message_stop()
@@ -1672,8 +1710,10 @@ class NvidiaNimProvider(BaseProvider):
                     thinking_log_buffer = ""
                     reply_log_buffer = ""
                     LOG_FLUSH_SIZE = 120
+                    chunks_received = 0
 
                     async for chunk in stream:
+                        chunks_received += 1
                         if getattr(chunk, "usage", None):
                             usage_info = chunk.usage
 
@@ -1802,7 +1842,14 @@ class NvidiaNimProvider(BaseProvider):
                     # NVIDIA sometimes cuts off the connection mid-response — partial content with
                     # no finish_reason means the stream was truncated and should be retried.
                     if finish_reason is None:
-                        if not (sse.accumulated_text or sse.accumulated_reasoning or sse.blocks.tool_states):
+                        if chunks_received == 0:
+                            logger.warning(
+                                "{}_STREAM: NVIDIA returned an empty SSE body "
+                                "(200 OK but 0 chunks, no finish_reason) - "
+                                "treating as retryable error",
+                                tag,
+                            )
+                        elif not (sse.accumulated_text or sse.accumulated_reasoning or sse.blocks.tool_states):
                             logger.warning(
                                 "{}_STREAM: Stream completed with no content or finish_reason - "
                                 "treating as retryable error",
@@ -1846,6 +1893,12 @@ class NvidiaNimProvider(BaseProvider):
                 APIError,
                 NotFoundError,
                 StreamTruncatedError,
+                # Raw httpx errors surface during body iteration (the OpenAI SDK
+                # wraps them during the initial create() call but NOT in the
+                # async-for chunk loop). These must be in the except tuple here
+                # or the is_retryable check below never sees them.
+                httpx.ReadError,
+                httpx.TimeoutException,
             ) as e:
                 # Check if it's a retryable error
                 # Note: APIConnectionError, APITimeoutError, httpx.ReadError,
