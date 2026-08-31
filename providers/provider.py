@@ -1926,8 +1926,24 @@ class NvidiaNimProvider(BaseProvider):
                             )
                         else:
                             # Partial content was delivered before the stream cut.
-                            # Instead of retrying (which may take minutes or fail again),
-                            # deliver what we have by properly closing the stream so Claude
+                            # If that partial content is reasoning-only (no assistant text
+                            # and no tool calls), Claude Code cannot act on it (thinking is
+                            # hidden) — delivering it just produces an empty turn that triggers
+                            # a re-prompt loop. Treat it as truncation and retry for real output
+                            # instead.
+                            if sse.accumulated_reasoning and not sse.accumulated_text and not sse.blocks.tool_states:
+                                logger.warning(
+                                    "{}_STREAM: Stream truncated mid-response with reasoning-only "
+                                    "content ({} chars reasoning, no text, no tool calls) - treating "
+                                    "as retryable truncation instead of delivering",
+                                    tag,
+                                    len(sse.accumulated_reasoning),
+                                )
+                                raise StreamTruncatedError(
+                                    f"NVIDIA backend stream truncated with reasoning-only content "
+                                    f"({len(sse.accumulated_reasoning)} chars reasoning, no assistant text)"
+                                )
+                            # Otherwise deliver what we have by properly closing the stream so Claude
                             # sees the partial response and can continue.
                             logger.warning(
                                 "{}_STREAM: Stream truncated mid-response - {} chars text, {} chars reasoning, "
