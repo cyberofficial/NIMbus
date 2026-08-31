@@ -260,6 +260,58 @@ async def test_stream_retries_are_bounded_by_max_retries(provider, mock_request)
 
 
 @pytest.mark.asyncio
+async def test_partial_delivery_appends_notice_and_single_message_stop(provider, mock_request):
+    """A stream cut mid-response with partial text must deliver the partial
+    content plus the PROXY NOTICE, with exactly one message_stop.
+
+    Regression: the partial-delivery path emitted message_delta/message_stop
+    itself AND _stream_response_impl's post-stream flush emitted them again,
+    so Claude Code received two message_stop events (malformed SSE).
+    """
+    def _make_partial_stream():
+        async def _gen():
+            chunk = MagicMock()
+            chunk.usage = None
+            chunk.choices = [
+                MagicMock(
+                    delta=MagicMock(
+                        content="Partial work so far",
+                        reasoning_content=None,
+                        tool_calls=None,
+                    ),
+                    finish_reason=None,
+                )
+            ]
+            yield chunk
+            # Stream ends here without finish_reason (truncated).
+
+        return _gen()
+
+    with patch.object(provider, "_build_request_body", return_value={"model": "test-model"}), \
+         patch("providers.provider.get_settings") as mock_gs, \
+         patch.object(
+             provider._client.chat.completions, "create", new_callable=AsyncMock
+         ) as mock_create, \
+         patch.object(
+             provider._global_rate_limiter,
+             "execute_with_retry",
+             side_effect=lambda fn, **kw: fn(**kw),
+         ):
+        mock_gs.return_value.nim.thinking = False
+        mock_create.return_value = _make_partial_stream()
+        collected = await _collect_impl(provider, mock_request)
+
+    joined = "\n".join(collected)
+    # Partial text delivered...
+    assert any("Partial work so far" in ev for ev in collected)
+    # ...with the proxy notice appended...
+    assert "PROXY NOTICE" in joined
+    assert "split the work into smaller chunks" in joined
+    # ...and exactly ONE message_stop (no duplicates).
+    assert len([ev for ev in collected if "message_stop" in ev]) == 1
+
+
+@pytest.mark.asyncio
 async def test_stream_retries_on_thinking_only_truncation(provider, mock_request):
     """A stream with finish_reason='length' but only reasoning (no text, no tools)
     must be treated as retryable truncation.

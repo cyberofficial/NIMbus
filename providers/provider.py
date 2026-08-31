@@ -60,6 +60,16 @@ from providers.dsml_parser import DsmlParser, is_dsml_model, parse_dsml_tool_cal
 
 NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
+# Appended to any truncated/partial response delivered to the client so the
+# model knows the reply was cut short and can adapt instead of assuming the
+# task finished.
+_PARTIAL_RESPONSE_NOTE = (
+    "\n\n[PROXY NOTICE] The upstream model's connection dropped mid-response, "
+    "so this is a partial reply and it may end abruptly. If the task looks "
+    "incomplete, split the work into smaller chunks or use a different "
+    "approach and continue."
+)
+
 
 def _format_error_detail(e: Exception) -> str:
     """Format an exception with its causal chain for diagnostics."""
@@ -1553,6 +1563,14 @@ class NvidiaNimProvider(BaseProvider):
             )
             yield sse.content_block_stop(block_idx)
 
+        # Truncated streams (partial delivery or retries exhausted): append a
+        # visible notice as the last text so Claude knows the reply was cut
+        # short and can split the work or change approach.
+        if sse.truncated:
+            for event in sse.ensure_text_block():
+                yield event
+            yield sse.emit_text_delta(_PARTIAL_RESPONSE_NOTE)
+
         if (
             not error_occurred
             and sse.blocks.text_index == -1
@@ -1943,8 +1961,16 @@ class NvidiaNimProvider(BaseProvider):
                                     f"NVIDIA backend stream truncated with reasoning-only content "
                                     f"({len(sse.accumulated_reasoning)} chars reasoning, no assistant text)"
                                 )
-                            # Otherwise deliver what we have by properly closing the stream so Claude
-                            # sees the partial response and can continue.
+                            # Otherwise mark the stream truncated and let
+                            # _stream_response_impl's post-stream flush close the
+                            # blocks and emit message_delta/message_stop (emitting
+                            # them here as well produced duplicate message_stop,
+                            # which Claude Code rejects as malformed). The post-
+                            # stream flush also appends _PARTIAL_RESPONSE_NOTE so
+                            # Claude knows the reply was cut short and can adapt.
+                            sse.mark_truncated(
+                                "Partial response: upstream stream cut mid-response"
+                            )
                             logger.warning(
                                 "{}_STREAM: Stream truncated mid-response - {} chars text, {} chars reasoning, "
                                 "{} tool calls delivered but no finish_reason. Delivering partial response "
@@ -1954,28 +1980,6 @@ class NvidiaNimProvider(BaseProvider):
                                 len(sse.accumulated_reasoning),
                                 len(sse.blocks.tool_states),
                             )
-                            # Close any open content blocks
-                            for event in sse.close_all_blocks():
-                                yield event
-                            # Same guard as the normal completion path: if tool_use
-                            # blocks were streamed, Claude Code requires stop_reason
-                            # "tool_use"; otherwise end_turn.
-                            partial_stop = (
-                                "tool_use"
-                                if (
-                                    sse.blocks.tool_blocks_started > 0
-                                    or any(
-                                        state.started
-                                        for state in sse.blocks.tool_states.values()
-                                    )
-                                )
-                                else "end_turn"
-                            )
-                            yield sse.message_delta(
-                                partial_stop, sse.estimate_output_tokens()
-                            )
-                            yield sse.message_stop()
-                            return
 
                     # Detect "thinking-only" truncation: finish_reason is set (e.g. "length"
                     # from max_tokens) but the stream produced only reasoning with no usable
@@ -2027,16 +2031,22 @@ class NvidiaNimProvider(BaseProvider):
                 # or the is_retryable check below never sees them.
                 httpx.ReadError,
                 httpx.TimeoutException,
+                # "peer closed connection without sending complete message body
+                # (incomplete chunked read)" - NVIDIA dropping mid-body. Not a
+                # ReadError subclass (sibling under TransportError), so it must
+                # be listed explicitly.
+                httpx.RemoteProtocolError,
             ) as e:
                 # Check if it's a retryable error
                 # Note: APIConnectionError, APITimeoutError, httpx.ReadError,
-                # httpx.TimeoutException during chunk iteration are retried here
-                # (execute_with_retry only covers the initial create() call, not
-                # the async-for loop where mid-stream drops actually occur).
+                # httpx.TimeoutException, httpx.RemoteProtocolError during chunk
+                # iteration are retried here (execute_with_retry only covers the
+                # initial create() call, not the async-for loop where mid-stream
+                # drops actually occur).
                 # Safe to retry: enqueue_stream buffers all events, so the client
                 # only receives the final attempt's clean SSE sequence.
                 is_retryable = (
-                    isinstance(e, (APIConnectionError, APITimeoutError, httpx.ReadError, httpx.TimeoutException))
+                    isinstance(e, (APIConnectionError, APITimeoutError, httpx.ReadError, httpx.TimeoutException, httpx.RemoteProtocolError))
                     or _is_retryable_server_error(e)
                     or _is_resource_exhausted_error(e)
                     or isinstance(e, (StreamTruncatedError, NotFoundError))
