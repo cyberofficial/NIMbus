@@ -1881,8 +1881,23 @@ class NvidiaNimProvider(BaseProvider):
                             # Close any open content blocks
                             for event in sse.close_all_blocks():
                                 yield event
-                            # Emit message_delta with end_turn (partial content treated as complete)
-                            yield sse.emit_message_stop("end_turn")
+                            # Same guard as the normal completion path: if tool_use
+                            # blocks were streamed, Claude Code requires stop_reason
+                            # "tool_use"; otherwise end_turn.
+                            partial_stop = (
+                                "tool_use"
+                                if (
+                                    sse.blocks.tool_blocks_started > 0
+                                    or any(
+                                        state.started
+                                        for state in sse.blocks.tool_states.values()
+                                    )
+                                )
+                                else "end_turn"
+                            )
+                            yield sse.message_delta(
+                                partial_stop, sse.estimate_output_tokens()
+                            )
                             yield sse.message_stop()
                             return
 
