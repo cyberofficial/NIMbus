@@ -185,6 +185,12 @@ def build_request_body(
             model_effort = effort_map.get(effective_effort, effective_effort)
             ctk["thinking_mode"] = model_effort
 
+        elif thinking_style == "kimi":
+            # Kimi K3: thinking always enabled server-side; effort is set via the
+            # top-level reasoning_effort request field (low/high/max, default max).
+            # extra_body entries are merged at the top level of the JSON payload.
+            _set_extra(extra_body, "reasoning_effort", model_effort)
+
         else:
             # Default style: current behavior with effort flags
             ctk = extra_body.setdefault("chat_template_kwargs", {})
@@ -241,6 +247,12 @@ def build_request_body(
     _set_extra(extra_body, "request_id", nim.request_id)
     if nim.thinking:
         _set_extra(extra_body, "return_tokens_as_token_ids", nim.return_tokens_as_token_ids)
+    # Model-specific immutable sampling params:
+    # Kimi K3 rejects any other top_p ("Validation: `top_p` is immutable for this
+    # model and must be 0.95"), so force the server-required value.
+    if model == "moonshotai/kimi-k3":
+        body["top_p"] = 0.95
+
     # DeepSeek-V4 emits tool calls as DSML markup; when its server-side
     # tool-call parser fails on degraded tokens, the markup is stripped from
     # content unless stop strings are included, leaving nothing to recover.

@@ -96,6 +96,18 @@
         "max:max:32768",
         "ultracode:max:32768"
       ]
+    },
+    "moonshotai/kimi-k3": {
+      "supports_thinking": true,
+      "thinking_style": "kimi",
+      "efforts": [
+        "low:low:-1",
+        "medium:high:-1",
+        "high:high:-1",
+        "xhigh:max:-1",
+        "max:max:-1",
+        "ultracode:max:-1"
+      ]
     }
   },
   "defaults": {
