@@ -608,6 +608,40 @@ def _rebuild_with_system_as_user(body: dict) -> dict:
     return new_body
 
 
+async def _keepalive(gen: AsyncIterator[str], interval: float = 15.0) -> AsyncIterator[str]:
+    """Wrap a stalled async generator, emitting SSE keepalive comments.
+
+    While the underlying generator produces nothing (e.g. the request queue is
+    still buffering a long generation), yield SSE comment lines (`: keepalive`)
+    every `interval` seconds so clients don't hit idle/read timeouts. SSE
+    comments are ignored by clients per the SSE spec.
+    """
+    task = asyncio.ensure_future(gen.__anext__())
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=interval)
+            if task in done:
+                try:
+                    yield task.result()
+                except StopAsyncIteration:
+                    return
+                task = asyncio.ensure_future(gen.__anext__())
+            else:
+                yield ": keepalive\n\n"
+    finally:
+        if not task.done():
+            task.cancel()
+        try:
+            await task  # let the cancelled __anext__ unwind before closing gen
+        except BaseException:
+            pass
+        # Unblock the inner generator if it's suspended on an await.
+        try:
+            await gen.aclose()
+        except Exception:
+            pass
+
+
 class NvidiaNimProvider(BaseProvider):
     """NVIDIA NIM provider using OpenAI-compatible API."""
 
@@ -675,10 +709,12 @@ class NvidiaNimProvider(BaseProvider):
         if self._request_queue:
             await self._request_queue.shutdown(drain=True, timeout=30.0)
 
-        # Then close HTTP client
+        # Then close HTTP client (AsyncOpenAI exposes close(), not aclose())
         client = getattr(self, "_client", None)
         if client is not None:
-            await client.aclose()
+            close = getattr(client, "close", None)
+            if close is not None:
+                await close()
 
     def _execute_queued(self, coro_factory: Callable[..., Awaitable[Any]], priority: int = RequestPriority.NORMAL):
         """Execute a request through the queue or directly if disabled.
@@ -1273,6 +1309,30 @@ class NvidiaNimProvider(BaseProvider):
         Requests are queued to respect NVIDIA NIM worker limits.
         """
         await self._ensure_queue_started()
+        # events are still fully buffered (retry attempts must stay
+        # invisible to the client), but keepalive comments flow while the
+        # buffer fills so long generations don't trip client idle timeouts.
+        async for event in _keepalive(
+            self._buffered_stream(
+                request,
+                input_tokens,
+                request_id=request_id,
+                model_override=model_override,
+                priority=priority,
+            )
+        ):
+            yield event
+
+    async def _buffered_stream(
+        self,
+        request: Any,
+        input_tokens: int = 0,
+        *,
+        request_id: str | None = None,
+        model_override: str | None = None,
+        priority: int = RequestPriority.NORMAL,
+    ) -> AsyncIterator[str]:
+        """Collect the stream via the request queue, then emit all events."""
 
         async def _stream_factory() -> AsyncIterator[str]:
             async for event in self._stream_response_impl(

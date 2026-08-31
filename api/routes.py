@@ -251,7 +251,7 @@ async def _handle_nimhelp(request_data: MessagesRequest) -> MessagesResponse | N
     for msg in reversed(request_data.messages):
         if msg.role == "user":
             if is_nimhelp_tag(extract_last_text_content(msg.content)):
-                # ponytail: near-shape of _handle_nimrpm_reset; kept separate because
+                # near-shape of _handle_nimrpm_reset; kept separate because
                 # nimrpm mutates state, this is pure text — share when a 4th command lands
                 if _is_title_request(request_data):
                     return None
@@ -558,7 +558,7 @@ async def create_message(
         # Extract session ID from x-claude-code-session-id header for per-session effort tracking
         request_data.session_id = raw_request.headers.get("x-claude-code-session-id")
 
-        # ponytail: the inline-command dispatches below all stream a mock response
+        # the inline-command dispatches below all stream a mock response
         # with 0 input tokens — one helper instead of three copy-pasted blocks.
         def _sse_response(mock: MessagesResponse) -> StreamingResponse:
             request_id = f"req_{uuid.uuid4().hex[:12]}"
