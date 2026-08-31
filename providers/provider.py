@@ -1840,8 +1840,11 @@ class NvidiaNimProvider(BaseProvider):
 
                     # Detect truncated/malformed response: stream completed without finish_reason.
                     # NVIDIA sometimes cuts off the connection mid-response — partial content with
-                    # no finish_reason means the stream was truncated and should be retried.
+                    # no finish_reason means the stream was truncated.
                     if finish_reason is None:
+                        has_partial_content = bool(
+                            sse.accumulated_text or sse.accumulated_reasoning or sse.blocks.tool_states
+                        )
                         if chunks_received == 0:
                             logger.warning(
                                 "{}_STREAM: NVIDIA returned an empty SSE body "
@@ -1849,32 +1852,46 @@ class NvidiaNimProvider(BaseProvider):
                                 "treating as retryable error",
                                 tag,
                             )
-                        elif not (sse.accumulated_text or sse.accumulated_reasoning or sse.blocks.tool_states):
+                            raise StreamTruncatedError(
+                                "NVIDIA backend returned empty SSE body (0 chunks)"
+                            )
+                        elif not has_partial_content:
                             logger.warning(
                                 "{}_STREAM: Stream completed with no content or finish_reason - "
                                 "treating as retryable error",
                                 tag,
                             )
+                            raise StreamTruncatedError(
+                                "NVIDIA backend stream completed with no content"
+                            )
                         else:
+                            # Partial content was delivered before the stream cut.
+                            # Instead of retrying (which may take minutes or fail again),
+                            # deliver what we have by properly closing the stream so Claude
+                            # sees the partial response and can continue.
                             logger.warning(
                                 "{}_STREAM: Stream truncated mid-response - {} chars text, {} chars reasoning, "
-                                "{} tool calls delivered but no finish_reason. Treating as retryable error.",
+                                "{} tool calls delivered but no finish_reason. Delivering partial response "
+                                "instead of retrying.",
                                 tag,
                                 len(sse.accumulated_text),
                                 len(sse.accumulated_reasoning),
                                 len(sse.blocks.tool_states),
                             )
-                        raise StreamTruncatedError(
-                            "NVIDIA backend stream truncated (no finish_reason received)"
-                        )
+                            # Close any open content blocks
+                            for event in sse.close_all_blocks():
+                                yield event
+                            # Emit message_delta with end_turn (partial content treated as complete)
+                            yield sse.emit_message_stop("end_turn")
+                            yield sse.message_stop()
+                            return
 
                     # Detect "thinking-only" truncation: finish_reason is set (e.g. "length"
                     # from max_tokens) but the stream produced only reasoning with no usable
                     # assistant text and no tool calls. DeepSeek can burn the entire token
                     # budget on thinking and return finish_reason="length" with zero reply.
-                    # Claude Code cannot act on reasoning alone — treat as retryable so the
-                    # next attempt can deliver an actual response (or we eventually exhaust
-                    # retries and emit a clean SSE error).
+                    # Claude Code cannot act on reasoning alone (thinking content is hidden),
+                    # so we retry to get actual text/tool calls rather than delivering nothing useful.
                     if finish_reason and not sse.accumulated_text and not sse.blocks.tool_states:
                         logger.warning(
                             "{}_STREAM: finish_reason={} but stream produced only {} chars reasoning "
