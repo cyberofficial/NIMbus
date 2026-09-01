@@ -91,7 +91,7 @@ class Settings(BaseSettings):
         default=30.0, ge=1.0, validation_alias="PROVIDER_MAX_WAIT_TIME"
     )
     provider_retry_on_truncation: int = Field(
-        default=3, ge=0, validation_alias="PROVIDER_RETRY_ON_TRUNCATION"
+        default=0, ge=0, validation_alias="PROVIDER_RETRY_ON_TRUNCATION"
     )
     provider_retry_delay: float = Field(
         default=1.0, ge=0, validation_alias="PROVIDER_RETRY_DELAY"

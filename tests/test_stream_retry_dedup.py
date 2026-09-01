@@ -70,10 +70,18 @@ def provider(config, nim_settings):
         mock_client.chat.completions.create = AsyncMock()
         prov._client = mock_client
 
-        # Provide a pageable queue mock so stream_response path is reachable.
-        q = MagicMock()
-        q.is_enabled = True
-        prov._request_queue = q
+        # enqueue_stream is now an async generator (not a coroutine returning a list).
+        # Patch the class method so all instances use the simple pass-through.
+        async def _passthrough(self_or_factory, factory=None, priority=0):
+            """Simple pass-through that yields events from the factory directly."""
+            async for event in factory():
+                yield event
+
+        # Monkey-patch the class method
+        import providers.request_queue as rq_module
+        _orig = rq_module.RequestQueue.enqueue_stream
+        rq_module.RequestQueue.enqueue_stream = _passthrough
+        prov._enqueue_stream_orig = _orig  # save for cleanup
 
         yield prov
 

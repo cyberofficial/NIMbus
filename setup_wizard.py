@@ -402,7 +402,7 @@ def _write_dotenv(path: Path, params: dict, is_linux: bool = False) -> None:
         f"NIM_THINKING={'true' if params['thinking'] else 'false'}",
         f"SERVER_TYPE={params.get('server_type', 'stream')}",
         f"PROVIDER_MAX_WAIT_TIME={params.get('provider_max_wait', 30)}",
-        f"PROVIDER_RETRY_ON_TRUNCATION={params.get('provider_retry_on_truncation', 3)}",
+        f"PROVIDER_RETRY_ON_TRUNCATION={params.get('provider_retry_on_truncation', 0)}",
         f"PROVIDER_RETRY_DELAY={params.get('provider_retry_delay', 1.0)}",
         f"RESOURCE_EXHAUSTED_RETRIES={params.get('resource_exhausted_retries', 10)}",
         # Provider Rate Limiting

@@ -618,40 +618,6 @@ def _rebuild_with_system_as_user(body: dict) -> dict:
     return new_body
 
 
-async def _keepalive(gen: AsyncIterator[str], interval: float = 15.0) -> AsyncIterator[str]:
-    """Wrap a stalled async generator, emitting SSE keepalive comments.
-
-    While the underlying generator produces nothing (e.g. the request queue is
-    still buffering a long generation), yield SSE comment lines (`: keepalive`)
-    every `interval` seconds so clients don't hit idle/read timeouts. SSE
-    comments are ignored by clients per the SSE spec.
-    """
-    task = asyncio.ensure_future(gen.__anext__())
-    try:
-        while True:
-            done, _ = await asyncio.wait({task}, timeout=interval)
-            if task in done:
-                try:
-                    yield task.result()
-                except StopAsyncIteration:
-                    return
-                task = asyncio.ensure_future(gen.__anext__())
-            else:
-                yield ": keepalive\n\n"
-    finally:
-        if not task.done():
-            task.cancel()
-        try:
-            await task  # let the cancelled __anext__ unwind before closing gen
-        except BaseException:
-            pass
-        # Unblock the inner generator if it's suspended on an await.
-        try:
-            await gen.aclose()
-        except Exception:
-            pass
-
-
 class NvidiaNimProvider(BaseProvider):
     """NVIDIA NIM provider using OpenAI-compatible API."""
 
@@ -1321,33 +1287,11 @@ class NvidiaNimProvider(BaseProvider):
     ) -> AsyncIterator[str]:
         """Stream response in Anthropic SSE format.
 
-        Requests are queued to respect NVIDIA NIM worker limits.
+        Requests are queued to respect NVIDIA NIM worker limits. Events flow
+        to the client in real time (not buffered), so Claude sees the first
+        token quickly even on long generations.
         """
         await self._ensure_queue_started()
-        # events are still fully buffered (retry attempts must stay
-        # invisible to the client), but keepalive comments flow while the
-        # buffer fills so long generations don't trip client idle timeouts.
-        async for event in _keepalive(
-            self._buffered_stream(
-                request,
-                input_tokens,
-                request_id=request_id,
-                model_override=model_override,
-                priority=priority,
-            )
-        ):
-            yield event
-
-    async def _buffered_stream(
-        self,
-        request: Any,
-        input_tokens: int = 0,
-        *,
-        request_id: str | None = None,
-        model_override: str | None = None,
-        priority: int = RequestPriority.NORMAL,
-    ) -> AsyncIterator[str]:
-        """Collect the stream via the request queue, then emit all events."""
 
         async def _stream_factory() -> AsyncIterator[str]:
             async for event in self._stream_response_impl(
@@ -1355,34 +1299,60 @@ class NvidiaNimProvider(BaseProvider):
             ):
                 yield event
 
-        # Queue the streaming request and collect events
         if self._request_queue is None:
             raise RuntimeError("Request queue is not initialized")
-        events = await self._request_queue.enqueue_stream(_stream_factory, priority)
 
-        # When a stream is retried, `_stream_response_impl` emits a fresh
-        # message_start for every attempt, so the buffered `events` list can
-        # contain multiple message sequences (one per attempt). Claude Code
-        # only accepts a single message per response, so keep only the final
-        # attempt's sequence and drop any partial earlier ones (which end at a
-        # truncation without message_stop).
-        if events:
-            start_indices = [
-                i for i, ev in enumerate(events)
-                if "message_start" in ev
-            ]
-            if len(start_indices) > 1:
-                logger.warning(
-                    "{}_STREAM: {} retry attempt(s) left duplicate message_start "
-                    "in buffer; keeping only the final attempt's sequence",
-                    self._provider_name,
-                    len(start_indices) - 1,
-                )
-                events = events[start_indices[-1]:]
+        # Inline dedup: when _stream_response_impl retries, it emits a fresh
+        # message_start. Track opened blocks per attempt so we can close them
+        # cleanly when a retry happens.
+        attempt = 0
+        opened_blocks: list[tuple[int, str]] = []  # (index, type) in order
 
-        # Yield collected events
-        for event in events:
+        def _make_close_events() -> Iterator[str]:
+            """Emit content_block_stop for each opened block (reverse order)."""
+            for block_index, block_type in reversed(opened_blocks):
+                yield sse_content_block_stop(block_index)
+
+        async for event in self._request_queue.enqueue_stream(_stream_factory, priority):
+            # Detect block open/close events to track state
+            if "content_block_start" in event:
+                # Extract index and type from the event
+                try:
+                    data = json.loads(event.split("data: ", 1)[-1])
+                    block = data.get("content_block", {})
+                    opened_blocks.append((data.get("index", -1), block.get("type", "text")))
+                except (json.JSONDecodeError, IndexError):
+                    pass
+            elif "content_block_stop" in event:
+                try:
+                    data = json.loads(event.split("data: ", 1)[-1])
+                    idx = data.get("index", -1)
+                    # Remove from opened_blocks
+                    opened_blocks[:] = [(i, t) for i, t in opened_blocks if i != idx]
+                except (json.JSONDecodeError, IndexError):
+                    pass
+            elif "message_start" in event:
+                attempt += 1
+                if attempt > 1 and opened_blocks:
+                    for close_event in _make_close_events():
+                        yield close_event
+                    opened_blocks.clear()
+                    logger.warning(
+                        "{}_STREAM: retry attempt {} started; closed {} blocks "
+                        "from dropped attempt",
+                        self._provider_name,
+                        attempt,
+                        len(opened_blocks),
+                    )
             yield event
+
+    @staticmethod
+    def sse_content_block_stop(index: int) -> str:
+        """Generate a content_block_stop SSE event."""
+        return (
+            "event: content_block_stop\n"
+            f'data: {json.dumps({"type": "content_block_stop", "index": index})}\n\n'
+        )
 
     async def _stream_response_impl(
         self,

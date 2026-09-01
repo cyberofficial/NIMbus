@@ -316,24 +316,107 @@ class RequestQueue:
         self,
         stream_factory: Callable[[], AsyncIterator[Any]],
         priority: int = RequestPriority.NORMAL,
-    ) -> list[Any]:
-        """Add a streaming request to the queue and collect all events.
+    ) -> AsyncIterator[Any]:
+        """Add a streaming request to the queue and yield events as they arrive.
+
+        Unlike the buffered approach (collect all events, then return), this
+        yields each event to the client immediately as it's produced. This
+        keeps the SSE connection alive during long generations — the client
+        sees message_start and content deltas in real time instead of waiting
+        minutes for the first byte.
 
         Args:
             stream_factory: Callable that returns an async iterator (streaming events).
             priority: Request priority (HIGH, NORMAL, LOW).
 
-        Returns:
-            List of all events from the stream.
+        Yields:
+            Each event from the stream as it's produced.
         """
-        # Wrap the stream factory to collect all events into a list
-        async def collect_stream():
-            events = []
+        if not self._enabled:
+            # Bypass queue entirely - execute directly
             async for event in stream_factory():
-                events.append(event)
-            return events
+                yield event
+            return
 
-        return await self.enqueue(collect_stream, priority)
+        if self._shutdown_event.is_set():
+            raise RuntimeError("RequestQueue is shut down")
+
+        # Clamp priority to valid range
+        priority = max(RequestPriority.LOW, min(RequestPriority.HIGH, priority))
+        priority_name = self._priority_names.get(RequestPriority(priority), "NORMAL")
+
+        # Queue for passing events from producer (worker) to consumer (this generator)
+        queue: asyncio.Queue = asyncio.Queue()
+        _SENTINEL = object()
+
+        async def produce():
+            """Producer: runs in the worker, puts events into the queue."""
+            try:
+                async for event in stream_factory():
+                    await queue.put(event)
+            except BaseException as e:
+                # Forward exceptions to the consumer
+                await queue.put(e)
+            finally:
+                await queue.put(_SENTINEL)
+
+        # Submit the producer to the queue
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+
+        request = QueuedRequest(
+            priority=priority,
+            timestamp=time.monotonic(),
+            coro_factory=produce,
+            future=future,
+            priority_name=priority_name,
+        )
+
+        # Try to enqueue (non-blocking - we handle full queue ourselves)
+        try:
+            self._queue.put_nowait(request)
+        except asyncio.QueueFull:
+            async with self._stats_lock:
+                self._stats.total_rejected += 1
+            logger.warning(
+                f"RequestQueue full (depth={self._queue.qsize()}/{self._max_queue_size}), "
+                f"rejecting {priority_name} priority request"
+            )
+            raise RuntimeError(
+                f"Request queue full ({self._max_queue_size} max). "
+                "Try again later or increase REQUEST_QUEUE_MAX_SIZE."
+            )
+            raise
+
+        # Update stats
+        async with self._stats_lock:
+            self._stats.current_depth = self._queue.qsize()
+            self._stats.total_enqueued += 1
+            if self._stats.current_depth > self._stats.max_depth:
+                self._stats.max_depth = self._stats.max_depth
+
+        logger.debug(
+            f"Enqueued {priority_name} request "
+            f"(queue depth: {self._queue.qsize()}/{self._max_queue_size})"
+        )
+
+        # Consumer: yield events from the queue as they arrive
+        try:
+            while True:
+                event = await queue.get()
+                if event is _SENTINEL:
+                    break
+                if isinstance(event, BaseException):
+                    raise event
+                yield event
+        finally:
+            # Ensure the producer future is cleaned up
+            if not future.done():
+                future.cancel()
+
+    def get_stats(self) -> dict[str, Any]:
+        """Get current queue statistics."""
+        return self._stats.to_dict()
 
     def get_stats(self) -> dict[str, Any]:
         """Get current queue statistics."""

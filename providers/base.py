@@ -25,7 +25,7 @@ class ProviderConfig(BaseModel):
     server_type: str = "stream"
     show_nvidia_reply: bool = False
     max_wait_time: float = 30.0
-    retry_on_truncation: int = 3
+    retry_on_truncation: int = 0  # 0 = unlimited retries on truncated/mid-stream responses
     retry_delay: float = 1.0
     resource_exhausted_retries: int = 10
     # Request queue settings
