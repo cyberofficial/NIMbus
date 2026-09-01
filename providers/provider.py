@@ -905,10 +905,15 @@ class NvidiaNimProvider(BaseProvider):
                 APIStatusError,
                 APIError,
                 NotFoundError,
+                # "peer closed connection without sending complete message body
+                # (incomplete chunked read)" — NVIDIA dropping mid-body. Not a
+                # ReadError subclass (sibling under TransportError), so it must
+                # be listed explicitly.
+                httpx.RemoteProtocolError,
             ) as e:
                 # Check if it's a retryable 5xx error
                 is_retryable = isinstance(
-                    e, (APIConnectionError, APITimeoutError, httpx.ReadError, httpx.TimeoutException, NotFoundError)
+                    e, (APIConnectionError, APITimeoutError, httpx.ReadError, httpx.TimeoutException, NotFoundError, httpx.RemoteProtocolError)
                 ) or _is_retryable_server_error(e) or _is_resource_exhausted_error(e) or ("service temporarily overloaded" in str(e).lower())
                 last_error = e
                 detail = _format_error_detail(e)

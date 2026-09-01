@@ -312,6 +312,71 @@ async def test_partial_delivery_appends_notice_and_single_message_stop(provider,
 
 
 @pytest.mark.asyncio
+async def test_stream_retries_on_remote_protocol_error(provider, mock_request):
+    """A mid-body RemoteProtocolError ('incomplete chunked read') must be retried.
+
+    Regression: NVIDIA sometimes drops the connection mid-body with
+    'peer closed connection without sending complete message body'. That error
+    surfaces raw during chunk iteration and was falling through to the
+    non-retryable catch-all, emitting an SSE error instead of retrying.
+    """
+    def _make_dropping_stream():
+        async def _gen():
+            chunk = MagicMock()
+            chunk.usage = None
+            chunk.choices = [
+                MagicMock(
+                    delta=MagicMock(
+                        content="some content",
+                        reasoning_content=None,
+                        tool_calls=None,
+                    ),
+                    finish_reason=None,
+                )
+            ]
+            yield chunk
+            raise httpx.RemoteProtocolError(
+                "peer closed connection without sending complete message body "
+                "(incomplete chunked read)"
+            )
+
+        return _gen()
+
+    def _make_healthy_stream():
+        async def _gen():
+            chunk = MagicMock()
+            chunk.usage = None
+            chunk.choices = [
+                MagicMock(
+                    delta=MagicMock(
+                        content="done", reasoning_content=None, tool_calls=None
+                    ),
+                    finish_reason="stop",
+                )
+            ]
+            yield chunk
+
+        return _gen()
+
+    with patch.object(provider, "_build_request_body", return_value={"model": "test-model"}), \
+         patch("providers.provider.get_settings") as mock_gs, \
+         patch.object(
+             provider._client.chat.completions, "create", new_callable=AsyncMock
+         ) as mock_create, \
+         patch.object(
+             provider._global_rate_limiter,
+             "execute_with_retry",
+             side_effect=lambda fn, **kw: fn(**kw),
+         ):
+        mock_gs.return_value.nim.thinking = False
+        mock_create.side_effect = [_make_dropping_stream(), _make_healthy_stream()]
+        collected = await _collect_impl(provider, mock_request)
+
+    assert mock_create.call_count == 2, "RemoteProtocolError should have been retried once"
+    assert any("message_stop" in ev for ev in collected)
+
+
+@pytest.mark.asyncio
 async def test_stream_retries_on_thinking_only_truncation(provider, mock_request):
     """A stream with finish_reason='length' but only reasoning (no text, no tools)
     must be treated as retryable truncation.
