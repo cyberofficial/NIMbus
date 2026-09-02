@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
-## v2.0.15 - Date: 2026-08-28
+## v2.0.15 - Date: 2026-09-02
 
 ### Fixed
 - **DeepSeek-V4-Pro CoT leakage in streaming** - Disabled the forced thinking flag for `deepseek-v4-pro`. With server-default thinking, DeepSeek-V4 on NIM returns Chain-of-Thought inline in `message.content` with a trailing (orphan) response instead of the separate `reasoning_content` field.
@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Reasoning budget sets max_tokens** - The reasoning budget (from effort config, `<nimeffort:level:budget>` tag, or session store) now directly sets `max_tokens` instead of being silently capped. This allows models like `deepseek-v4-flash-0731` to use their full reasoning capability (e.g. `<nimeffort:ultracode:100>` → `max_tokens=100`). DeepSeek uses `reasoning_effort` in `chat_template_kwargs` to control thinking intensity; Nemotron uses `reasoning_budget` in `extra_body`.
 - **Nimeffort combined format** - The `<nimeffort>` tag now supports `<nimeffort:level:budget>` format (e.g. `<nimeffort:ultracode:100>` sets effort to ultracode with a 100-token budget). The budget directly controls `max_tokens`. Budget is stored in the session store by `_handle_nimeffort` in `routes.py` and retrieved per-request.
 - **DeepSeek reasoning_budget exclusion** - `reasoning_budget` parameter is no longer sent to DeepSeek models (which reject it with 400 errors). Only Nemotron/default styles send it. DeepSeek uses `reasoning_effort` in `chat_template_kwargs` + `max_tokens` instead.
+- **Partial response delivery on truncated SSE** - Truncated NVIDIA streams with partial content (text, reasoning, or tool calls) now close their blocks and deliver the partial response instead of failing. Only empty (or empty-but-truncated) streams raise `StreamTruncatedError` for retry.
+- **Partial tool-use stop reason** - The provider no longer emits `end_turn` for streamed tool-use blocks; it sets `stop_reason="tool_use"` when tool blocks were started, matching the normal completion path.
+- **Reasoning-only partial stream retry** - When a stream cuts mid-response with only reasoning content and no assistant text or tool calls, it is now treated as truncation and retried instead of delivering an untouchable thinking block to Claude Code.
+- **`httpx.RemoteProtocolError` retry** - NVIDIA's "incomplete chunked read" mid-body disconnects (`httpx.RemoteProtocolError`) are now retryable.
+- **kimi-k3 400/`top_p` fix & reasoning style** - Force immutable `top_p=0.95` for `moonshotai/kimi-k3` (the server rejects any other value) and add a `kimi` thinking style that sends top-level `reasoning_effort` (low/high/max) via `extra_body`.
+- **Real-time streaming delivery** - Provider SSE events now stream to the client as they arrive instead of fully buffering, so the first token reaches Claude Code quickly and idle timeouts are avoided. This superseded the earlier SSE keepalive workaround (`_keepalive`/`_buffered_stream` removed).
+- **Unlimited truncation retry** - `provider_retry_on_truncation` default changed from `3` to `0`, where `0` now means unlimited retries on truncated/mid-stream responses so the client always receives a complete message sequence.
+- **Error diagnostics & transport logging** - Enriched retry/error logs with request/model context, timeout subtype, `__context__`/`__cause__` chains, total elapsed summaries, and periodic "still retrying" info; header capture now emits a timed failure line on transport timeout/connection errors.
 
 ### Removed
 - **UV references** - Removed `uv.lock` and `UV_*` references from `pyproject.toml`, `server.py`, and `start_server.py`.
@@ -37,7 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`api/swapper/parser.py`** - Nimeffort tag regex supports `<nimeffort:level:budget>` combined format; returns `(level, budget)` tuple.
 - **`api/routes.py`** - Nimeffort handler stores both effort level and budget from combined format; SERVER_TYPE config fix.
 - **`api/bot_protection.py`** - Localhost bypass.
-- **`reasoning_config.json`** - Renamed model key to `deepseek-v4-pro-0813` with explicit token budgets; disabled forced thinking flag.
+- **`api/routes.py`** - `/v1/messages` streaming (buffered → real-time SSE); `_buffered_sse_generator` and in-stream error handling; nimeffort combined-format handler.
+- **`providers/header_capture.py`** - Transport timeout/connection error capture and failure logging.
+- **`reasoning_config.json`** - Renamed model key to `deepseek-v4-pro-0813` with explicit token budgets; disabled forced thinking flag; added `moonshotai/kimi-k3` with `kimi` thinking style.
+- **`tests/test_stream_retry_dedup.py`** - Tests for stream retry, truncation, `_format_error_detail`/`_timeout_subtype`/`_req_ctx`.
 - **`pyproject.toml`**, **`server.py`**, **`start_server.py`**, **`uv.lock`** - UV reference removal.
 - **`tests/test_think_split.py`**, **`tests/test_optimization_sse.py`**, **`tests/test_dsml_parser.py`** - New/updated tests.
 - **`nimbus_linux.spec`** - Hidden imports update.

@@ -73,18 +73,6 @@
         "ultracode:max:384000"
       ]
     },
-    "minimaxai/minimax-m3": {
-      "supports_thinking": true,
-      "thinking_style": "minimax",
-      "efforts": [
-        "low:disabled",
-        "medium:adaptive",
-        "high:enabled",
-        "xhigh:enabled",
-        "max:enabled",
-        "ultracode:enabled"
-      ]
-    },
     "poolside/laguna-xs-2.1": {
       "supports_thinking": true,
       "thinking_style": "default",
