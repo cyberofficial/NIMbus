@@ -10,6 +10,7 @@ import asyncio
 import json
 import random
 import sys
+import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -72,13 +73,58 @@ _PARTIAL_RESPONSE_NOTE = (
 
 
 def _format_error_detail(e: Exception) -> str:
-    """Format an exception with its causal chain for diagnostics."""
+    """Format an exception with its causal chain for diagnostics.
+
+    Uses ``repr()`` for each link so exceptions with an empty ``str()``
+    (e.g. ``httpx.ReadTimeout()``) render a non-empty, typed link instead of
+    a bare ``<- ReadTimeout: `` tail. Follows ``__context__`` when there is no
+    explicit ``__cause__``, and caps the chain length.
+    """
     parts = [repr(e)]
-    cause = e.__cause__
-    while cause is not None:
-        parts.append(f"<- {type(cause).__name__}: {cause}")
-        cause = cause.__cause__
+    cause = e.__cause__ if e.__cause__ is not None else e.__context__
+    chain = 0
+    while cause is not None and chain < 4:
+        msg = str(cause).strip()
+        if msg:
+            parts.append(f"<- {type(cause).__name__}: {msg}")
+        else:
+            parts.append(f"<- {type(cause).__name__}()")
+        cause = cause.__cause__ if cause.__cause__ is not None else cause.__context__
+        chain += 1
+    if cause is not None:
+        parts.append("<- ...")
     return " | ".join(parts)
+
+
+def _timeout_subtype(e: Exception, *, read: float, connect: float, write: float) -> str:
+    """Return which timeout threshold fired, for diagnostics.
+
+    Returns a short, non-empty suffix when ``e`` is one of the httpx timeout
+    subclasses (read / connect / write) so the log makes clear which threshold
+    was exceeded and what it was configured to.
+    """
+    if isinstance(e, httpx.ReadTimeout):
+        return f" (read timeout; configured {read:g}s)"
+    if isinstance(e, httpx.ConnectTimeout):
+        return f" (connect timeout; configured {connect:g}s)"
+    if isinstance(e, httpx.WriteTimeout):
+        return f" (write timeout; configured {write:g}s)"
+    return ""
+
+
+def _req_ctx(request_id: str | None, body: dict | None) -> str:
+    """Build a compact request-context string for error logs.
+
+    Returns ``"[request_id=..., model=...]"`` (or ``""``) so retry warnings can
+    carry the failing request's identity and model in the same line.
+    """
+    parts = []
+    if request_id:
+        parts.append(f"request_id={request_id}")
+    model = (body or {}).get("model", "")
+    if model:
+        parts.append(f"model={model}")
+    return f"[{', '.join(parts)}]" if parts else ""
 
 
 # ---------------------------------------------------------------------------
@@ -781,17 +827,21 @@ class NvidiaNimProvider(BaseProvider):
         max_retries = self._config.retry_on_truncation
         retry_delay = self._config.retry_delay
         last_error = None
+        body: dict | None = None  # assigned in loop; None-guarded for error logging
+        total_start = time.monotonic()
 
         attempt = 0
         while max_retries == 0 or attempt < (max_retries + 1):
             try:
                 if attempt > 0:
+                    ctx = _req_ctx(request_id, body)
                     logger.warning(
-                        "{}_BUFFERED: Retry attempt {}/{} after {}s delay",
+                        "{}_BUFFERED: Retry attempt {}/{} after {}s delay{}",
                         tag,
                         attempt,
                         max_retries if max_retries > 0 else "∞",
                         retry_delay * attempt,
+                        f" {ctx}" if ctx else "",
                     )
                     await asyncio.sleep(retry_delay * attempt)
 
@@ -830,7 +880,10 @@ class NvidiaNimProvider(BaseProvider):
                 # RateLimitError (429) – track rate limit hit
                 last_error = e
                 self._global_rate_limiter.on_rate_limited()
-                detail = _format_error_detail(e)
+                detail = (
+                    _format_error_detail(e)
+                    + (f" {_req_ctx(request_id, body)}" if _req_ctx(request_id, body) else "")
+                )
                 exhaustion_msg = (
                     f"after {attempt + 1} attempts"
                     if max_retries > 0
@@ -882,7 +935,17 @@ class NvidiaNimProvider(BaseProvider):
                     e, (APIConnectionError, APITimeoutError, httpx.ReadError, httpx.TimeoutException, NotFoundError, httpx.RemoteProtocolError)
                 ) or _is_retryable_server_error(e) or _is_resource_exhausted_error(e) or ("service temporarily overloaded" in str(e).lower())
                 last_error = e
-                detail = _format_error_detail(e)
+                ctx = _req_ctx(request_id, body)
+                detail = (
+                    _format_error_detail(e)
+                    + _timeout_subtype(
+                        e,
+                        read=self._config.http_read_timeout,
+                        connect=self._config.http_connect_timeout,
+                        write=self._config.http_write_timeout,
+                    )
+                    + (f" {ctx}" if ctx else "")
+                )
 
                 # ResourceExhausted errors have their own retry count
                 if _is_resource_exhausted_error(e):
@@ -926,6 +989,26 @@ class NvidiaNimProvider(BaseProvider):
                         ) from e
                     raise
                 if is_retryable:
+                    # Periodic "still retrying" summary so endless-retry mode is
+                    # self-documenting instead of looking like a hang.
+                    if attempt > 0 and (
+                        (time.monotonic() - total_start) >= 60 or attempt % 5 == 0
+                    ):
+                        logger.info(
+                            "{}_BUFFERED: still retrying {}{} attempt={} total_elapsed={:.0f}s "
+                            "last_error={} - proxy not hung, upstream timing out",
+                            tag,
+                            type(e).__name__,
+                            _req_ctx(request_id, body),
+                            attempt + 1,
+                            time.monotonic() - total_start,
+                            _timeout_subtype(
+                                e,
+                                read=self._config.http_read_timeout,
+                                connect=self._config.http_connect_timeout,
+                                write=self._config.http_write_timeout,
+                            ),
+                        )
                     attempt += 1
                     continue
                 # Non-retryable error - raise immediately without counting as a retry attempt
@@ -2028,7 +2111,16 @@ class NvidiaNimProvider(BaseProvider):
                     or ("service temporarily overloaded" in str(e).lower())
                 )
                 last_error_tag = f"{type(e).__name__}"
-                detail = _format_error_detail(e)
+                detail = (
+                    _format_error_detail(e)
+                    + _timeout_subtype(
+                        e,
+                        read=self._config.http_read_timeout,
+                        connect=self._config.http_connect_timeout,
+                        write=self._config.http_write_timeout,
+                    )
+                    + (f" {_req_ctx(request_id, body)}" if _req_ctx(request_id, body) else "")
+                )
 
                 # ResourceExhausted errors have their own retry count
                 if _is_resource_exhausted_error(e):

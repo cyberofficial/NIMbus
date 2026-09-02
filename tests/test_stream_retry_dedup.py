@@ -450,3 +450,91 @@ async def test_stream_retries_on_thinking_only_truncation(provider, mock_request
     assert calls["n"] == 0  # execute_with_retry is mocked, so we count via mock_create
     assert mock_create.call_count == 2, "thinking-only truncation should have been retried once"
     assert any("message_stop" in ev for ev in collected)
+
+
+# ---------------------------------------------------------------------------
+# Tests: error diagnostics enrichment (_format_error_detail empty-message fix,
+#        _req_ctx / _timeout_subtype helpers, timed transport failure line)
+# ---------------------------------------------------------------------------
+
+import openai  # noqa: E402
+
+
+def test_format_error_detail_renders_empty_message_chain_nonempty():
+    """Regression: httpx.ReadTimeout() has an empty str(), so the old
+    _format_error_detail rendered a bare `<- ReadTimeout: ` tail with nothing
+    after the colon. The new version must render a typed, non-empty link."""
+    inner = httpx.ReadTimeout("")  # empty message: str() is ""
+    e = openai.APITimeoutError("Request timed out.")
+    e.__cause__ = inner  # simulate `raise ... from inner` (assignment is invalid)
+
+    from providers.provider import _format_error_detail, _req_ctx, _timeout_subtype
+
+    detail = _format_error_detail(e)
+
+    # Non-empty, typed link for the empty-message cause...
+    assert "ReadTimeout()" in detail
+    # ...and the old confusing bare tail is gone.
+    assert "ReadTimeout: " not in detail
+    assert "Request timed out." in detail
+
+
+def test_req_ctx_helper():
+    """_req_ctx must build `[request_id=..., model=...]` and be empty when
+    there is no request id or model."""
+    from providers.provider import _req_ctx
+
+    assert _req_ctx("req_x", {"model": "nvidia/test-model"}) == (
+        "[request_id=req_x, model=nvidia/test-model]"
+    )
+    assert _req_ctx("req_x", None) == "[request_id=req_x]"
+    assert _req_ctx(None, {"model": "m"}) == "[model=m]"
+    assert _req_ctx(None, None) == ""
+
+
+def test_timeout_subtype_helper():
+    """_timeout_subtype must label which threshold fired (read/connect/write)."""
+    from providers.provider import _timeout_subtype
+
+    assert _timeout_subtype(
+        httpx.ReadTimeout(""), read=300.0, connect=2.0, write=10.0
+    ) == " (read timeout; configured 300s)"
+    assert _timeout_subtype(
+        httpx.ConnectTimeout(""), read=300.0, connect=2.0, write=10.0
+    ) == " (connect timeout; configured 2s)"
+    assert _timeout_subtype(
+        httpx.WriteTimeout(""), read=300.0, connect=2.0, write=10.0
+    ) == " (write timeout; configured 10s)"
+    # Non-timeout errors get no suffix.
+    assert _timeout_subtype(Exception(), read=300.0, connect=2.0, write=10.0) == ""
+
+
+@pytest.mark.asyncio
+async def test_failed_transport_emits_timed_failure_line(capsys):
+    """Regression: when a timeout raises out of super().handle_async_request,
+    no response is built and the old code left a dangling `→ POST` line with no
+    matching `←` failure line or elapsed time. The new transport must log a
+    timed, attributed failure line for every failed attempt."""
+    from providers.header_capture import HeaderCapturingTransport, request_id_var
+
+    capture = MagicMock()
+    transport = HeaderCapturingTransport(capture)
+    req = httpx.Request(
+        "POST", "https://integrate.api.nvidia.com/v1/chat/completions"
+    )
+    token = request_id_var.set("req_test")
+
+    with patch.object(
+        httpx.AsyncHTTPTransport,
+        "handle_async_request",
+        new=AsyncMock(side_effect=httpx.ReadTimeout("")),
+    ):
+        with pytest.raises(httpx.ReadTimeout):
+            await transport.handle_async_request(req)
+
+    out = capsys.readouterr().out
+    assert "← POST" in out
+    assert "https://integrate.api.nvidia.com/v1/chat/completions" in out
+    assert "✗ ReadTimeout" in out
+    assert "after" in out
+    assert "req_test" in out  # correlation id present
