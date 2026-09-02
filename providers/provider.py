@@ -127,6 +127,42 @@ def _req_ctx(request_id: str | None, body: dict | None) -> str:
     return f"[{', '.join(parts)}]" if parts else ""
 
 
+async def _keepalive(
+    gen: AsyncIterator[str], interval: float = 15.0
+) -> AsyncIterator[str]:
+    """Wrap a stalled async generator, emitting SSE keepalive comments.
+
+    While the underlying generator produces nothing (e.g. the request queue is
+    still buffering a long generation), yield SSE comment lines (`: keepalive`)
+    every `interval` seconds so clients don't hit idle/read timeouts. SSE
+    comments are ignored by clients per the SSE spec.
+    """
+    task = asyncio.ensure_future(gen.__anext__())
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=interval)
+            if task in done:
+                try:
+                    yield task.result()
+                except StopAsyncIteration:
+                    return
+                task = asyncio.ensure_future(gen.__anext__())
+            else:
+                yield ": keepalive\n\n"
+    finally:
+        if not task.done():
+            task.cancel()
+        try:
+            await task  # let the cancelled __anext__ unwind before closing gen
+        except BaseException:
+            pass
+        # Unblock the inner generator if it's suspended on an await.
+        try:
+            await gen.aclose()
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Role error helpers - handle models that reject "system" role
 # ---------------------------------------------------------------------------

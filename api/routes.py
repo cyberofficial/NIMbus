@@ -1,5 +1,6 @@
 """FastAPI route handlers."""
 
+import asyncio
 import json
 import traceback
 import uuid
@@ -11,13 +12,17 @@ from loguru import logger
 
 from config.settings import Settings
 from providers.base import BaseProvider
-from providers.error_mapping import get_user_facing_error_message
+from providers.error_mapping import (
+    append_request_id,
+    get_user_facing_error_message,
+)
 from providers.exceptions import (
     InvalidRequestError,
     ProviderError,
     StreamTruncatedError,
 )
 from providers.logging_utils import build_request_summary, log_request_compact
+from providers.provider import _keepalive, _format_error_detail
 from providers.request_queue import RequestPriority
 from providers.text import extract_text_from_content, extract_last_text_content
 
@@ -542,6 +547,58 @@ async def _handle_nimserver(
 # Routes
 # =============================================================================
 
+async def _buffered_sse_generator(
+    provider: BaseProvider,
+    request_data: MessagesRequest,
+    input_tokens: int,
+    request_id: str | None,
+    model_override: str | None = None,
+):
+    """Drive a buffered request and emit SSE events, with keepalive-safe errors.
+
+    Awaits the buffered request and converts the resulting MessagesResponse to
+    SSE. On a ProviderError/StreamTruncatedError it emits a valid (error)
+    message sequence instead of letting a raw exception escape: once keepalive
+    comments start, response headers are already flushed, so the HTTP status
+    can no longer be changed to 502 — the error is delivered in-stream.
+    """
+    try:
+        response = await provider.buffered_request(
+            request_data,
+            input_tokens=input_tokens,
+            request_id=request_id,
+            model_override=model_override,
+            priority=RequestPriority.NORMAL,
+        )
+    except (StreamTruncatedError, ProviderError) as e:
+        logger.error(
+            "NIM_BUFFERED: buffered stream failed behind keepalives: {}",
+            _format_error_detail(e),
+        )
+        config = getattr(provider, "_config", None)
+        error_msg = append_request_id(
+            get_user_facing_error_message(
+                e,
+                read_timeout_s=getattr(config, "http_read_timeout", None),
+            ),
+            request_id,
+        )
+        err_resp = MessagesResponse(
+            id=f"msg_{uuid.uuid4().hex[:24]}",
+            model=request_data.model,
+            content=[{"type": "text", "text": error_msg}],
+            stop_reason="end_turn",
+            usage=Usage(input_tokens=0, output_tokens=0),
+        )
+        for event in optimization_response_to_sse(err_resp, input_tokens):
+            yield event
+        return
+    for event in optimization_response_to_sse(
+        cast(MessagesResponse, response), input_tokens
+    ):
+        yield event
+
+
 @router.post("/v1/messages")
 async def create_message(
     request_data: MessagesRequest,
@@ -695,20 +752,24 @@ async def create_message(
                 "override" if server_type_override else "global setting",
             )
 
-            response = await provider.buffered_request(
-                request_data,
-                input_tokens=input_tokens,
-                request_id=request_id,
-                model_override=model_override,
-                priority=RequestPriority.NORMAL,
-            )
-
-            async def sse_generator():
-                for event in optimization_response_to_sse(cast(MessagesResponse, response), input_tokens):
-                    yield event
-
+            # Emit SSE keepalive comments while the buffered request fills so
+            # the client never hits idle/read timeouts on long generations.
+            # The first comment flushes response headers immediately (clearing
+            # the SDK's request timeout), then comments flow every 15s until
+            # the buffered result is ready, at which point the full SSE
+            # sequence emits. Errors are handled in-stream by
+            # _buffered_sse_generator (headers already flushed).
             return StreamingResponse(
-                sse_generator(),
+                _keepalive(
+                    _buffered_sse_generator(
+                        provider,
+                        request_data,
+                        input_tokens,
+                        request_id,
+                        model_override,
+                    ),
+                    interval=15.0,
+                ),
                 media_type="text/event-stream",
                 headers={
                     "X-Accel-Buffering": "no",
