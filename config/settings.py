@@ -86,7 +86,7 @@ class Settings(BaseSettings):
     nim_rpm_reset: int = Field(default=5, ge=0, validation_alias="NIM_RPM_RESET")
 
     # ==================== Server Type ====================
-    server_type: str = Field(default="stream", validation_alias="SERVER_TYPE")
+    server_type: str = Field(default="buffer", validation_alias="SERVER_TYPE")
     provider_max_wait_time: float = Field(
         default=30.0, ge=1.0, validation_alias="PROVIDER_MAX_WAIT_TIME"
     )

@@ -127,6 +127,20 @@ def _req_ctx(request_id: str | None, body: dict | None) -> str:
     return f"[{', '.join(parts)}]" if parts else ""
 
 
+def _fresh_tool_id() -> str:
+    """Return a globally-unique Claude-style tool_use id.
+
+    Never forward the backend's raw tool_call id. Kimi-k3 on NVIDIA NIM returns
+    ids in ``Name:index`` format (``Bash:0``, ``Read:1``), which repeat for every
+    same-named call across turns. Claude Code sanitizes assistant transcripts by
+    de-duplicating tool_use blocks on ``id``: a repeated id is treated as a
+    duplicate, stripped, and the whole turn is replaced with ``[Tool use
+    interrupted]`` — deadlocking the session in an empty re-prompt loop. Always
+    minting a fresh unique id (like the real Anthropic API does) avoids that.
+    """
+    return f"toolU_{uuid.uuid4().hex}"
+
+
 async def _keepalive(
     gen: AsyncIterator[str], interval: float = 15.0
 ) -> AsyncIterator[str]:
@@ -1282,7 +1296,7 @@ class NvidiaNimProvider(BaseProvider):
                 for tc in content.tool_calls:
                     tool_block = {
                         "type": "tool_use",
-                        "id": tc.id or f"tool_{uuid.uuid4()}",
+                        "id": _fresh_tool_id(),
                         "name": tc.function.name if tc.function else "unknown",
                         "input": {},
                     }
@@ -1369,14 +1383,14 @@ class NvidiaNimProvider(BaseProvider):
         if state is None or not state.started:
             name = state.name if state else ""
             if name or tc.get("id"):
-                tool_id = tc.get("id") or f"tool_{uuid.uuid4()}"
+                tool_id = _fresh_tool_id()
                 yield sse.start_tool_block(tc_index, tool_id, name)
 
         args = fn_delta.get("arguments", "")
         if args:
             state = sse.blocks.tool_states.get(tc_index)
             if state is None or not state.started:
-                tool_id = tc.get("id") or f"tool_{uuid.uuid4()}"
+                tool_id = _fresh_tool_id()
                 name = (state.name if state else None) or "tool_call"
                 yield sse.start_tool_block(tc_index, tool_id, name)
                 state = sse.blocks.tool_states.get(tc_index)

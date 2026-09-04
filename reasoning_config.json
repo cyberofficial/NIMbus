@@ -89,12 +89,12 @@
       "supports_thinking": true,
       "thinking_style": "kimi",
       "efforts": [
-        "low:low:-1",
-        "medium:high:-1",
-        "high:high:-1",
-        "xhigh:max:-1",
-        "max:max:-1",
-        "ultracode:max:-1"
+        "low:low:1000",
+        "medium:high:8000",
+        "high:high:16000",
+        "xhigh:max:24000",
+        "max:max:32000",
+        "ultracode:max:32000"
       ]
     }
   },
