@@ -6,12 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
-## v2.0.15 - Date: 2026-09-02
+## v2.0.15 - Date: 2026-09-05
 
 ### Fixed
 - **DeepSeek-V4-Pro CoT leakage in streaming** - Disabled the forced thinking flag for `deepseek-v4-pro`. With server-default thinking, DeepSeek-V4 on NIM returns Chain-of-Thought inline in `message.content` with a trailing (orphan) response instead of the separate `reasoning_content` field.
 - **Inline thinking → thinking blocks (buffered mode)** - Split inline CoT via `split_think_content` and emit proper Anthropic thinking blocks; `optimization_response_to_sse` now emits thinking blocks too instead of dropping them.
 - **Degraded DeepSeek-V4 DSML tool-call parsing & stop_reason guard** - Rewrote the DSML parser to fix degraded tool-call extraction and guard `stop_reason` correctly.
+- **Dangling DSML tag stripping** - Added `_strip_residual_tags` to `providers/dsml_parser.py`. When NVIDIA's server-side tool-call parser consumes the head of a DSML block, only the closing tags survive in `message.content`. These residuals are never legitimate text, so all DSML tags outside parsed tool-call blocks are now stripped, ensuring Claude Code never sees raw markup.
 - **Missing tool_use blocks in buffered→SSE conversion** - Emitted `tool_use` blocks when converting buffered responses to SSE.
 - **SERVER_TYPE config** - Fixed `SERVER_TYPE` handling and added DeepSeek-V4-Pro DSML tool-call parsing for stream mode.
 - **NotFoundError & overloads retryability** - `NotFoundError` and overload errors are now treated as retryable.
@@ -28,18 +29,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Partial tool-use stop reason** - The provider no longer emits `end_turn` for streamed tool-use blocks; it sets `stop_reason="tool_use"` when tool blocks were started, matching the normal completion path.
 - **Reasoning-only partial stream retry** - When a stream cuts mid-response with only reasoning content and no assistant text or tool calls, it is now treated as truncation and retried instead of delivering an untouchable thinking block to Claude Code.
 - **`httpx.RemoteProtocolError` retry** - NVIDIA's "incomplete chunked read" mid-body disconnects (`httpx.RemoteProtocolError`) are now retryable.
+- **Unique `tool_use` IDs (Kimi-k3 deadlock fix)** - `_fresh_tool_id()` always mints a globally-unique Claude-style `tool_use` id instead of forwarding NIM's raw `tool_call` id. Kimi-k3 returns ids in `Name:index` format (`Bash:0`, `Read:1`) that repeat per same-named call across turns; Claude Code de-duplicates assistant tool_use blocks on `id`, strips the repeated block, and replaces the turn with `[Tool use interrupted]` — an empty re-prompt loop. Always-fresh ids (like the real Anthropic API) fix the deadlock.
+- **Bot protection `localhost` exemption & `/api/hello`** - Localhost requests no longer accumulate failed-attempt strikes toward a ban in `record_failed_attempt`, and a keyless `GET /api/hello` route was added (returns `{}`) so clients that probe it don't trigger bot protection. `@api/app.py` and `api/bot_protection.py`.
+- **Optimization SSE defaults** - `optimization_response_to_sse` now falls back to a fresh `msg_*` id and `"unknown"` model when a mocked optimization response omits them, instead of emitting a malformed `message_start`.
+- **Reasoning config module-cache fix** - `_load_reasoning_config` now assigns the parsed JSON back to the `_REASONING_CONFIG_RAW` module cache, so runtime edits to `reasoning_config.json` are honored instead of the stale initial value.
+- **`sse_content_block_stop` standalone helper** - SSE builder exposes a standalone `content_block_stop` event emitter (no full `SSEBuilder` state needed) for stream-retry de-dup to close already-opened blocks; `_keepalive` typing tightened to `AsyncGenerator`.
+- **Duplicate `RequestQueue.get_stats` removed** - Removed the duplicate method definition (the `@property` `get_stats` was the remaining one).
 - **kimi-k3 400/`top_p` fix & reasoning style** - Force immutable `top_p=0.95` for `moonshotai/kimi-k3` (the server rejects any other value) and add a `kimi` thinking style that sends top-level `reasoning_effort` (low/high/max) via `extra_body`.
 - **Real-time streaming delivery** - Provider SSE events now stream to the client as they arrive instead of fully buffering, so the first token reaches Claude Code quickly and idle timeouts are avoided. This superseded the earlier SSE keepalive workaround (`_keepalive`/`_buffered_stream` removed).
 - **Unlimited truncation retry** - `provider_retry_on_truncation` default changed from `3` to `0`, where `0` now means unlimited retries on truncated/mid-stream responses so the client always receives a complete message sequence.
 - **Error diagnostics & transport logging** - Enriched retry/error logs with request/model context, timeout subtype, `__context__`/`__cause__` chains, total elapsed summaries, and periodic "still retrying" info; header capture now emits a timed failure line on transport timeout/connection errors.
 
+### Changed
+- **`SERVER_TYPE` now defaults to `buffer`** - `config/settings.py` default changed from `stream` to `buffer` (unset `SERVER_TYPE` now uses buffered mode with unlimited truncation retry). `stream` remains explicitly selectable via `SERVER_TYPE=stream` or `<nimserver:stream>`. This brings the code default in line with the reliability-first retry model.
+- **`reasoning_config.json` kimi-k3 budgets** - `moonshotai/kimi-k3` efforts now use explicit token budgets (`low:1000` → `ultracode:32000`) instead of `-1`, so the kimi reasoning style benefits from the budget→`max_tokens` behavior.
+- **Discord bot & rate-limiter hardening** - Tightened Discord channel/guild type-safety and checks (`isinstance` guards, `getattr` fallbacks), a minor rate-limiter typing fix, updated Playwright stealth usage, and a `setup_wizard.py` pyright ignore. Tests updated to async generators and aligned timeout-error construction.
+
 ### Removed
 - **UV references** - Removed `uv.lock` and `UV_*` references from `pyproject.toml`, `server.py`, and `start_server.py`.
+- **`minimaxai/minimax-m3` from reasoning config** - Dropped the Minimax entry from `reasoning_config.json` because the model was removed from the NVIDIA endpoint.
 
 ### Files Touched
 - **`providers/provider.py`** - Inline thinking split logic; DeepSeek-V4 DSML parsing; retryable error handling.
 - **`providers/think_parser.py`** - `split_think_content` for separating CoT from content.
-- **`providers/dsml_parser.py`** - Rewritten DSML tool-call parsing for stream/buffered modes.
+- **`providers/dsml_parser.py`** - Rewritten DSML tool-call parsing for stream/buffered modes; `_strip_residual_tags` for dangling DSML tags.
 - **`api/optimization_handlers.py`** - Thinking and `tool_use` block emission in buffered→SSE conversion.
 - **`api/routes.py`** - SERVER_TYPE config fix.
 - **`providers/request.py`** - Force `include_stop_str_in_output` for `deepseek-v4`; budget sets `max_tokens` directly from session store; deepseek sends `reasoning_effort` in `chat_template_kwargs`; `reasoning_budget` sent only for nemotron/default styles; nimeffort combined format parsing.
@@ -48,12 +61,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`api/bot_protection.py`** - Localhost bypass.
 - **`api/routes.py`** - `/v1/messages` streaming (buffered → real-time SSE); `_buffered_sse_generator` and in-stream error handling; nimeffort combined-format handler.
 - **`providers/header_capture.py`** - Transport timeout/connection error capture and failure logging.
-- **`reasoning_config.json`** - Renamed model key to `deepseek-v4-pro-0813` with explicit token budgets; disabled forced thinking flag; added `moonshotai/kimi-k3` with `kimi` thinking style.
+- **`reasoning_config.json`** - Renamed model key to `deepseek-v4-pro-0813` with explicit token budgets; disabled forced thinking flag; added `moonshotai/kimi-k3` with `kimi` thinking style; removed `minimaxai/minimax-m3` (dropped from endpoint).
 - **`tests/test_stream_retry_dedup.py`** - Tests for stream retry, truncation, `_format_error_detail`/`_timeout_subtype`/`_req_ctx`.
 - **`pyproject.toml`**, **`server.py`**, **`start_server.py`**, **`uv.lock`** - UV reference removal.
 - **`tests/test_think_split.py`**, **`tests/test_optimization_sse.py`**, **`tests/test_dsml_parser.py`** - New/updated tests.
 - **`nimbus_linux.spec`** - Hidden imports update.
 - **`BUILD_LINUX_BINARY.md`** - Build documentation.
+- **`config/settings.py`** - `SERVER_TYPE` default `stream` → `buffer`; reasoning-config module-cache assignment fix.
+- **`providers/provider.py`** - `_fresh_tool_id()` unique tool_use id minting (Kimi-k3 deadlock fix); `_keepalive` `AsyncGenerator` typing.
+- **`api/routes.py`**, **`api/bot_protection.py`** - Keyless `GET /api/hello` endpoint; localhost failed-attempt exemption.
+- **`api/optimization_handlers.py`** - Default response id (`msg_*`) / model (`unknown`) for mocked SSE.
+- **`providers/sse_builder.py`** - Standalone `sse_content_block_stop` helper.
+- **`providers/request_queue.py`** - Removed duplicate `get_stats` method.
+- **`reasoning_config.json`** - kimi-k3 explicit effort→budget mapping.
+- **`discord_bot/bot.py`**, **`discord_bot/cog.py`**, **`discord_bot/views.py`**, **`discord_bot/rate_limit.py`** - Type-safety/channel hardening.
+- **`websearch/duckduckgo_html.py`** - Updated Playwright stealth usage.
+- **`setup_wizard.py`** - pyright ignore.
+- **`tests/test_stream_retry_dedup.py`** - Async-generator tests, timeout-error alignment.
 
 ---
 ## v2.0.14 - Date: 2026-08-16

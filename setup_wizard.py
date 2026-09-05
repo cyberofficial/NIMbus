@@ -397,6 +397,7 @@ def _write_dotenv(path: Path, params: dict, is_linux: bool = False) -> None:
     lines = [
         f'NVIDIA_NIM_API_KEY="{params["nvidia_key"]}"',
         f"PORT={params['port']}",
+        f"HOST={params.get('host', '0.0.0.0')}",
         model_line,
         f'PROXY_API_KEY="{params["proxy_key"]}"',
         f"NIM_THINKING={'true' if params['thinking'] else 'false'}",
@@ -617,6 +618,15 @@ def _run_section(
             )
 
         _save_custom_models(exe_dir, extra_models)
+        print()
+        print("  Fable Model Override (FABLE_OVERRIDE):")
+        print("  Fable tier (if used) defaults to the Opus model slot.")
+        print("  Set an optional owner/model-name to override it, or leave blank.")
+        print()
+        fable_override = _prompt(
+            "  Fable model override (or blank to use Opus)",
+            default=existing.get("FABLE_OVERRIDE", ""),
+        )
         updates.update({
             "model_sonnet": model_sonnet,
             "model_opus": model_opus,
@@ -624,6 +634,7 @@ def _run_section(
             "model_sonnet_full": model_sonnet_full,
             "model_opus_full": model_opus_full,
             "model_haiku_full": model_haiku_full,
+            "fable_override": fable_override,
         })
 
     elif section == "port_mode":
@@ -642,6 +653,10 @@ def _run_section(
                 print("  Port must be a number.")
             port_str = _prompt("Port", default="8082")
         updates["port"] = port
+# Host bind address
+        print()
+        print("  Host bind address (0.0.0.0 = all interfaces):")
+        updates["host"] = _prompt("  Host bind address", default=str(existing.get("HOST", "0.0.0.0")))
 
         # Step 5: Server type
         print()
@@ -666,6 +681,7 @@ def _run_section(
         provider_max_wait = 30
         provider_retry_on_truncation = 3
         provider_retry_delay = 1.0
+        resource_exhausted_retries = int(existing.get("RESOURCE_EXHAUSTED_RETRIES", "10"))
         if server_type == "buffer":
             print()
             print("  Buffer Mode Settings:")
@@ -783,6 +799,7 @@ def _run_section(
         request_queue_max_size = 600
         request_queue_timeout = 300.0
         request_queue_num_workers = 4
+        resource_exhausted_retries = int(existing.get("RESOURCE_EXHAUSTED_RETRIES", "10"))
         if request_queue_enabled:
             print()
             print("  Max Concurrent: Maximum requests sent to NVIDIA simultaneously.")
@@ -1130,7 +1147,8 @@ def _run_section(
         configure_mcp = _prompt_yes_no(
             "  Configure MCP server (web search tools)?", default=True
         )
-        mcp_fetch_timeout = 10.0
+        mcp_fetch_timeout = float(existing.get("WEB_SEARCH_FETCH_TIMEOUT", "10.0"))
+        web_search_debug = False
         if configure_mcp:
             print()
             mcp_fetch_timeout_str = _prompt(
@@ -1193,6 +1211,13 @@ def _run_section(
         discord_cmd_unblock = True
         discord_cmd_blocked = True
         discord_cmd_newchannel = True
+        discord_model = existing.get("DISCORD_MODEL", "")
+        discord_require_mention = existing.get("DISCORD_REQUIRE_MENTION", "true").lower() == "true"
+        discord_command_prefix = existing.get("DISCORD_COMMAND_PREFIX", "!!")
+        discord_cmd_prefix_ask = True
+        discord_cmd_prefix_compact = True
+        discord_cmd_prefix_new = True
+        discord_cmd_prefix_status = True
         if configure_discord:
             print()
             print("  The bot token is the secret token from your Discord Application.")
@@ -1937,25 +1962,25 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
             _write_dotenv(
                 env_path,
                 {
-                    "nvidia_key": merged.get("NVIDIA_NIM_API_KEY", merged.get("nvidia_key", "")),
-                    "port": int(merged.get("PORT", 8082)),
-                    "proxy_key": merged.get("PROXY_API_KEY", merged.get("proxy_key", "")),
-                    "thinking": merged.get("NIM_THINKING", "true") == "true",
-                    "server_type": merged.get("SERVER_TYPE", "stream"),
-                    "provider_max_wait": float(merged.get("PROVIDER_MAX_WAIT_TIME", 30)),
-                    "provider_retry_on_truncation": int(merged.get("PROVIDER_RETRY_ON_TRUNCATION", 3)),
-                    "provider_retry_delay": float(merged.get("PROVIDER_RETRY_DELAY", 1.0)),
-                    "resource_exhausted_retries": int(merged.get("RESOURCE_EXHAUSTED_RETRIES", 10)),
+                    "nvidia_key": updates.get("nvidia_key", merged.get("NVIDIA_NIM_API_KEY", "")),
+                    "port": updates.get("port", int(merged.get("PORT", 8082))),
+                    "proxy_key": updates.get("proxy_key", merged.get("PROXY_API_KEY", "")),
+                    "thinking": updates.get("thinking", merged.get("NIM_THINKING", "true") == "true"),
+                    "server_type": updates.get("server_type", merged.get("SERVER_TYPE", "stream")),
+                    "provider_max_wait": updates.get("provider_max_wait", float(merged.get("PROVIDER_MAX_WAIT_TIME", 30))),
+                    "provider_retry_on_truncation": updates.get("provider_retry_on_truncation", int(merged.get("PROVIDER_RETRY_ON_TRUNCATION", 3))),
+                    "provider_retry_delay": updates.get("provider_retry_delay", float(merged.get("PROVIDER_RETRY_DELAY", 1.0))),
+                    "resource_exhausted_retries": updates.get("resource_exhausted_retries", int(merged.get("RESOURCE_EXHAUSTED_RETRIES", 10))),
                     # Provider Rate Limiting
-                    "provider_rate_limit": int(merged.get("PROVIDER_RATE_LIMIT", 40)),
-                    "provider_rate_window": int(merged.get("PROVIDER_RATE_WINDOW", 60)),
-                    "provider_max_concurrency": int(merged.get("PROVIDER_MAX_CONCURRENCY", 5)),
+                    "provider_rate_limit": updates.get("provider_rate_limit", int(merged.get("PROVIDER_RATE_LIMIT", 40))),
+                    "provider_rate_window": updates.get("provider_rate_window", int(merged.get("PROVIDER_RATE_WINDOW", 60))),
+                    "provider_max_concurrency": updates.get("provider_max_concurrency", int(merged.get("PROVIDER_MAX_CONCURRENCY", 5))),
                     # Adaptive Rate Limiting
-                    "nim_rpm_reset": int(merged.get("NIM_RPM_RESET", 5)),
+                    "nim_rpm_reset": updates.get("nim_rpm_reset", int(merged.get("NIM_RPM_RESET", 5))),
                     # HTTP Client Timeouts
-                    "http_read_timeout": float(merged.get("HTTP_READ_TIMEOUT", 300)),
-                    "http_write_timeout": float(merged.get("HTTP_WRITE_TIMEOUT", 10)),
-                    "http_connect_timeout": float(merged.get("HTTP_CONNECT_TIMEOUT", 2)),
+                    "http_read_timeout": updates.get("http_read_timeout", float(merged.get("HTTP_READ_TIMEOUT", 300))),
+                    "http_write_timeout": updates.get("http_write_timeout", float(merged.get("HTTP_WRITE_TIMEOUT", 10))),
+                    "http_connect_timeout": updates.get("http_connect_timeout", float(merged.get("HTTP_CONNECT_TIMEOUT", 2))),
                     # Request Queue settings
                     "request_queue_enabled": updates.get("request_queue_enabled", merged.get("REQUEST_QUEUE_ENABLED", "true") == "true"),
                     "request_queue_max_concurrent": updates.get("request_queue_max_concurrent", int(merged.get("REQUEST_QUEUE_MAX_CONCURRENT", 32))),
@@ -1965,31 +1990,31 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                     "request_queue_discord_priority": updates.get("request_queue_discord_priority", int(merged.get("REQUEST_QUEUE_DISCORD_PRIORITY", 2))),
                     "request_queue_api_priority": updates.get("request_queue_api_priority", int(merged.get("REQUEST_QUEUE_API_PRIORITY", 1))),
                     "show_nim_reply": updates.get("show_nim_reply", merged.get("SHOW_NIM_REPLY", "false") == "true"),
-                    "enable_recap_skip": merged.get("ENABLE_RECAP_SKIP", "true"),
-                    "enable_network_probe_mock": merged.get("ENABLE_NETWORK_PROBE_MOCK", "true"),
-                    "enable_title_generation_skip": merged.get("ENABLE_TITLE_GENERATION_SKIP", "true"),
-                    "enable_suggestion_mode_skip": merged.get("ENABLE_SUGGESTION_MODE_SKIP", "true"),
-                    "enable_filepath_extraction_mock": merged.get("ENABLE_FILEPATH_EXTRACTION_MOCK", "true"),
-                    "fast_prefix_detection": merged.get("FAST_PREFIX_DETECTION", "true") == "true",
+                    "enable_recap_skip": updates.get("enable_recap_skip", merged.get("ENABLE_RECAP_SKIP", "false")),
+                    "enable_network_probe_mock": updates.get("enable_network_probe_mock", merged.get("ENABLE_NETWORK_PROBE_MOCK", "true")),
+                    "enable_title_generation_skip": updates.get("enable_title_generation_skip", merged.get("ENABLE_TITLE_GENERATION_SKIP", "true")),
+                    "enable_suggestion_mode_skip": updates.get("enable_suggestion_mode_skip", merged.get("ENABLE_SUGGESTION_MODE_SKIP", "false")),
+                    "enable_filepath_extraction_mock": updates.get("enable_filepath_extraction_mock", merged.get("ENABLE_FILEPATH_EXTRACTION_MOCK", "true")),
+                    "fast_prefix_detection": updates.get("fast_prefix_detection", merged.get("FAST_PREFIX_DETECTION", "true") == "true"),
                     # NIM Settings
-                    "nim_max_tokens": int(merged.get("NIM_MAX_TOKENS", 202000)),
-                    "nim_reasoning_effort": merged.get("NIM_REASONING_EFFORT", "high"),
-                    "nim_reasoning_effort_mappings": merged.get("NIM_REASONING_EFFORT_MAPPINGS", ""),
-                    "nim_reasoning_budget": int(merged.get("NIM_REASONING_BUDGET", 0)),
-                    "nim_enable_thinking": merged.get("NIM_ENABLE_THINKING", "true").lower() == "true",
-                    "nim_chat_template_enable_thinking": merged.get("NIM_CHAT_TEMPLATE_ENABLE_THINKING", "true").lower() == "true",
-                    "nim_chat_template_low_effort": merged.get("NIM_CHAT_TEMPLATE_LOW_EFFORT", "false").lower() == "true",
-                    "nim_chat_template_medium_effort": merged.get("NIM_CHAT_TEMPLATE_MEDIUM_EFFORT", "false").lower() == "true",
-                    "nim_chat_template_high_effort": merged.get("NIM_CHAT_TEMPLATE_HIGH_EFFORT", "false").lower() == "true",
+                    "nim_max_tokens": updates.get("nim_max_tokens", int(merged.get("NIM_MAX_TOKENS", 202000))),
+                    "nim_reasoning_effort": updates.get("nim_reasoning_effort", merged.get("NIM_REASONING_EFFORT", "high")),
+                    "nim_reasoning_effort_mappings": updates.get("nim_reasoning_effort_mappings", merged.get("NIM_REASONING_EFFORT_MAPPINGS", "")),
+                    "nim_reasoning_budget": updates.get("nim_reasoning_budget", int(merged.get("NIM_REASONING_BUDGET", 0))),
+                    "nim_enable_thinking": updates.get("nim_enable_thinking", merged.get("NIM_ENABLE_THINKING", "true").lower() == "true"),
+                    "nim_chat_template_enable_thinking": updates.get("nim_chat_template_enable_thinking", merged.get("NIM_CHAT_TEMPLATE_ENABLE_THINKING", "true").lower() == "true"),
+                    "nim_chat_template_low_effort": updates.get("nim_chat_template_low_effort", merged.get("NIM_CHAT_TEMPLATE_LOW_EFFORT", "false").lower() == "true"),
+                    "nim_chat_template_medium_effort": updates.get("nim_chat_template_medium_effort", merged.get("NIM_CHAT_TEMPLATE_MEDIUM_EFFORT", "false").lower() == "true"),
+                    "nim_chat_template_high_effort": updates.get("nim_chat_template_high_effort", merged.get("NIM_CHAT_TEMPLATE_HIGH_EFFORT", "false").lower() == "true"),
                     # Model Swapper
-                    "swapper_enabled": merged.get("SWAPPER_ENABLED", "false") == "true",
-                    "swapper_test_prompt": merged.get("SWAPPER_TEST_PROMPT", "Please reply with pong only, nothing else"),
-                    "swapper_test_timeout": float(merged.get("SWAPPER_TEST_TIMEOUT", 120.0)),
+                    "swapper_enabled": updates.get("swapper_enabled", merged.get("SWAPPER_ENABLED", "false") == "true"),
+                    "swapper_test_prompt": updates.get("swapper_test_prompt", merged.get("SWAPPER_TEST_PROMPT", "Please reply with pong only, nothing else")),
+                    "swapper_test_timeout": updates.get("swapper_test_timeout", float(merged.get("SWAPPER_TEST_TIMEOUT", 120.0))),
                     "model_sonnet_full": merged.get("model_sonnet_full", "deepseek-ai/deepseek-v4-flash"),
                     "model_opus_full": merged.get("model_opus_full", "deepseek-ai/deepseek-v4-flash"),
                     "model_haiku_full": merged.get("model_haiku_full", "deepseek-ai/deepseek-v4-flash"),
-                    "mcp_fetch_timeout": float(merged.get("WEB_SEARCH_FETCH_TIMEOUT", 10.0)),
-                    "mcp_cache_ttl": int(merged.get("MCP_CACHE_TTL", 600)),
+                    "mcp_fetch_timeout": updates.get("mcp_fetch_timeout", float(merged.get("WEB_SEARCH_FETCH_TIMEOUT", 10.0))),
+                    "mcp_cache_ttl": updates.get("mcp_cache_ttl", int(merged.get("MCP_CACHE_TTL", 600))),
                     # Discord Bot settings - prefer new-style keys (from updates) over old DISCORD_* keys (from existing)
                     "configure_discord": updates.get("configure_discord", merged.get("DISCORD_ENABLED", "false") == "true"),
                     "discord_token": updates.get("discord_token", merged.get("DISCORD_BOT_TOKEN", "")),
@@ -2018,23 +2043,23 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                     "discord_cmd_unblock": updates.get("discord_cmd_unblock", merged.get("DISCORD_CMD_UNBLOCK", "true") == "true"),
                     "discord_cmd_blocked": updates.get("discord_cmd_blocked", merged.get("DISCORD_CMD_BLOCKED", "true") == "true"),
                     "discord_cmd_newchannel": updates.get("discord_cmd_newchannel", merged.get("DISCORD_CMD_NEWCHANNEL", "true") == "true"),
-                    "discord_require_mention": merged.get("DISCORD_REQUIRE_MENTION", "true") == "true",
-                    "discord_command_prefix": merged.get("DISCORD_COMMAND_PREFIX", "!!"),
+                    "discord_require_mention": updates.get("discord_require_mention", merged.get("DISCORD_REQUIRE_MENTION", "true") == "true"),
+                    "discord_command_prefix": updates.get("discord_command_prefix", merged.get("DISCORD_COMMAND_PREFIX", "!!")),
                     "discord_cmd_prefix_ask": updates.get("discord_cmd_prefix_ask", merged.get("DISCORD_CMD_PREFIX_ASK", "true") == "true"),
                     "discord_cmd_prefix_compact": updates.get("discord_cmd_prefix_compact", merged.get("DISCORD_CMD_PREFIX_COMPACT", "true") == "true"),
                     "discord_cmd_prefix_new": updates.get("discord_cmd_prefix_new", merged.get("DISCORD_CMD_PREFIX_NEW", "true") == "true"),
                     "discord_cmd_prefix_status": updates.get("discord_cmd_prefix_status", merged.get("DISCORD_CMD_PREFIX_STATUS", "true") == "true"),
                     # Discord Web Search
-                    "discord_enable_web_search": merged.get("DISCORD_ENABLE_WEB_SEARCH", "true").lower() == "true",
-                    "discord_web_search_max_results": int(merged.get("DISCORD_WEB_SEARCH_MAX_RESULTS", 10)),
-                    "discord_web_search_max_iterations": int(merged.get("DISCORD_WEB_SEARCH_MAX_ITERATIONS", 10)),
-                    "discord_web_search_max_result_size": int(merged.get("DISCORD_WEB_SEARCH_MAX_RESULT_SIZE", 5000)),
-                    "discord_web_search_include_in_history": merged.get("DISCORD_WEB_SEARCH_INCLUDE_IN_HISTORY", "true").lower() == "true",
-                    "discord_browser_headless": merged.get("DISCORD_BROWSER_HEADLESS", "true").lower() == "true",
-                    "mcp_browser_headless": merged.get("MCP_BROWSER_HEADLESS", "true").lower() == "true",
-                    "request_queue_discord_priority": int(merged.get("REQUEST_QUEUE_DISCORD_PRIORITY", 2)),
-                    "request_queue_api_priority": int(merged.get("REQUEST_QUEUE_API_PRIORITY", 1)),
-                    "show_nim_reply": merged.get("SHOW_NIM_REPLY", "false").lower() == "true",
+                    "discord_enable_web_search": updates.get("discord_enable_web_search", merged.get("DISCORD_ENABLE_WEB_SEARCH", "true").lower() == "true"),
+                    "discord_web_search_max_results": updates.get("discord_web_search_max_results", int(merged.get("DISCORD_WEB_SEARCH_MAX_RESULTS", 10))),
+                    "discord_web_search_max_iterations": updates.get("discord_web_search_max_iterations", int(merged.get("DISCORD_WEB_SEARCH_MAX_ITERATIONS", 10))),
+                    "discord_web_search_max_result_size": updates.get("discord_web_search_max_result_size", int(merged.get("DISCORD_WEB_SEARCH_MAX_RESULT_SIZE", 5000))),
+                    "discord_web_search_include_in_history": updates.get("discord_web_search_include_in_history", merged.get("DISCORD_WEB_SEARCH_INCLUDE_IN_HISTORY", "true").lower() == "true"),
+                    "discord_browser_headless": updates.get("discord_browser_headless", merged.get("DISCORD_BROWSER_HEADLESS", "true").lower() == "true"),
+                    "mcp_browser_headless": updates.get("mcp_browser_headless", merged.get("MCP_BROWSER_HEADLESS", "true").lower() == "true"),
+                    "web_search_debug": updates.get("web_search_debug", merged.get("WEB_SEARCH_DEBUG", "false").lower() == "true"),
+                    "fable_override": updates.get("fable_override", merged.get("FABLE_OVERRIDE", "")),
+                    "host": updates.get("host", merged.get("HOST", "0.0.0.0")),
                 },
                 is_linux=is_linux,
             )
@@ -2172,6 +2197,18 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
 
         _save_custom_models(exe_dir, extra_models)
 
+        # ---- Step 3b: Fable Model Override ----
+        print()
+        print("Step 3b: Fable Model Override")
+        print("-" * 40)
+        print("  Fable tier (if used) defaults to the Opus model slot.")
+        print("  Set an optional owner/model-name[1m] to override it, or leave blank.")
+        print()
+        fable_override = _prompt(
+            "  Fable model override (FABLE_OVERRIDE, or blank to use Opus)",
+            default="",
+        )
+
         # ---- Step 4: Port ----
         print()
         print("Step 4: Server Port")
@@ -2187,6 +2224,10 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 print("  Port must be a number.")
             port_str = _prompt("Port", default="8082")
 
+        # Host bind address
+        print()
+        print("  Host bind address (0.0.0.0 = all interfaces):")
+        host = _prompt("  Host bind address", default="0.0.0.0")
         base_url = f"http://localhost:{port}"
 
         # ---- Step 5: Server type ----
@@ -2255,6 +2296,7 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
         request_queue_max_size = 600
         request_queue_timeout = 300.0
         request_queue_num_workers = 4
+        resource_exhausted_retries = 10
         if request_queue_enabled:
             print()
             print("  Max Concurrent: Maximum requests sent to NVIDIA simultaneously.")
@@ -2311,6 +2353,15 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                     request_queue_api_priority = 1
             except ValueError:
                 request_queue_api_priority = 1
+            print()
+            print("  Resource Exhausted Retries: Max retry attempts for 'Worker local")
+            print("  total request limit reached' errors from NVIDIA's shared worker nodes.")
+            print("  Set to 0 for endless retries. Default: 10")
+            exhausted_str = _prompt("  Resource exhausted retries", default="10")
+            try:
+                resource_exhausted_retries = int(exhausted_str)
+            except ValueError:
+                resource_exhausted_retries = 10
 
         # ---- Step 6: Optimization Settings ----
         print()
@@ -2336,6 +2387,7 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 "enable_filepath_extraction_mock",
                 "Mock filepath extraction (speeds up file searching)",
             ),
+            ("fast_prefix_detection", "Fast command prefix detection"),
         ]
         for key, desc in opt_defs:
             # Default to False for the two disabled optimizations
@@ -2382,7 +2434,7 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
             nim_rpm_reset = 5
         print()
         print("  Show NIM Reply (verbose logging of NVIDIA responses):")
-        show_nvidia_reply = _prompt_yes_no("  Show NIM Reply (SHOW_NIM_REPLY)?", default=False)
+        show_nim_reply = _prompt_yes_no("  Show NIM Reply (SHOW_NIM_REPLY)?", default=False)
 
         # ---- Step 6c: HTTP Client Timeouts ----
         print()
@@ -2431,6 +2483,26 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
             "  Reasoning effort mappings JSON (NIM_REASONING_EFFORT_MAPPINGS)",
             default=""
         )
+        print()
+        print("  Reasoning budget (0 = auto from model config, -1 = unlimited):")
+        reasoning_budget_str = _prompt("  Reasoning budget (NIM_REASONING_BUDGET)", default="0")
+        try:
+            nim_reasoning_budget = int(reasoning_budget_str)
+        except ValueError:
+            nim_reasoning_budget = 0
+        print()
+        print("  Enable thinking globally (overrides model config if false):")
+        nim_enable_thinking = _prompt_yes_no("  Enable thinking (NIM_ENABLE_THINKING)?", default=True)
+        print()
+        print("  Chat template kwargs effort flags:")
+        print("    enable_thinking - enables thinking in chat template")
+        print("    low_effort - adds low effort to chat template")
+        print("    medium_effort - adds medium effort to chat template")
+        print("    high_effort - adds high effort to chat template")
+        nim_chat_template_enable_thinking = _prompt_yes_no("    enable_thinking (NIM_CHAT_TEMPLATE_ENABLE_THINKING)?", default=True)
+        nim_chat_template_low_effort = _prompt_yes_no("    low_effort (NIM_CHAT_TEMPLATE_LOW_EFFORT)?", default=False)
+        nim_chat_template_medium_effort = _prompt_yes_no("    medium_effort (NIM_CHAT_TEMPLATE_MEDIUM_EFFORT)?", default=False)
+        nim_chat_template_high_effort = _prompt_yes_no("    high_effort (NIM_CHAT_TEMPLATE_HIGH_EFFORT)?", default=False)
 
         # ---- Step 6e: Model Swapper ----
         print()
@@ -2482,6 +2554,7 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
         )
         mcp_fetch_timeout = 10.0
         web_search_debug = False
+        mcp_browser_headless = True
         if configure_mcp:
             print()
             mcp_fetch_timeout_str = _prompt(
@@ -2493,6 +2566,9 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 mcp_fetch_timeout = 10.0
             web_search_debug = _prompt_yes_no(
                 "  Enable debug logging for web search (WEB_SEARCH_DEBUG)?", default=False
+            )
+            mcp_browser_headless = _prompt_yes_no(
+                "  Use headless browser (MCP_BROWSER_HEADLESS)?", default=True
             )
 
         # ---- Step 8: Discord Bot Configuration ----
@@ -2530,6 +2606,19 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
         discord_cmd_unblock = True
         discord_cmd_blocked = True
         discord_cmd_newchannel = True
+        discord_model = ""
+        discord_require_mention = True
+        discord_command_prefix = "!!"
+        discord_cmd_prefix_ask = True
+        discord_cmd_prefix_compact = True
+        discord_cmd_prefix_new = True
+        discord_cmd_prefix_status = True
+        discord_enable_web_search = True
+        discord_web_search_max_results = 10
+        discord_web_search_max_iterations = 10
+        discord_web_search_max_result_size = 5000
+        discord_web_search_include_in_history = True
+        discord_browser_headless = True
         if configure_discord:
             print()
             print("  The bot token is the secret token from your Discord Application.")
@@ -2717,6 +2806,34 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
             print("  /newchannel - Create a new dedicated conversation channel")
             discord_cmd_newchannel = _prompt_yes_no("  Enable /newchannel command?", default=True)
 
+            print()
+            print("  Live Conversation Behavior:")
+            print("  ----")
+            print()
+            print("  The bot can respond in two modes:")
+            print("  - Mention mode (@bot required): Bot only replies when @mentioned")
+            print("  - Prefix mode (!! commands): Bot also responds to !!ask, !!compact, etc.")
+            print()
+            discord_require_mention = _prompt_yes_no(
+                "  Require @mention to trigger responses?", default=True
+            )
+            print()
+            print("  Command Prefix:")
+            print("  When using prefix commands, the bot listens for messages")
+            print("  starting with this string. You can still also @mention the bot.")
+            print("  Default is '!!'. Set to empty string to disable prefix commands.")
+            discord_command_prefix = _prompt(
+                "  Command prefix (e.g. '!!', '?', '!')", default="!!"
+            )
+            print()
+            print("  Prefix Command Toggles:")
+            print("  Control which commands are available via the text prefix.")
+            print("  Slash commands are controlled separately above.")
+            print()
+            discord_cmd_prefix_ask = _prompt_yes_no("  Enable !!ask command?", default=True)
+            discord_cmd_prefix_compact = _prompt_yes_no("  Enable !!compact command?", default=True)
+            discord_cmd_prefix_new = _prompt_yes_no("  Enable !!new command?", default=True)
+            discord_cmd_prefix_status = _prompt_yes_no("  Enable !!status command?", default=True)
             # ---- Discord Web Search ----
             print()
             print("  Web Search:")
@@ -2747,6 +2864,19 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                     discord_web_search_max_iterations = int(max_iter_str)
                 except ValueError:
                     discord_web_search_max_iterations = 10
+                max_result_size_str = _prompt(
+                    "  Max result size in chars (DISCORD_WEB_SEARCH_MAX_RESULT_SIZE)",
+                    default="5000"
+                )
+                try:
+                    discord_web_search_max_result_size = int(max_result_size_str)
+                except ValueError:
+                    discord_web_search_max_result_size = 5000
+                include_history = _prompt_yes_no(
+                    "  Include search results in conversation history (DISCORD_WEB_SEARCH_INCLUDE_IN_HISTORY)?",
+                    default=True
+                )
+                discord_web_search_include_in_history = include_history
                 print()
                 discord_browser_headless = _prompt_yes_no(
                     "  Run web search browser in headless mode (DISCORD_BROWSER_HEADLESS)?",
@@ -2787,6 +2917,7 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
             env_path,
             {
                 "nvidia_key": nvidia_key,
+                "host": host,
                 "port": port,
                 "proxy_key": proxy_key,
                 "thinking": "deepseek" in model_sonnet.lower(),
@@ -2840,9 +2971,12 @@ def run_wizard(exe_dir: Path, argv: list[str]) -> None:
                 "model_opus_full": model_opus_full,
                 "model_haiku_full": model_haiku_full,
                 # MCP Server settings
+                "mcp_browser_headless": mcp_browser_headless,
                 "mcp_fetch_timeout": mcp_fetch_timeout,
                 "mcp_cache_ttl": mcp_cache_ttl,
                 "web_search_debug": web_search_debug,
+                # Fable Model Override
+                "fable_override": fable_override,
                 # Discord Bot settings
                 "configure_discord": configure_discord,
                 "discord_token": discord_token,
