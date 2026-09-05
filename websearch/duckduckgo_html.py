@@ -35,7 +35,7 @@ def _check_stealth():
     if _HAS_STEALTH is not None:
         return _HAS_STEALTH
     try:
-        from playwright_stealth import stealth_async
+        from playwright_stealth import Stealth
         _HAS_STEALTH = True
     except ImportError:
         _HAS_STEALTH = False
@@ -116,8 +116,8 @@ class DuckDuckGoHTMLSearch:
         page = await self._context.new_page()
         # Apply comprehensive stealth patches (only on first page)
         if _check_stealth() and not getattr(self, "_stealth_applied", False):
-            from playwright_stealth import stealth_async
-            await stealth_async(page)
+            from playwright_stealth import Stealth
+            await Stealth().apply_stealth_async(page)
             self._stealth_applied = True
 
         # Try html.duckduckgo.com first via Playwright

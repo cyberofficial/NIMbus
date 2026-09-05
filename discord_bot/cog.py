@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 class CompactConfirmView(ui.View):
     """View for confirming compaction with optional backup."""
 
-    def __init__(self, cog: "NimbusCog", channel: discord.TextChannel, user: discord.User):
+    def __init__(self, cog: "NimbusCog", channel: discord.TextChannel, user: discord.User | discord.Member):
         super().__init__(timeout=60.0)
         self.cog = cog
         self.channel = channel
@@ -164,7 +164,7 @@ class NimbusCog(commands.Cog):
                     await interaction.followup.send(chunk)
                 else:
                     channel = interaction.channel
-                    if channel is None:
+                    if not isinstance(channel, discord.abc.Messageable):
                         return content
                     await channel.send(chunk)
         else:
@@ -220,7 +220,8 @@ class NimbusCog(commands.Cog):
             if self.settings.discord_auto_compact:
                 if self.conversation_manager.should_compact(channel.id):
                     await channel.send("🔄 Auto-compacting conversation before proceeding...")
-                    await self._do_compact_for_channel(channel)
+                    if isinstance(channel, discord.TextChannel):
+                        await self._do_compact_for_channel(channel)
 
             history = self.conversation_manager.get_history_for_nim(channel.id)
             messages = history + [{"role": "user", "content": f"{user.display_name}: {question}"}]
@@ -352,6 +353,13 @@ class NimbusCog(commands.Cog):
             )
             return
 
+        channel_id = interaction.channel_id
+        if channel_id is None:
+            await interaction.response.send_message(
+                "This command can only be used in a server channel.", ephemeral=True
+            )
+            return
+
         # Check rate limits
         allowed, error = await self._check_rate_limits(interaction)
         if not allowed:
@@ -366,11 +374,11 @@ class NimbusCog(commands.Cog):
         )
 
         # Acquire channel lock
-        channel_lock = self.rate_limiter.acquire_channel_lock(interaction.channel_id)
+        channel_lock = self.rate_limiter.acquire_channel_lock(channel_id)
         async with channel_lock:
             # Check if auto-compact needed (if enabled)
             if self.settings.discord_auto_compact:
-                if self.conversation_manager.should_compact(interaction.channel_id):
+                if self.conversation_manager.should_compact(channel_id):
                     await interaction.response.send_message(
                         "🔄 Auto-compacting conversation before proceeding...",
                         ephemeral=True
@@ -381,7 +389,7 @@ class NimbusCog(commands.Cog):
                     )
 
             # Get conversation history
-            history = self.conversation_manager.get_history(interaction.channel_id)
+            history = self.conversation_manager.get_history(channel_id)
 
             # Build request with system prompt
             messages = history + [{"role": "user", "content": question}]
@@ -410,10 +418,10 @@ class NimbusCog(commands.Cog):
             # Store in conversation history
             if response_text:
                 self.conversation_manager.add_message(
-                    interaction.channel_id, "user", question, self.settings.discord_auto_compact
+                    channel_id, "user", question, self.settings.discord_auto_compact
                 )
                 self.conversation_manager.add_message(
-                    interaction.channel_id, "assistant", response_text, self.settings.discord_auto_compact
+                    channel_id, "assistant", response_text, self.settings.discord_auto_compact
                 )
 
     @app_commands.command(
@@ -435,9 +443,14 @@ class NimbusCog(commands.Cog):
         if not await self._check_conversation_channel(interaction):
             return
 
+        # Narrow channel to a text channel (re-check for type safety)
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            return
+
         # Get conversation to check if there's anything to compact
         messages, token_count = self.conversation_manager.get_compact_context(
-            interaction.channel_id
+            channel.id
         )
         if not messages:
             await interaction.followup.send(
@@ -456,7 +469,7 @@ class NimbusCog(commands.Cog):
         )
         embed.set_footer(text="Backup timeout: 60 seconds")
 
-        view = CompactConfirmView(self, interaction.channel, interaction.user)
+        view = CompactConfirmView(self, channel, interaction.user)
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     async def _check_conversation_channel(self, interaction: discord.Interaction) -> bool:
@@ -466,25 +479,21 @@ class NimbusCog(commands.Cog):
         """
         # Check if channel is a control channel
         control_channel_ids = self.settings.discord_control_channel_ids or {self.settings.discord_control_channel_id}
-        if interaction.channel_id in control_channel_ids:
-            await interaction.followup.send(
-                "❌ Cannot use this command in the control channel.", ephemeral=True
-            )
-            return False
-
-        # Check conversation channel validity
         channel = interaction.channel
-        if not channel or not hasattr(channel, 'category_id'):
+        if not isinstance(channel, discord.TextChannel):
             await interaction.followup.send(
                 "❌ This command must be used in a text channel.", ephemeral=True
             )
             return False
 
-        channel = channel  # type: discord.TextChannel
+        if channel.id in control_channel_ids:
+            await interaction.followup.send(
+                "❌ Cannot use this command in the control channel.", ephemeral=True
+            )
+            return False
 
         # Use the settings helper to check if this is a valid conversation channel
-        category_id = getattr(channel, 'category_id', None)
-        if not self.settings.is_conversation_channel(interaction.channel_id, category_id):
+        if not self.settings.is_conversation_channel(channel.id, channel.category_id):
             await interaction.followup.send(
                 "❌ This command can only be used in configured conversation channels.", ephemeral=True
             )
@@ -494,15 +503,17 @@ class NimbusCog(commands.Cog):
 
     async def _do_compact(self, interaction: discord.Interaction):
         """Perform compaction - summarize and reset."""
+        # Narrow channel to a text channel (interaction context must be a text channel)
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            return
+
         # Get current conversation
         messages, token_count = self.conversation_manager.get_compact_context(
-            interaction.channel_id
+            channel.id
         )
 
         if not messages:
-            channel = interaction.channel
-            if channel is None:
-                return
             await channel.send("Nothing to compact.")
             return
 
@@ -560,29 +571,27 @@ class NimbusCog(commands.Cog):
                 summary_text = "[Summary generation failed]"
 
         # Delete messages from channel
-        await self._clear_channel_messages(interaction.channel)
+        await self._clear_channel_messages(channel)
 
         # Post summary as new first message
         if summary_text:
-            channel = interaction.channel
-            if channel is not None:
-                embed = discord.Embed(
-                    title="📝 Conversation Summary",
-                    description=summary_text[:4000],
-                    color=discord.Color.blue(),
-                    timestamp=discord.utils.utcnow(),
-                )
-                embed.set_footer(text="New conversation context started from summary")
-                await channel.send(embed=embed)
+            embed = discord.Embed(
+                title="📝 Conversation Summary",
+                description=summary_text[:4000],
+                color=discord.Color.blue(),
+                timestamp=discord.utils.utcnow(),
+            )
+            embed.set_footer(text="New conversation context started from summary")
+            await channel.send(embed=embed)
 
         # Update conversation manager with summary
         self.conversation_manager.compact(
-            interaction.channel_id,
+            channel.id,
             f"[Previous conversation summary]: {summary_text}"
         )
 
     async def _backup_and_compact_channel(
-        self, channel: discord.TextChannel, user: discord.User
+        self, channel: discord.TextChannel, user: discord.User | discord.Member
     ):
         """Backup chat history, then compact."""
         # Get conversation history
@@ -879,16 +888,18 @@ class NimbusCog(commands.Cog):
         )
 
         # Clear conversation manager
-        self.conversation_manager.clear(interaction.channel_id)
+        # Narrow channel to a text channel (re-check for type safety)
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            return
+        self.conversation_manager.clear(channel.id)
 
         # Clear channel messages
-        channel = interaction.channel
-        if channel is not None:
-            await self._clear_channel_messages(channel)
+        await self._clear_channel_messages(channel)
 
-            await channel.send(
-                "✅ Conversation cleared. New context started."
-            )
+        await channel.send(
+            "✅ Conversation cleared. New context started."
+        )
 
     @app_commands.command(
         name="download", description="Download conversation history as markdown"
@@ -906,8 +917,13 @@ class NimbusCog(commands.Cog):
         if not await self._check_conversation_channel(interaction):
             return
 
+        # Narrow channel to a text channel (re-check for type safety)
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            return
+
         messages, token_count = self.conversation_manager.get_compact_context(
-            interaction.channel_id
+            channel.id
         )
 
         if not messages:
@@ -925,7 +941,7 @@ class NimbusCog(commands.Cog):
         from datetime import datetime
 
         backup_content = self._create_backup_markdown(
-            interaction.channel, messages
+            channel, messages
         )
 
         # Send DM
@@ -962,16 +978,23 @@ class NimbusCog(commands.Cog):
             )
             return
 
+        channel_id = interaction.channel_id
+        if channel_id is None:
+            await interaction.followup.send(
+                "This command can only be used in a server channel.", ephemeral=True
+            )
+            return
+
         # Get global rate limit status
         global_limiter = GlobalRateLimiter.get_instance()
         rate_status = global_limiter.get_status()
 
         # Get conversation stats
         token_count = self.conversation_manager.get_token_count(
-            interaction.channel_id
+            channel_id
         )
         should_compact = self.conversation_manager.should_compact(
-            interaction.channel_id
+            channel_id
         )
 
         embed = discord.Embed(
@@ -1099,6 +1122,13 @@ class NimbusCog(commands.Cog):
             )
             return
 
+        # Check this is a guild (not DM) and user is a guild member
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                "❌ This command can only be used in a server.", ephemeral=True
+            )
+            return
+
         # Check if user has manage channels permission
         if not interaction.user.guild_permissions.manage_channels:
             await interaction.response.send_message(
@@ -1106,21 +1136,14 @@ class NimbusCog(commands.Cog):
             )
             return
 
-        # Check this is a guild (not DM)
-        if not interaction.guild:
-            await interaction.response.send_message(
-                "❌ This command can only be used in a server.", ephemeral=True
-            )
-            return
-
         # Get conversation categories
         category_ids = self.settings.discord_conversation_category_ids or {self.settings.discord_conversation_category_id}
 
         # Find the category in this guild
-        category = None
+        category: discord.CategoryChannel | None = None
         for cat_id in category_ids:
             cat = interaction.guild.get_channel(cat_id)
-            if cat:
+            if isinstance(cat, discord.CategoryChannel):
                 category = cat
                 break
 

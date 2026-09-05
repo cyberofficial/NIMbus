@@ -47,6 +47,16 @@ def map_stop_reason(openai_reason: str | None) -> str:
     )
 
 
+def sse_content_block_stop(index: int) -> str:
+    """Standalone content_block_stop SSE event (no builder state needed).
+
+    Used by callers that need to emit close events for already-opened content
+    blocks (e.g. stream retry de-dup) without allocating a full SSEBuilder.
+    """
+    payload = {"type": "content_block_stop", "index": index}
+    return f"event: content_block_stop\ndata: {json.dumps(payload)}\n\n"
+
+
 @dataclass
 class ToolCallState:
     """State for a single streaming tool call."""

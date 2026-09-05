@@ -15,6 +15,9 @@ import httpx
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from collections.abc import AsyncIterator, Callable
+from typing import Any
+
 from config.nim import NimSettings
 from providers.base import ProviderConfig
 from providers.exceptions import StreamTruncatedError
@@ -72,18 +75,23 @@ def provider(config, nim_settings):
 
         # enqueue_stream is now an async generator (not a coroutine returning a list).
         # Patch the class method so all instances use the simple pass-through.
-        async def _passthrough(self_or_factory, factory=None, priority=0):
+        async def _passthrough(
+            self: "rq_module.RequestQueue",
+            stream_factory: Callable[[], AsyncIterator[Any]],
+            priority: int = 0,
+        ) -> AsyncIterator[Any]:
             """Simple pass-through that yields events from the factory directly."""
-            async for event in factory():
+            async for event in stream_factory():
                 yield event
 
-        # Monkey-patch the class method
+        # Monkey-patch the class method (and restore it on fixture teardown)
         import providers.request_queue as rq_module
         _orig = rq_module.RequestQueue.enqueue_stream
         rq_module.RequestQueue.enqueue_stream = _passthrough
-        prov._enqueue_stream_orig = _orig  # save for cleanup
-
-        yield prov
+        try:
+            yield prov
+        finally:
+            rq_module.RequestQueue.enqueue_stream = _orig
 
 
 @pytest.fixture
@@ -116,7 +124,11 @@ def _attempt_events(prefix_id: str) -> list[str]:
 async def test_stream_response_single_attempt_unchanged(provider, mock_request):
     """No retry -> buffer has exactly one message_start -> events unchanged."""
     single = _attempt_events("final")
-    provider._request_queue.enqueue_stream = AsyncMock(return_value=single)
+    async def _enqueue(self, stream_factory=None, priority=0):
+        """Mock enqueue_stream as an async generator yielding the buffered events."""
+        for ev in single:
+            yield ev
+    provider._request_queue.enqueue_stream = _enqueue
 
     collected = [ev async for ev in provider.stream_response(mock_request)]
 
@@ -134,7 +146,11 @@ async def test_stream_response_drops_earlier_attempts_on_retry(provider, mock_re
     # enqueue_stream returns the concatenation of both attempts (how the real
     # queue buffers _stream_response_impl's multi-attempt output).
     buffered = first_attempt + final_attempt
-    provider._request_queue.enqueue_stream = AsyncMock(return_value=buffered)
+    async def _enqueue(self, stream_factory=None, priority=0):
+        """Mock enqueue_stream as an async generator yielding the buffered events."""
+        for ev in buffered:
+            yield ev
+    provider._request_queue.enqueue_stream = _enqueue
 
     collected = [ev async for ev in provider.stream_response(mock_request)]
 
@@ -154,9 +170,11 @@ async def test_stream_response_no_index_error_on_retry(provider, mock_request):
     mismatch would crash stream_response -> ASGI -> 'empty or malformed')."""
     first_attempt = _attempt_events("attempt-1")[:-2]
     final_attempt = _attempt_events("attempt-2")
-    provider._request_queue.enqueue_stream = AsyncMock(
-        return_value=first_attempt + final_attempt
-    )
+    async def _enqueue(self, stream_factory=None, priority=0):
+        """Mock enqueue_stream as an async generator yielding the buffered events."""
+        for ev in first_attempt + final_attempt:
+            yield ev
+    provider._request_queue.enqueue_stream = _enqueue
 
     # The entire async iteration must complete without raising.
     collected = [ev async for ev in provider.stream_response(mock_request)]
@@ -465,7 +483,7 @@ def test_format_error_detail_renders_empty_message_chain_nonempty():
     _format_error_detail rendered a bare `<- ReadTimeout: ` tail with nothing
     after the colon. The new version must render a typed, non-empty link."""
     inner = httpx.ReadTimeout("")  # empty message: str() is ""
-    e = openai.APITimeoutError("Request timed out.")
+    e = openai.APITimeoutError(httpx.Request("POST", "https://example.com/test"))
     e.__cause__ = inner  # simulate `raise ... from inner` (assignment is invalid)
 
     from providers.provider import _format_error_detail, _req_ctx, _timeout_subtype

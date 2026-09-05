@@ -32,10 +32,10 @@ class DiscordRateLimiter:
 
         self._channel_locks: dict[int, asyncio.Lock] = {}
 
-    async def check_user_rate(self, user_id: int, channel_id: int = 0) -> Tuple[bool, float]:
+    async def check_user_rate(self, user_id: int, channel_id: int | None = 0) -> Tuple[bool, float]:
         """Check if user can make request. Returns (allowed, retry_after)."""
         now = time.monotonic()
-        key = (user_id, channel_id); last = self._user_last_request.get(key, 0)
+        key = (user_id, channel_id or 0); last = self._user_last_request.get(key, 0)
         elapsed = now - last
 
         if elapsed < self._user_cooldown:

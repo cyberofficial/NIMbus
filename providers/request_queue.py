@@ -418,10 +418,6 @@ class RequestQueue:
         """Get current queue statistics."""
         return self._stats.to_dict()
 
-    def get_stats(self) -> dict[str, Any]:
-        """Get current queue statistics."""
-        return self._stats.to_dict()
-
     @property
     def is_enabled(self) -> bool:
         return self._enabled

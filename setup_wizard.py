@@ -1842,6 +1842,8 @@ def _print_banner() -> None:
 # ---------------------------------------------------------------------------
 
 
+# pyright: ignore[reportGeneralTypeIssues] - run_wizard is a large, sequential
+# step driver; Pylance exceeds its analysis budget on the full body.
 def run_wizard(exe_dir: Path, argv: list[str]) -> None:
     """Run the interactive setup wizard (called from packaged_entry.py).
 

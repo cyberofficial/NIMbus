@@ -70,7 +70,8 @@ class BotProtection:
         If threshold exceeded, ban the IP and return ban response.
         Otherwise, return None.
         """
-        if ip in self._banned_ips:
+        if ip in self._banned_ips or self._is_localhost(ip):
+            return None
             return self.get_ban_response()
 
         # Increment failed attempt counter
@@ -128,6 +129,7 @@ def is_valid_request_path(path: str) -> bool:
         "/v1/messages/count_tokens",
         "/stop",
         "/favicon.ico",
+        "/api/hello",
     }
 
     # Check exact match

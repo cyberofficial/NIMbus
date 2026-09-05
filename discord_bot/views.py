@@ -5,6 +5,17 @@ import asyncio
 import discord
 from discord import ui
 from loguru import logger
+from typing import TYPE_CHECKING, cast
+
+from config.settings import Settings
+
+if TYPE_CHECKING:
+    from .bot import NimbusDiscordBot
+
+
+def _bot_settings(interaction: discord.Interaction) -> Settings:
+    """Return the bot's Settings (cast client to NimbusDiscordBot)."""
+    return cast("NimbusDiscordBot", interaction.client).settings
 
 
 class CreateChannelModal(ui.Modal, title="Create Conversation Channel"):
@@ -21,7 +32,12 @@ class CreateChannelModal(ui.Modal, title="Create Conversation Channel"):
         """Create the channel when modal is submitted."""
         try:
             # Get the conversation category
-            settings = interaction.client.settings
+            if interaction.guild is None:
+                await interaction.response.send_message(
+                    "❌ This command can only be used in a server.", ephemeral=True
+                )
+                return
+            settings = _bot_settings(interaction)
             category = interaction.guild.get_channel(
                 settings.discord_conversation_category_id
             )
@@ -90,7 +106,7 @@ class ControlPanelView(ui.View):
     async def create_channel(self, interaction: discord.Interaction, button: ui.Button):
         """Open modal to create a new conversation channel."""
         # Check owner access
-        settings = interaction.client.settings
+        settings = _bot_settings(interaction)
         if settings.discord_owner_only and interaction.user.id != settings.discord_owner_id:
             await interaction.response.send_message(
                 "🔒 Only the bot owner can create channels.", ephemeral=True
@@ -108,7 +124,12 @@ class ControlPanelView(ui.View):
     async def list_channels(self, interaction: discord.Interaction, button: ui.Button):
         """List all conversation channels."""
         try:
-            settings = interaction.client.settings
+            if interaction.guild is None:
+                await interaction.response.send_message(
+                    "❌ This command can only be used in a server.", ephemeral=True
+                )
+                return
+            settings = _bot_settings(interaction)
             category = interaction.guild.get_channel(
                 settings.discord_conversation_category_id
             )
@@ -166,7 +187,7 @@ class ControlPanelView(ui.View):
         """Show bot status."""
         from providers.rate_limit import GlobalRateLimiter
 
-        settings = interaction.client.settings
+        settings = _bot_settings(interaction)
         global_limiter = GlobalRateLimiter.get_instance()
         rate_status = global_limiter.get_status()
 

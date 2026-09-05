@@ -1076,6 +1076,12 @@ async def health():
     return {"status": "healthy"}
 
 
+@router.get("/api/hello")
+async def api_hello():
+    """Minimal hello endpoint (some clients ping this; keep it valid so it never counts as a bot strike)."""
+    return {}
+
+
 @router.get("/status")
 async def status():
     """Get current rate limit and queue status."""

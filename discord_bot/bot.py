@@ -742,9 +742,9 @@ class NimbusDiscordBot(commands.Bot):
                         Message(
                             role=cast(
                                 Literal["user", "assistant", "system"],
-                                str(m.role if hasattr(m, "role") else m["role"])
+                                str(m.role if isinstance(m, Message) else m["role"])
                             ),
-                            content=m.content if hasattr(m, "content") else m["content"]
+                            content=m.content if isinstance(m, Message) else m["content"]
                         )
                         for m in new_messages
                     ],
@@ -752,7 +752,7 @@ class NimbusDiscordBot(commands.Bot):
                     system=system_prompt,
                     tools=self._get_active_tools(web_search_enabled, consecutive_web_search_failures),
                 )
-                # type: ignore[union-attr] - m is either Message or dict, handled by hasattr
+                # type: ignore[union-attr] - m is either Message or dict, handled by isinstance
                 current_input_tokens = get_token_count(
                     current_request.messages, system_prompt, current_request.tools
                 )

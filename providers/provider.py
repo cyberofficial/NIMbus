@@ -12,7 +12,7 @@ import random
 import sys
 import time
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from pathlib import Path
 
 from typing import Any, Awaitable, Callable, TypeVar
@@ -55,7 +55,7 @@ from providers.heuristic_tool_parser import HeuristicToolParser
 from providers.rate_limit import GlobalRateLimiter
 from providers.request import build_request_body
 from providers.request_queue import RequestPriority, RequestQueue
-from providers.sse_builder import SSEBuilder, map_stop_reason
+from providers.sse_builder import SSEBuilder, map_stop_reason, sse_content_block_stop
 from providers.think_parser import ContentType, ThinkTagParser, split_think_content
 from providers.dsml_parser import DsmlParser, is_dsml_model, parse_dsml_tool_calls
 
@@ -142,8 +142,8 @@ def _fresh_tool_id() -> str:
 
 
 async def _keepalive(
-    gen: AsyncIterator[str], interval: float = 15.0
-) -> AsyncIterator[str]:
+    gen: AsyncGenerator[str, Any], interval: float = 15.0
+) -> AsyncGenerator[str, None]:
     """Wrap a stalled async generator, emitting SSE keepalive comments.
 
     While the underlying generator produces nothing (e.g. the request queue is

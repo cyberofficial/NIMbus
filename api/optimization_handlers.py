@@ -39,8 +39,8 @@ def optimization_response_to_sse(response: MessagesResponse | dict, input_tokens
         return default
 
     # Extract response fields
-    response_id = get_attr(response, 'id')
-    response_model = get_attr(response, 'model')
+    response_id = get_attr(response, 'id') or f"msg_{uuid.uuid4().hex}"
+    response_model = get_attr(response, 'model') or "unknown"
     response_content = get_attr(response, 'content')
     response_stop_reason = get_attr(response, 'stop_reason', 'end_turn')
     response_usage = get_attr(response, 'usage')

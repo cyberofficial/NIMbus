@@ -812,8 +812,9 @@ def _load_reasoning_config() -> dict:
         return _REASONING_CONFIG_RAW
 
     with config_path.open("r", encoding="utf-8") as f:
-        _REASONING_CONFIG_RAW = json.load(f) or {"models": {}, "defaults": {}}
-    return _REASONING_CONFIG_RAW
+        data: dict = json.load(f) or {"models": {}, "defaults": {}}
+    _REASONING_CONFIG_RAW = data
+    return data
 
 
 def _match_model_config(model: str, config: dict) -> tuple[int, bool, dict[str, str], dict[str, int], str]:
