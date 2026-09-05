@@ -171,7 +171,7 @@ Claude Code sends requests with model identifiers like `claude-sonnet-4-6`, `cla
 | `PROVIDER_RATE_WINDOW` | Rate window in seconds | `60` |
 | `PROVIDER_MAX_CONCURRENCY` | Max concurrent streams | `5` |
 | `RESOURCE_EXHAUSTED_RETRIES` | Max retries for ResourceExhausted (worker limit) errors (0 = endless) | `10` |
-| `NIM_RPM_RESET` | Auto-restore after N successful requests without 429 (0=disabled) | `5` |
+| `NIM_RPM_RESET` | Auto-restore after N successful requests without 429 (0=disabled) | `1` |
 | `PROVIDER_MAX_WAIT_TIME` | Buffer mode max wait (s) | `30` |
 | `PROVIDER_RETRY_ON_TRUNCATION` | Buffer mode retry count (0 = unlimited retries) | `0` |
 | `PROVIDER_RETRY_DELAY` | Buffer mode retry base delay (s) | `1.0` |
@@ -201,7 +201,7 @@ NIMbus implements adaptive rate limiting that uses NVIDIA's response headers. On
 | --- | --- | --- |
 | `PROVIDER_RATE_LIMIT` | Fallback requests per minute (if no server header) | `40` |
 | `PROVIDER_RATE_WINDOW` | Rate window in seconds | `60` |
-| `NIM_RPM_RESET` | Auto-restore after N successful requests without 429 (0=disabled) | `5` |
+| `NIM_RPM_RESET` | Auto-restore after N successful requests without 429 (0=disabled) | `1` |
 
 **Reset Tag:** Include `<nimrpm:reset>` in any chat message (must be the **entire** message content, optional surrounding whitespace allowed) to clear reactive block immediately. Useful after changing models or when rate limits recover.
 

@@ -411,7 +411,7 @@ def _write_dotenv(path: Path, params: dict, is_linux: bool = False) -> None:
         f"PROVIDER_RATE_WINDOW={params.get('provider_rate_window', 60)}",
         f"PROVIDER_MAX_CONCURRENCY={params.get('provider_max_concurrency', 5)}",
         # Adaptive Rate Limiting
-        f"NIM_RPM_RESET={params.get('nim_rpm_reset', 5)}",
+        f"NIM_RPM_RESET={params.get('nim_rpm_reset', 1)}",
         # HTTP Client Timeouts
         f"HTTP_READ_TIMEOUT={params.get('http_read_timeout', 300)}",
         f"HTTP_WRITE_TIMEOUT={params.get('http_write_timeout', 10)}",

@@ -82,8 +82,8 @@ class Settings(BaseSettings):
 
     # ==================== Adaptive Rate Limiting ====================
     # Auto-restore adaptive rate limit after N successful requests without 429
-    # 0 = never auto-restore (manual <nimrpm:reset> only). Default 5 requests.
-    nim_rpm_reset: int = Field(default=5, ge=0, validation_alias="NIM_RPM_RESET")
+    # 0 = never auto-restore (manual <nimrpm:reset> only). Default 1 request.
+    nim_rpm_reset: int = Field(default=1, ge=0, validation_alias="NIM_RPM_RESET")
 
     # ==================== Server Type ====================
     server_type: str = Field(default="buffer", validation_alias="SERVER_TYPE")
