@@ -47,7 +47,7 @@ To restore a backed-up settings.json: `nimbus.exe --init restore`
 
 ### Option 2: Python (any OS)
 
-**Prerequisites:** NVIDIA NIM API key, Python 3.14.3+, [Claude Code](https://github.com/anthropics/claude-code)
+**Prerequisites:** NVIDIA NIM API key, Python 3.14.2+, [Claude Code](https://github.com/anthropics/claude-code)
 
 ```bash
 git clone https://github.com/cyberofficial/NIMbus.git
@@ -59,7 +59,7 @@ Edit `.env`:
 
 ```dotenv
 NVIDIA_NIM_API_KEY="nvapi-your-key-here"
-MODEL="nvidia/nemotron-3-super-120b-a12b"
+MODEL="deepseek-ai/deepseek-v4-flash"
 ```
 
 ### Running the Server
@@ -131,6 +131,8 @@ ANTHROPIC_AUTH_TOKEN="<replaceme>" ANTHROPIC_BASE_URL="http://localhost:8082" cl
 
 Browse all: [build.nvidia.com/explore/discover](https://build.nvidia.com/explore/discover)
 
+Models with pre-configured reasoning presets are listed in [Supported Models](#supported-models-pre-configured). Any other NIM model works too — unlisted models run with NVIDIA's server-side thinking defaults.
+
 ## Model Mapping (Claude Tiers → NIM Models)
 
 Claude Code sends requests with model identifiers like `claude-sonnet-4-6`, `claude-opus-4-7`, `claude-haiku-4-5`, `claude-fable-1-0`. NIMbus maps these to NIM models by position in the `MODEL` list (comma-separated):
@@ -144,19 +146,22 @@ Claude Code sends requests with model identifiers like `claude-sonnet-4-6`, `cla
 
 **Fable:** The new `claude-fable-1-0` model defaults to the Opus position (model[1], or model[0] if only one model is configured). Override with `FABLE_OVERRIDE=owner/model-name` in `.env` (supports `[1m]` suffix for 1M context).
 
+**`nim:` prefix:** Any model request prefixed with `nim:` (e.g. `nim:moonshotai/kimi-k3`) bypasses tier mapping entirely and resolves directly against NVIDIA's catalog.
+
 ## Configuration
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `MODEL` | Model identifier (`owner/model-name`, comma-separated for multi-model) | `nvidia/nemotron-3-super-120b-a12b` |
+| `MODEL` | Model identifier (`owner/model-name`, comma-separated for multi-model; special value `windows:settings.json` reads models from Claude Code settings) | `deepseek-ai/deepseek-v4-flash` |
 | `NVIDIA_NIM_API_KEY` | NVIDIA API key | **required** |
-| `SERVER_TYPE` | Server mode: `stream` or `buffer` | `stream` |
+| `SERVER_TYPE` | Server mode: `stream` or `buffer` | `buffer` |
 | `SHOW_NIM_REPLY` | Mirror the raw NVIDIA reply to the console live (one timestamped line per chunk; THINKING/REPLY tags) — diagnose "thinking vs stuck" in stream and buffer mode | `false` |
-| `NIM_MAX_TOKENS` | Max output tokens for responses | `202000` |
-| `NIM_THINKING` | Enable thinking/reasoning content | `true` |
+| `NIM_MAX_TOKENS` | Max output tokens cap - if a request sends a lower `max_tokens`, it is upgraded to this value (0 = no upgrade) | `32000` |
+| `NIM_THINKING` | Enable thinking/reasoning content per-model | `true` |
+| `NIM_ENABLE_THINKING` | Global thinking kill-switch - if `false`, disables thinking for ALL models regardless of `NIM_THINKING` | `true` |
 | `NIM_REASONING_EFFORT` | Reasoning effort level: `low`, `medium`, `high` | `high` |
 | `NIM_REASONING_EFFORT_MAPPINGS` | JSON string mapping Claude effort levels to model-specific values | (empty) |
-| `NIM_REASONING_BUDGET` | Max reasoning tokens (-1 = unlimited, 0 = auto) | `0` |
+| `NIM_REASONING_BUDGET` | Max reasoning tokens (-1 = unlimited, 0 = auto from model config) | `0` |
 | `NIM_CHAT_TEMPLATE_ENABLE_THINKING` | Enable thinking in chat template | `true` |
 | `NIM_CHAT_TEMPLATE_LOW_EFFORT` | Enable low_effort flag in chat template | `false` |
 | `NIM_CHAT_TEMPLATE_MEDIUM_EFFORT` | Enable medium_effort flag in chat template | `false` |
@@ -168,12 +173,13 @@ Claude Code sends requests with model identifiers like `claude-sonnet-4-6`, `cla
 | `RESOURCE_EXHAUSTED_RETRIES` | Max retries for ResourceExhausted (worker limit) errors (0 = endless) | `10` |
 | `NIM_RPM_RESET` | Auto-restore after N successful requests without 429 (0=disabled) | `5` |
 | `PROVIDER_MAX_WAIT_TIME` | Buffer mode max wait (s) | `30` |
-| `PROVIDER_RETRY_ON_TRUNCATION` | Buffer mode retry count | `3` |
+| `PROVIDER_RETRY_ON_TRUNCATION` | Buffer mode retry count (0 = unlimited retries) | `0` |
 | `PROVIDER_RETRY_DELAY` | Buffer mode retry base delay (s) | `1.0` |
 | `HTTP_READ_TIMEOUT` | Read timeout in seconds | `300` |
 | `HTTP_WRITE_TIMEOUT` | Write timeout in seconds | `10` |
 | `HTTP_CONNECT_TIMEOUT` | Connect timeout in seconds | `2` |
 | `PORT` | Server port | `8082` |
+| `HOST` | Host address to bind to (`0.0.0.0` = all interfaces) | `0.0.0.0` |
 | `PROXY_API_KEY` | Optional proxy authentication (auto-generated if empty) | (random) |
 | `SWAPPER_ENABLED` | Enable dynamic `<modelswap:...>` chat tag | `false` |
 | `SWAPPER_TEST_PROMPT` | Prompt used to validate swap-in model | `Please reply with pong only, nothing else` |
@@ -202,6 +208,8 @@ NIMbus implements adaptive rate limiting that uses NVIDIA's response headers. On
 ### Discord Bot (Optional)
 
 Both the bot token and a configured guild ID must be present (and `DISCORD_ENABLED` not set to `false`) for the bot to start.
+
+> **Full setup guide, bot commands, and feature list:** see [Discord Bot (Optional)](#discord-bot-optional-1) below.
 
 **Role mentions:** The bot now responds when mentioned via role (`@&role_id`) in addition to direct user mentions (`@username`). It checks if the mentioned role is assigned to the bot.
 
@@ -243,6 +251,8 @@ Both the bot token and a configured guild ID must be present (and `DISCORD_ENABL
 | `DISCORD_ENABLE_WEB_SEARCH` | Enable web search/fetch for the Discord bot | `true` |
 | `DISCORD_WEB_SEARCH_MAX_RESULTS` | Max search results per query | `5` |
 | `DISCORD_WEB_SEARCH_MAX_ITERATIONS` | Max tool call iterations per response | `10` |
+| `DISCORD_WEB_SEARCH_MAX_RESULT_SIZE` | Max characters per search result included in the prompt | `5000` |
+| `DISCORD_WEB_SEARCH_INCLUDE_IN_HISTORY` | Include web search tool results in conversation history | `true` |
 
 ### Web Search (Discord Bot & MCP Server)
 
@@ -265,13 +275,14 @@ MCP server configuration (see [MCP Server Mode](#mcp-server-mode-web-search-tool
 
 NIMbus has two server modes controlled by `SERVER_TYPE`. Both produce Anthropic-format responses compatible with Claude Code, but they trade off latency for reliability differently.
 
-#### Stream Mode (`SERVER_TYPE=stream` - default)
+#### Stream Mode (`SERVER_TYPE=stream`)
 
 Tokens are relayed to Claude Code as NVIDIA generates them, just like a direct connection.
 
 - **Lowest latency** - Claude Code sees tokens immediately
-- **What happens during backend cutout**: The proxy sends a partial response with `stop_reason="max_tokens"` and logs a warning. Claude Code receives whatever was generated before the interruption.
-- **No retry** - streaming cannot replay already-sent tokens, so a dropped connection means a partial response.
+- **Automatic retry on connection errors** (since v2.0.15) - Connection errors (`APIConnectionError`, `APITimeoutError`, `httpx.ReadError`, `httpx.RemoteProtocolError`, `httpx.TimeoutException`) raised mid-stream now trigger a retry instead of emitting an incomplete SSE sequence. Streams that end without a `finish_reason` (backend cut off mid-response) also trigger a retry.
+- **Retry dedup** - On retry, only the final attempt's SSE events are forwarded (from its last `message_start` onward), so Claude Code never sees a duplicated message sequence.
+- **What happens during backend cutout**: After all retries are exhausted, the proxy sends a partial response with `stop_reason="max_tokens"` and a `[PROXY NOTICE]` trailer so the model knows the reply was cut short. Claude Code receives whatever was generated before the interruption.
 - **Best for** interactive use where you want to see output as it's produced.
 
 ```
@@ -290,7 +301,7 @@ The proxy waits for NVIDIA to finish generating the **complete** response before
 - **Configurable retry behavior**:
   | Setting | Default | What it does |
   |---|---|---|
-  | `PROVIDER_RETRY_ON_TRUNCATION` | `3` | Number of retry attempts before giving up |
+  | `PROVIDER_RETRY_ON_TRUNCATION` | `0` | Number of retry attempts before giving up — `0` means unlimited retries (retry forever until success or a non-retryable error) |
   | `PROVIDER_RETRY_DELAY` | `1.0` | Base delay between retries (seconds) - multiplies by attempt number |
   | `PROVIDER_MAX_WAIT_TIME` | `30` | Seconds to wait for NVIDIA before timing out and retrying |
 - **Retries count against the rate limit** to prevent exceeding your quota when the backend is unstable
@@ -310,9 +321,9 @@ Claude Code ──── JSON response ──── NIMbus ──── (wait + 
 
 | Scenario | Recommendation |
 |---|---|
-| Interactive coding / quick questions | `stream` (default) |
-| Batch processing / generating large files | `buffer` |
-| Spotty network or unstable backend | `buffer` |
+| Interactive coding / quick questions | `stream` |
+| Batch processing / generating large files | `buffer` (default) |
+| Spotty network or unstable backend | `buffer` (default) |
 | Lowest latency matters most | `stream` |
 
 > **Note:** NVIDIA's free tier occasionally drops connections mid-response. Stream mode will produce a partial answer; buffer mode will retry up to `PROVIDER_RETRY_ON_TRUNCATION` times to get a complete response.
@@ -400,7 +411,8 @@ A comprehensive set of preset mappings is available in `reasoning_config.json`. 
 
 **Example mappings (from reasoning_config.json):**
 - Nemotron 3 Ultra: `low` → `medium:2048`, `medium` → `medium:8192`, `high/xhigh/max` → `high:32768`, `ultracode` → `high:-1`
-- DeepSeek V4 Pro: `low` → `high`, `medium` → `high`, `high` → `high`, `xhigh`/`max`/`ultracode` → `max` (2-part format — no budget)
+- DeepSeek V4 Pro: `low` → `high:1024`, `medium` → `high:4096`, `high` → `high:16384`, `xhigh` → `max:28672`, `max` → `max:32768`, `ultracode` → `max:-1`
+- Kimi K3: `low` → `low:1000`, `medium` → `high:8000`, `high` → `high:16000`, `xhigh` → `max:24000`, `max`/`ultracode` → `max:32000`
 - All levels to high: `{"deepseek": {"low": "high", "medium": "high", "high": "high", "xhigh": "high", "max": "high", "ultracode": "high"}}`
 - Custom mapping: `{"deepseek": {"low": "xhigh", "medium": "high", "high": "high"}}` (low → xhigh, medium/high → high)
 - Any combination: Users can define any mapping they want for any effort level
@@ -408,6 +420,61 @@ A comprehensive set of preset mappings is available in `reasoning_config.json`. 
 See [reasoning_config.json](reasoning_config.json) for detailed preset mappings and format.
 
 See [`.env.example`](.env.example) for all options.
+
+### Thinking Styles
+
+Each model in `reasoning_config.json` declares a `thinking_style` that controls how reasoning parameters are sent to NVIDIA NIM:
+
+| Style | Models | How reasoning is passed |
+|---|---|---|
+| `nemotron` | NVIDIA Nemotron 3 (Ultra/Super/Nano) | `chat_template_kwargs` thinking flags + `reasoning_budget` in `extra_body` |
+| `deepseek` | DeepSeek V4 (Pro/Flash) | `reasoning_effort` in `chat_template_kwargs` only — does **not** support `reasoning_budget` |
+| `kimi` | Moonshot Kimi K3 | `chat_template_kwargs` thinking flags; `top_p` is forced to `0.95` (server requirement) |
+| `default` | Others (e.g. Poolside Laguna) | Nemotron-compatible flags for backward compatibility |
+
+Models not listed in `reasoning_config.json` get no thinking params from the proxy — NVIDIA's server defaults apply. Models with `supports_thinking: false` (the `defaults` entry) are treated the same way.
+
+### Supported Models (Pre-configured)
+
+These models ship with tuned reasoning presets in [reasoning_config.json](reasoning_config.json):
+
+| Model | Thinking Style | Notes |
+|---|---|---|
+| `deepseek-ai/deepseek-v4-flash` | `deepseek` | **Default model.** Fast, supports ultracode budget up to 384000 |
+| `deepseek-ai/deepseek-v4-flash-0731` | `deepseek` | Dated variant with explicit budgets per effort |
+| `deepseek-ai/deepseek-v4-pro-0813` | `deepseek` | Pro variant; forced-thinking disabled to prevent CoT leakage in `message.content` |
+| `nvidia/nemotron-3-ultra-550b-a55b` | `nemotron` | 550B flagship, reasoning budget max 32768 |
+| `nvidia/nemotron-3-super-120b-a12b` | `nemotron` | 120B, reasoning budget max 32768 |
+| `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` | `nemotron` | 30B, budget-only efforts (`low:1024` … `ultracode:-1`) |
+| `moonshotai/kimi-k3` | `kimi` | Kimi K3; unique fresh `tool_use` IDs fix Claude Code deadlock |
+| `poolside/laguna-xs-2.1` | `default` | Default-style thinking flags |
+
+Any other NIM model can be used via `MODEL`, `<modelswap:...>`, or `FABLE_OVERRIDE` — unlisted models simply run with NVIDIA's server-side thinking defaults.
+
+### DSML Tool-Call Parsing (DeepSeek V4)
+
+DeepSeek V4 models emit tool calls as DSML (DeepSeek Markup Language) inline in the message content rather than via the API's structured `tool_calls` field. NIMbus includes a dedicated DSML parser (`providers/dsml_parser.py`) that:
+
+- Extracts tool calls from DSML markup and converts them to Anthropic `tool_use` blocks
+- Strips residual/dangling DSML tags so Claude Code never sees raw markup
+- Guards `stop_reason` — upgrades `end_turn` → `tool_use` when tool_use blocks were actually streamed (Claude Code rejects `end_turn` + tool_use messages)
+- Mints globally-unique `tool_use` IDs (fixes a Kimi-K3/Claude Code dedup deadlock where repeated ids like `Bash:0` caused `[Tool use interrupted]` loops)
+
+DeepSeek V4 requests also automatically set `include_stop_str_in_output=true` so degraded tool-call markup is never silently stripped by NVIDIA's server-side parser.
+
+### Bot Protection
+
+NIMbus includes lightweight bot protection (`api/bot_protection.py`) that filters suspicious requests. Requests from `localhost` (`127.0.0.1`, `::1`) are always bypassed, so local Claude Code usage is never affected.
+
+### Rate Limit Status Display
+
+While requests are in flight, the proxy prints a live rate-limit bar to the console every 10 seconds:
+
+```
+🟢 Rate Limit: [████████░░░░░░░░░░░░] 8/40 (20%) | 32 left | Next Slot free in 12.3s
+```
+
+Emoji (🟢/🟡/🔴) reflects current usage (below 70% / 70–90% / above 90%).
 
 ## API Endpoints
 
@@ -503,7 +570,7 @@ The override is stored per-API-key in the same in-memory pattern as the Model Sw
 
 ### Logs
 
-Each server run creates a new timestamped log file: `server.YYYY-MM-DD_HH-MM-SS_XXXXXX.log` (e.g., `server.2026-07-11_20-33-47_529858.log`). No persistent `server.log` and no log rotation during a session — one log file per server start. This avoids Windows file locking issues during rotation.
+See [Log Files](#log-files) in the Configuration section. Each server run creates a new timestamped log file — no persistent `server.log` and no log rotation during a session.
 
 ## Contributing
 
